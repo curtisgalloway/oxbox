@@ -75,22 +75,45 @@ decoration.
 |---|---|---|
 | **macOS** | seatbelt (`sandbox-exec`, built in) | ✅ |
 | **Linux** | bubblewrap (`apt install bubblewrap`) | ✅ |
-| **Windows** | ❌ none — `oxbox` refuses | ✅ |
+| **Windows + WSL2** | bubblewrap, inside WSL | ✅ |
+| **Windows, native** | ❌ none — `oxbox` refuses | ✅ |
 
-All three are tested, not asserted: macOS 15.x, Debian 13 with bubblewrap
-0.11.0, and Windows 11 with PowerShell 7.6. Python 3.9+ (the system `python3`
-on macOS is still 3.9, so nothing here uses 3.10+ APIs).
+Every row is tested, not asserted. Python 3.9+ (the system `python3` on macOS
+is still 3.9, so nothing here uses 3.10+ APIs).
 
-**On Windows there is no jail, and `oxbox` refuses to run rather than pretend.**
+| Tested on | Result |
+|---|---|
+| macOS 15, seatbelt | jailtest 13/13, guardtest 22/22 |
+| Debian 13, bubblewrap 0.11.0 | jailtest 14/14, guardtest 22/22 |
+| Windows 11, PowerShell 7.6 | guardtest 15/15 + 3 skipped; `oxbox` refuses, exit 78 |
+| WSL2 Ubuntu 24.04, bubblewrap 0.9.0 | jailtest 10/10, guardtest 22/22 |
+
+### Windows
+
+**Natively there is no jail, and `oxbox` refuses to run rather than pretend.**
 No unprivileged sandbox is reachable from a stdlib script that restricts both
 the filesystem and the network: Job Objects cap CPU and memory but not file or
 network access, AppContainer needs Win32 API work plus fragile ACLs, and
-Windows Sandbox needs Pro/Enterprise and boots a desktop VM per run. Use WSL2,
-where the Linux backend works unchanged.
+Windows Sandbox needs Pro/Enterprise and boots a desktop VM per run.
 
 The rest of the toolkit is fully native on Windows — `ox`, `oxseed` and
 `oxapply` are pure Python. You can talk to the model, scan for secrets, and
 quarantine its patches. Only *executing* its output needs the jail.
+
+**With WSL2 you get the full thing**, and the Linux backend runs unchanged:
+
+```bash
+wsl --install -d Ubuntu
+wsl
+sudo apt install bubblewrap
+python3 guardtest.py
+```
+
+Both suites pass in WSL, and — verified — it works whether the repo lives on
+the WSL ext4 filesystem or on the Windows drive under `/mnt/c`. Unprivileged
+bubblewrap works there because the WSL2 kernel does not carry the AppArmor
+patch that restricts user namespaces on an Ubuntu 24.04 host; there is no
+`kernel.apparmor_restrict_unprivileged_userns` knob to trip over.
 
 ## Setup
 
@@ -219,7 +242,8 @@ shape — a check that quietly stops checking:
   a formality.
 - **The secret scanner is pattern-based**, so it catches recognizable key
   formats and misses bespoke ones. It reduces accidents; it is not a guarantee.
-- **No jail on Windows.** `oxbox` refuses there; use WSL2. See Platforms above.
+- **No jail on native Windows.** `oxbox` refuses there; use WSL2, which is
+  tested and gives you the full Linux backend. See Platforms above.
 - **`sandbox-exec` is deprecated-but-functional** on macOS. It still works and
   Apple still ships it, but it is not a forever guarantee.
 - **The Linux backend needs unprivileged user namespaces.** Some hardened

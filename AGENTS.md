@@ -100,6 +100,12 @@ executed inside it.
 - **Never add a "best effort" mode.** `oxbox` supports seatbelt and bubblewrap
   and refuses everywhere else, deliberately. A harness that appears to sandbox
   but doesn't is worse than none, because it will be trusted.
+- **WSL2 is the Windows story and it is tested**, not a hand-wave: Ubuntu 24.04
+  under WSL runs the bubblewrap backend unchanged, from the ext4 home and from
+  `/mnt/c` alike. Unprivileged bwrap works because the WSL2 kernel lacks the
+  AppArmor userns patch that an Ubuntu 24.04 *host* carries. Do not soften the
+  native-Windows refusal on the strength of WSL working — they are different
+  execution environments and `sys.platform` tells them apart.
 - **Python 3.9 is the floor.** The system `python3` on macOS is still 3.9, so
   no 3.10+ APIs: no `Path.write_text(newline=...)`, and `shutil.rmtree(onexc=)`
   stays behind its version check.

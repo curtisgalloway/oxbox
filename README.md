@@ -121,7 +121,7 @@ Requires Python 3.9+ and git, plus `bubblewrap` on Linux. No third-party
 Python packages — deliberately.
 
 ```bash
-git clone https://github.com/<you>/oxbox
+git clone https://github.com/curtisgalloway/oxbox
 cd oxbox
 export OPENROUTER_API_KEY=sk-or-v1-...
 ```

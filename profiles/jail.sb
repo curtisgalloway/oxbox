@@ -33,7 +33,6 @@
   (literal "/dev/zero")
   (literal "/dev/random")
   (literal "/dev/urandom")
-  (literal "/dev/tty")
   (literal "/")
   (literal "/private")
   (literal "/private/var")
@@ -46,7 +45,9 @@
   (literal "/dev/null")
   (literal "/dev/stdout")
   (literal "/dev/stderr")
-  (literal "/dev/tty")
   (literal "/dev/dtracehelper"))
 
-(allow file-read-metadata)
+;; No global (allow file-read-metadata): it granted stat() on every path on the
+;; system, an existence/size/mtime oracle for things like ~/.ssh/id_rsa. The
+;; file-read* rules above already carry metadata rights for the paths that need
+;; them, so nothing legitimate depends on a blanket grant.

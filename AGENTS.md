@@ -31,7 +31,7 @@ benign.
    and refuses absolute paths or `..` traversal outright.
 4. **Execution jail.** `oxbox` runs code under a seatbelt profile with **no
    network at all** and **no writes outside the sandbox**. Verified by
-   `jailtest.py` — 12 probes covering TCP, UDP, DNS, `~/.ssh`, `~/.claude`,
+   `jailtest.py` — 14 probes covering TCP, UDP, DNS, `~/.ssh`, `~/.claude`,
    shell history, `.env`, Keychains, and escape writes.
 5. **Audit trail.** Every call writes `logs/<timestamp>/` containing the exact
    request, the raw response, the extracted content, and metadata. The API key
@@ -54,9 +54,13 @@ executed inside it.
 
 ## Observed behavior
 
-- Returns **no reasoning trace** despite advertising mandatory reasoning
-  (`reasoning_chars=0` on every call so far). You get outputs, not thinking —
-  supervision has to be output-based.
+- Reasoning traces are inconsistent: `reasoning_chars=0` on short calls despite
+  advertised mandatory reasoning, but 52,656 characters on a long review. Never
+  assume one will be there.
+- Cloaked endpoints can disappear mid-session with
+  `404: No endpoints available matching your guardrail restrictions and data
+  policy` — account-wide, not key-specific. Stealth models require prompt
+  logging enabled at <https://openrouter.ai/settings/privacy>.
 - Emits unified diffs with **zero trailing context**, ignoring an explicit
   instruction to include three lines. Such patches are rejected by both
   `git apply` and GNU `patch`. `oxapply` falls back to `--recount -C1` and
@@ -68,5 +72,12 @@ executed inside it.
 - Never point `oxapply` at a real repository. It is sandbox-only by design;
   keep it that way.
 - Never run model-produced code outside `oxbox`.
-- Re-run `./oxbox -- python3 jailtest.py` after any change to `profiles/jail.sb`.
+- Re-run `./oxbox -- python3 jailtest.py` after any change to `profiles/jail.sb`
+  or `oxbox`. A jail you have not tested since editing is decoration.
+- Never decide inside the jail whether a sensitive path exists — `stat()` is
+  denied, so the check reports "absent" for everything and the probe skips
+  instead of testing. Existence is computed by `oxbox` and passed in via
+  `OXBOX_EXISTING_PATHS`. This bit once already.
+- **Known open gap:** `--files` bodies are secret-scanned; the task string and
+  `--stdin` are not. Do not pipe credential-bearing text into `--stdin`.
 - Do not send anything to this model you would not hand to an unnamed lab.

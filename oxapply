@@ -8,14 +8,31 @@ land outside the work tree. Never touches a real repository.
 """
 
 import argparse
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 FENCE = re.compile(r"```(?:diff|patch)\s*\n(.*?)```", re.DOTALL)
 PATH_LINE = re.compile(r"^(?:---|\+\+\+)\s+(?:[ab]/)?(\S+)", re.MULTILINE)
+
+# ---/+++ lines are not the only place a patch names a target. git also honors
+# extended headers, so validating only ---/+++ lets a "rename to ../../x" slip
+# past while the operator is reassured with "targets (0)".
+EXTRA_HEADER = re.compile(
+    r"^(?:diff --git\s+(?P<git>.+)"
+    r"|(?:rename|copy)\s+(?:from|to)\s+(?P<move>.+))$",
+    re.MULTILINE,
+)
+
+# A patch can create a symlink (mode 12xxxx) whose body is an absolute or ../
+# target, turning a later in-sandbox write into a write anywhere. Containment
+# should not rest on git's internal symlink checks.
+SYMLINK_MODE = re.compile(r"^\s*(?:new|old|new file|deleted file)\s+mode\s+12\d{4}\s*$",
+                          re.MULTILINE)
 
 
 def extract(text):
@@ -27,15 +44,31 @@ def extract(text):
     return None
 
 
+def candidate_paths(patch):
+    """Every path token a patch names, from ---/+++ AND extended headers."""
+    found = list(PATH_LINE.findall(patch))
+    for match in EXTRA_HEADER.finditer(patch):
+        raw = match.group("git") or match.group("move") or ""
+        for token in raw.split():
+            token = token.strip().strip('"')
+            if token.startswith(("a/", "b/")):
+                token = token[2:]
+            if token:
+                found.append(token)
+    return found
+
+
 def unsafe_paths(patch):
     bad = []
-    for raw in PATH_LINE.findall(patch):
+    for raw in candidate_paths(patch):
         if raw == "/dev/null":
             continue
         if raw.startswith("/") or raw.startswith("~"):
             bad.append(f"absolute path: {raw}")
         elif ".." in Path(raw).parts:
             bad.append(f"parent traversal: {raw}")
+    for match in SYMLINK_MODE.finditer(patch):
+        bad.append(f"symlink mode: {match.group(0).strip()}")
     return bad
 
 
@@ -72,10 +105,16 @@ def main():
             sys.stderr.write(f"  {item}\n")
         sys.exit(2)
 
-    patch_path = work.parent / "pending.patch"
-    patch_path.write_text(patch, encoding="utf-8")
+    # Unique per run: --check and --apply are separate git invocations that each
+    # re-read this file, so a fixed name lets a concurrent run swap in a patch
+    # that was never the one validated.
+    handle, temp_name = tempfile.mkstemp(prefix="pending-", suffix=".patch",
+                                         dir=str(work.parent))
+    with os.fdopen(handle, "w", encoding="utf-8") as stream:
+        stream.write(patch)
+    patch_path = Path(temp_name)
 
-    targets = sorted(set(PATH_LINE.findall(patch)) - {"/dev/null"})
+    targets = sorted(set(candidate_paths(patch)) - {"/dev/null"})
     sys.stderr.write(f"oxapply: patch -> {patch_path}\n")
     sys.stderr.write(f"oxapply: targets ({len(targets)}): {', '.join(targets)}\n")
 

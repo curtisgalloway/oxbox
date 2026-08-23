@@ -33,20 +33,53 @@ if [ ! -d "$WORK" ]; then
 fi
 
 WORK="$(cd "$WORK" && pwd -P)"
+SANDBOX_ROOT="$(cd "$HERE" && pwd -P)/sandbox"
+
+case "$WORK/" in
+  "$SANDBOX_ROOT"/*) ;;
+  *)
+    printf 'oxbox: REFUSING --work %s\n' "$WORK" >&2
+    printf 'oxbox: the profile grants write access to whatever --work names, so a\n' >&2
+    printf 'oxbox: work dir outside %s is not a jail at all.\n' "$SANDBOX_ROOT" >&2
+    exit 78
+    ;;
+esac
 
 mkdir -p "$WORK/.oxtmp"
 
+# Existence of sensitive paths must be decided OUT here. Inside the jail even
+# stat() is denied, so a probe that tests existence itself would report "absent"
+# for a path that is merely well hidden -- a test that silently stops testing.
+EXISTING_PATHS=""
+for candidate in \
+  "$REAL_HOME/.ssh" \
+  "$REAL_HOME/.aws" \
+  "$REAL_HOME/.claude" \
+  "$REAL_HOME/.zsh_history" \
+  "$REAL_HOME/Library/Keychains" \
+  "$HERE/.env"
+do
+  if [ -e "$candidate" ]; then
+    EXISTING_PATHS="${EXISTING_PATHS}${candidate}
+"
+  fi
+done
+
 printf 'oxbox: jail=%s work=%s\n' "$PROFILE" "$WORK" >&2
 printf 'oxbox: network=DENIED writes=%s only\n' "$WORK" >&2
+printf 'oxbox: env=CLEARED (nothing from the parent shell crosses in)\n' >&2
 
 cd "$WORK"
 
 exec sandbox-exec -f "$PROFILE" -D "WORK=$WORK" \
-  /usr/bin/env \
+  /usr/bin/env -i \
     HOME="$WORK" \
     REAL_HOME="$REAL_HOME" \
     REPO_ROOT="$HERE" \
+    OXBOX_EXISTING_PATHS="$EXISTING_PATHS" \
     TMPDIR="$WORK/.oxtmp" \
     PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+    TERM="${TERM:-dumb}" \
+    LANG="${LANG:-en_US.UTF-8}" \
     PYTHONDONTWRITEBYTECODE=1 \
     "$@"

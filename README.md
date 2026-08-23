@@ -33,9 +33,10 @@ supervising agent) reads that text before any of it executes.
 | **Execution jail** | `oxbox` runs code under a macOS seatbelt profile with **no network** and **no writes outside the sandbox**. |
 | **Audit trail** | Every call writes `logs/<timestamp>/` with the exact request, raw response, extracted content, and metadata. The API key is never logged. |
 
-The jail is not taken on faith. `jailtest.py` runs 12 probes from *inside* it —
+The jail is not taken on faith. `jailtest.py` runs 14 probes from *inside* it —
 TCP, UDP, DNS, `~/.ssh`, `~/.aws`, `~/.claude`, Keychains, shell history,
-`.env`, and escape writes to both the repo and your home directory:
+`.env`, `stat()` as a metadata oracle, environment inheritance, and escape
+writes to both the repo and your home directory:
 
 ```
 $ ./oxbox -- python3 jailtest.py
@@ -43,8 +44,9 @@ $ ./oxbox -- python3 jailtest.py
 [PASS] network: DNS resolution               (gaierror)
 [PASS] fs read: ~/.ssh                       (PermissionError)
 [PASS] fs write: home dir (escape)           (PermissionError)
+[PASS] env: parent environment not inherited (succeeded)
 ...
-jail holds: 12/12 probes passed
+jail holds: 14/14 probes passed
 ```
 
 Run it after any change to `profiles/jail.sb`. A jail you haven't tested is
@@ -112,10 +114,6 @@ Reading the diff, the things worth flagging:
 
 ## Notes on `stealth/ox-alpha`
 
-Observed while building this, on a trivial task:
-
-- **No reasoning trace.** It advertises mandatory reasoning; it returned
-  `reasoning_chars=0` on every call. You supervise outputs, not thinking.
 - **Malformed diffs.** It emitted a hunk with zero trailing context
   (`@@ -1,4 +1,7 @@` where a real diff has `@@ -1,7 +1,10 @@`), ignoring an
   explicit instruction to include three lines. Both `git apply` and GNU `patch`
@@ -123,6 +121,55 @@ Observed while building this, on a trivial task:
   has to, because a patch that only applies loosely deserves a second read.
 - The fix itself was correct and minimal — byte-identical to a hand-written
   reference patch once applied.
+- **Reasoning traces are inconsistent.** Short calls returned
+  `reasoning_chars=0` despite the model advertising mandatory reasoning; a long
+  review returned 52,656 characters of it. Don't assume you'll get one.
+- **Cloaked models can vanish mid-session.** Requests started failing with
+  `404: No endpoints available matching your guardrail restrictions and data
+  policy` — account-wide, reproduced across two different API keys. Stealth
+  endpoints require prompt logging to be *enabled* at
+  <https://openrouter.ai/settings/privacy>. The toggle that makes it free is
+  the same one that hands over your prompts.
+
+## The self-audit
+
+`stealth/ox-alpha` was pointed at this harness's own source in `--mode review`
+and asked to find containment defects. It produced ten findings. Four were
+verified by direct experiment and **all four were real**:
+
+| Finding | Verified escape | Status |
+|---|---|---|
+| Parent environment inherited into the jail | `OPENROUTER_API_KEY` and every other exported var readable by jailed code | **fixed** — `env -i` with an explicit allowlist |
+| `--work` accepts any directory | `--work <repo>` wrote `PWNED.txt` to the repo root | **fixed** — refuses anything outside `sandbox/` |
+| Global `file-read-metadata` | `stat()` on `~/.ssh` returned size and mtime | **fixed** — scoped to readable paths |
+| Task text skips the secret scanner | a key in the prompt string was sent unscanned | **open** — see below |
+| `rename`/`copy` headers unvalidated | a rename-only patch reported "targets (0)" and passed | **fixed** — extended headers now checked |
+| Symlink-creating patches unvalidated | mode `120000` patches accepted | **fixed** — refused outright |
+| `oxseed` traversal unguarded | `../../../etc/hosts` copied outside the tree | **fixed** |
+| TOCTOU on shared `pending.patch` | `--check` and `--apply` re-read a predictable path | **fixed** — unique temp file per run |
+
+Two further findings it correctly labeled UNCERTAIN (`mach-lookup` and
+`ipc-posix-shm` scope) remain open as documented limitations. Testing the fixes
+surfaced one bug of my own it hadn't flagged: `oxseed` wiped the work directory
+*before* validating its arguments, so a refused seed still destroyed the
+sandbox. Also fixed.
+
+## Known limitations
+
+- **Shell redirection is outside the jail.** `./oxbox -- cmd > ~/notes.md`
+  opens that file in your shell before the jail starts; jailed code then writes
+  attacker-controlled bytes through the inherited fd. Seatbelt gates `open()`,
+  not writes to an already-open descriptor. Don't redirect jail output to
+  anywhere that matters.
+- **`--mode ask`/`--stdin` task text is not secret-scanned.** Only `--files`
+  bodies are. Piping a config full of credentials into `--stdin` will send them.
+- **`mach-lookup` and `ipc-posix-shm` are unrestricted**, exposing the XPC
+  namespace and shared memory to jailed code. Neither is a demonstrated escape;
+  both are broader than they need to be.
+- **macOS only.** `sandbox-exec` is deprecated-but-functional; there is no
+  Linux path yet.
+- The model provider sees everything you send. The jail protects your machine,
+  not your privacy.
 
 Cloaked listings are evaluation deals: **prompts and completions are logged and
 shared with whoever owns the model**, and `is_moderated` is false. Send nothing

@@ -27,16 +27,50 @@ fi
 SRC="$(cd "$1" && pwd -P)"
 shift
 
-rm -rf "$WORK"
-mkdir -p "$WORK"
-
+# Validate every argument BEFORE destroying anything. Refusing partway through
+# would still have wiped the existing sandbox on the way to saying no.
 for rel in "$@"; do
+  # The same traversal class oxapply refuses in patches applies to seed
+  # arguments, which otherwise cp -R straight past the sandbox boundary.
+  case "$rel" in
+    /*|~*)
+      printf 'oxseed: REFUSING absolute path: %s\n' "$rel" >&2
+      exit 78
+      ;;
+  esac
+  case "/$rel/" in
+    */../*)
+      printf 'oxseed: REFUSING parent traversal: %s\n' "$rel" >&2
+      exit 78
+      ;;
+  esac
+
   if [ ! -e "$SRC/$rel" ]; then
     printf 'oxseed: missing in source: %s\n' "$rel" >&2
     exit 66
   fi
+
+  # A copied symlink aimed at ~/.ssh or /etc puts a live handle to the outside
+  # inside the work tree, for anything that touches it outside the jail.
+  if [ -L "$SRC/$rel" ]; then
+    printf 'oxseed: REFUSING symlink: %s -> %s\n' "$rel" "$(readlink "$SRC/$rel")" >&2
+    exit 78
+  fi
+done
+
+rm -rf "$WORK"
+mkdir -p "$WORK"
+
+for rel in "$@"; do
   mkdir -p "$WORK/$(dirname "$rel")"
   cp -R "$SRC/$rel" "$WORK/$rel"
+
+  if [ -n "$(find "$WORK/$rel" -type l -print -quit)" ]; then
+    printf 'oxseed: REFUSING %s: directory contains symlinks\n' "$rel" >&2
+    rm -rf "$WORK/$rel"
+    exit 78
+  fi
+
   printf 'oxseed: seeded %s\n' "$rel" >&2
 done
 

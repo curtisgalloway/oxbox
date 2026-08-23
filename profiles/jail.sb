@@ -11,8 +11,18 @@
 (allow process-fork)
 (allow sysctl-read)
 (allow signal (target self))
-(allow mach-lookup)
-(allow ipc-posix-shm)
+;; Deliberately NOT granted:
+;;
+;;   (allow mach-lookup)    exposes the whole XPC service namespace; several
+;;                          system services will do file or network work on a
+;;                          caller's behalf, which would undercut both guarantees.
+;;   (allow ipc-posix-shm)  shared memory with any colluding process outside
+;;                          the jail.
+;;
+;; Both were in an earlier revision "in case something needs them". Verified
+;; unnecessary: python3 and a venv pytest run both work without them. If some
+;; toolchain ever does need one, scope it to named services rather than
+;; restoring the blanket form.
 (allow file-map-executable)
 
 (allow file-read*
@@ -48,6 +58,10 @@
   (literal "/dev/dtracehelper"))
 
 ;; No global (allow file-read-metadata): it granted stat() on every path on the
-;; system, an existence/size/mtime oracle for things like ~/.ssh/id_rsa. The
-;; file-read* rules above already carry metadata rights for the paths that need
-;; them, so nothing legitimate depends on a blanket grant.
+;; system, an existence/size/mtime oracle for things like ~/.ssh/id_rsa.
+;;
+;; Resolving a path still needs metadata on every directory above it, so
+;; realpath() inside WORK needs its ancestors -- and only its ancestors. That
+;; chain (/, /Users, /Users/<you>, ..., sandbox) is just the route to the
+;; sandbox; it grants nothing on siblings like ~/.ssh.
+(allow file-read-metadata (path-ancestors (param "WORK")))

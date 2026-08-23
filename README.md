@@ -30,7 +30,7 @@ supervising agent) reads that text before any of it executes.
 | **No hands** | `ox` sends a chat completion with **no `tools` array**. The model cannot run, read, or write anything. If it emits `tool_calls` regardless, `ox` logs and warns. |
 | **Explicit context** | It sees only files passed to `--files`. A credential scanner refuses to send anything matching common key patterns. |
 | **Patch quarantine** | `oxapply` applies diffs **only** into `sandbox/work`, and rejects absolute paths and `..` traversal outright. |
-| **Execution jail** | `oxbox` runs code under a macOS seatbelt profile with **no network** and **no writes outside the sandbox**. |
+| **Execution jail** | `oxbox` runs code under a macOS seatbelt profile with **no network** and **no writes outside the sandbox**, with the parent environment cleared (`env -i`) so no inherited secret crosses in. `fdguard.py` refuses to start if stdout/stderr point at a file outside the sandbox. |
 | **Audit trail** | Every call writes `logs/<timestamp>/` with the exact request, raw response, extracted content, and metadata. The API key is never logged. |
 
 The jail is not taken on faith. `jailtest.py` runs 14 probes from *inside* it —
@@ -49,7 +49,24 @@ $ ./oxbox -- python3 jailtest.py
 jail holds: 14/14 probes passed
 ```
 
-Run it after any change to `profiles/jail.sb`. A jail you haven't tested is
+The checks that run *before* the jail — argument validation, patch validation,
+the secret scanner, the inherited-descriptor guard — can't be reached from
+inside it, so they get their own suite:
+
+```
+$ ./guardtest.sh
+[PASS] oxseed refuses parent traversal
+[PASS] oxbox refuses --work outside sandbox/
+[PASS] oxbox refuses stdout redirected outside the sandbox
+[PASS] oxapply refuses traversal in rename headers
+[PASS] ox refuses a key in the task argument
+...
+guards hold: 14/14 passed
+```
+
+Every case in it is a regression test for a defect that was actually found and
+reproduced, not a hypothetical. Run both suites after any change to
+`profiles/jail.sb`, `oxbox`, or the validators. A jail you haven't tested is
 decoration.
 
 ## Setup
@@ -147,23 +164,38 @@ verified by direct experiment and **all four were real**:
 | Symlink-creating patches unvalidated | mode `120000` patches accepted | **fixed** — refused outright |
 | `oxseed` traversal unguarded | `../../../etc/hosts` copied outside the tree | **fixed** |
 | TOCTOU on shared `pending.patch` | `--check` and `--apply` re-read a predictable path | **fixed** — unique temp file per run |
+| Inherited descriptors bypass the jail | `oxbox -- cmd > ~/f` wrote through a handle opened before the jail | **fixed** — `fdguard.py` refuses unless opted in |
+| `mach-lookup` / `ipc-posix-shm` unscoped | flagged UNCERTAIN; no escape demonstrated | **fixed** — both removed after verifying nothing needs them |
 
-Two further findings it correctly labeled UNCERTAIN (`mach-lookup` and
-`ipc-posix-shm` scope) remain open as documented limitations. Testing the fixes
-surfaced one bug of my own it hadn't flagged: `oxseed` wiped the work directory
-*before* validating its arguments, so a refused seed still destroyed the
-sandbox. Also fixed.
+All ten are now closed. The two it correctly labeled UNCERTAIN turned out to be
+removable outright: `mach-lookup` and `ipc-posix-shm` were in the profile "in
+case something needs them", and nothing does — `python3` and a venv `pytest`
+run both work without them.
+
+Fixing them kept surfacing bugs the audit hadn't flagged, all of the same
+shape — a check that quietly stops checking:
+
+- `oxseed` wiped the work directory *before* validating its arguments, so a
+  refused seed still destroyed the sandbox.
+- Scoping `file-read-metadata` broke `jailtest.py`: with `stat()` denied, its
+  own existence checks reported every sensitive path as absent and the read
+  probes **skipped instead of testing**. Existence is now computed outside the
+  jail and passed in.
+- Tightening metadata also broke `realpath()` on the venv, because resolving a
+  path needs metadata on each ancestor directory. Fixed precisely with
+  seatbelt's `path-ancestors` rather than by restoring a blanket grant.
+- `guardtest.sh` initially failed its own `oxbox` cases because it redirected
+  output to a temp file outside the sandbox — tripping the very guard it was
+  written to test.
 
 ## Known limitations
 
-- **Shell redirection is outside the jail.** `./oxbox -- cmd > ~/notes.md`
-  opens that file in your shell before the jail starts; jailed code then writes
-  attacker-controlled bytes through the inherited fd. Seatbelt gates `open()`,
-  not writes to an already-open descriptor. Don't redirect jail output to
-  anywhere that matters.
-- **`mach-lookup` and `ipc-posix-shm` are unrestricted**, exposing the XPC
-  namespace and shared memory to jailed code. Neither is a demonstrated escape;
-  both are broader than they need to be.
+- **`--allow-external-output` genuinely re-opens a hole.** With it, jailed code
+  writes attacker-chosen bytes through a descriptor your shell opened outside
+  the sandbox. The flag exists because sometimes you want the output; it is not
+  a formality.
+- **The secret scanner is pattern-based**, so it catches recognizable key
+  formats and misses bespoke ones. It reduces accidents; it is not a guarantee.
 - **macOS only.** `sandbox-exec` is deprecated-but-functional; there is no
   Linux path yet.
 - The model provider sees everything you send. The jail protects your machine,

@@ -72,8 +72,20 @@ executed inside it.
 - Never point `oxapply` at a real repository. It is sandbox-only by design;
   keep it that way.
 - Never run model-produced code outside `oxbox`.
-- Re-run `./oxbox -- python3 jailtest.py` after any change to `profiles/jail.sb`
-  or `oxbox`. A jail you have not tested since editing is decoration.
+- Re-run BOTH suites after any change to `profiles/jail.sb`, `oxbox`, or the
+  validators: `./oxbox -- python3 jailtest.py` (14 in-jail probes) and
+  `./guardtest.sh` (14 pre-jail refusals). A jail you have not tested since
+  editing is decoration.
+- Do not restore `(allow mach-lookup)` or `(allow ipc-posix-shm)`. Both were
+  removed after verifying `python3` and a venv `pytest` run work without them.
+  If some toolchain genuinely needs one, scope it to named services rather than
+  reinstating the blanket form.
+- Metadata rights on WORK's ancestors come from `path-ancestors`. That is what
+  lets `realpath()` resolve the work dir without granting `stat()` across the
+  filesystem — do not swap it for a broad `(subpath "/Users")`.
+- Tests must not redirect an `oxbox` invocation to a regular file outside the
+  sandbox; `fdguard.py` refuses it and the case fails for the wrong reason.
+  Use `/dev/null` or a pipe. This bit `guardtest.sh` on its first run.
 - Never decide inside the jail whether a sensitive path exists — `stat()` is
   denied, so the check reports "absent" for everything and the probe skips
   instead of testing. Existence is computed by `oxbox` and passed in via

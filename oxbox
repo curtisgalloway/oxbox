@@ -14,9 +14,12 @@ WORK="$HERE/sandbox/work"
 PROFILE="$HERE/profiles/jail.sb"
 REAL_HOME="$HOME"
 
+ALLOW_EXTERNAL_OUTPUT=0
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --work) WORK="$2"; shift 2 ;;
+    --allow-external-output) ALLOW_EXTERNAL_OUTPUT=1; shift ;;
     --) shift; break ;;
     *) printf 'oxbox: unexpected argument: %s\n' "$1" >&2; exit 64 ;;
   esac
@@ -46,6 +49,35 @@ case "$WORK/" in
 esac
 
 mkdir -p "$WORK/.oxtmp"
+
+# Seatbelt gates open(), not writes to a descriptor the shell already opened.
+# `oxbox -- cmd > ~/notes.md` therefore hands jailed code a live handle to a
+# file outside the sandbox. Refuse rather than quietly make the headline
+# guarantee false; --allow-external-output opts out deliberately.
+FD_REPORT="$(mktemp -t oxbox-fdguard)"
+FD_STATUS=0
+python3 "$HERE/fdguard.py" "$SANDBOX_ROOT" "$FD_REPORT" || FD_STATUS=$?
+
+if [ "$FD_STATUS" -eq 3 ] && [ "$ALLOW_EXTERNAL_OUTPUT" -eq 0 ]; then
+  printf 'oxbox: REFUSING - output is redirected outside the sandbox:\n' >&2
+  while IFS= read -r line; do
+    [ -n "$line" ] && printf 'oxbox:   %s\n' "$line" >&2
+  done < "$FD_REPORT"
+  printf 'oxbox: the shell opened that file before the jail existed, so jailed\n' >&2
+  printf 'oxbox: code can write whatever it likes through the inherited handle.\n' >&2
+  printf 'oxbox: redirect inside %s, or pass --allow-external-output.\n' "$WORK" >&2
+  rm -f "$FD_REPORT"
+  exit 78
+fi
+
+if [ "$FD_STATUS" -eq 3 ]; then
+  printf 'oxbox: WARNING - output redirected outside the sandbox (allowed):\n' >&2
+  while IFS= read -r line; do
+    [ -n "$line" ] && printf 'oxbox:   %s\n' "$line" >&2
+  done < "$FD_REPORT"
+fi
+
+rm -f "$FD_REPORT"
 
 # Existence of sensitive paths must be decided OUT here. Inside the jail even
 # stat() is denied, so a probe that tests existence itself would report "absent"

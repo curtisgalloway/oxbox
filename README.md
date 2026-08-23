@@ -30,23 +30,23 @@ supervising agent) reads that text before any of it executes.
 | **No hands** | `ox` sends a chat completion with **no `tools` array**. The model cannot run, read, or write anything. If it emits `tool_calls` regardless, `ox` logs and warns. |
 | **Explicit context** | It sees only files passed to `--files`. A credential scanner refuses to send anything matching common key patterns. |
 | **Patch quarantine** | `oxapply` applies diffs **only** into `sandbox/work`, and rejects absolute paths and `..` traversal outright. |
-| **Execution jail** | `oxbox` runs code under a macOS seatbelt profile with **no network** and **no writes outside the sandbox**, with the parent environment cleared (`env -i`) so no inherited secret crosses in. `fdguard.py` refuses to start if stdout/stderr point at a file outside the sandbox. |
+| **Execution jail** | `oxbox` runs code with **no network** and **no writes outside the sandbox** — seatbelt on macOS, bubblewrap on Linux — with the environment cleared so no inherited secret crosses in. It refuses to start if stdout/stderr point at a file outside the sandbox. |
 | **Audit trail** | Every call writes `logs/<timestamp>/` with the exact request, raw response, extracted content, and metadata. The API key is never logged. |
 
-The jail is not taken on faith. `jailtest.py` runs 14 probes from *inside* it —
-TCP, UDP, DNS, `~/.ssh`, `~/.aws`, `~/.claude`, Keychains, shell history,
-`.env`, `stat()` as a metadata oracle, environment inheritance, and escape
-writes to both the repo and your home directory:
+The jail is not taken on faith. `jailtest.py` probes from *inside* it — TCP,
+UDP, DNS, `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.claude`, Keychains, shell
+history, `.env`, `/etc/shadow`, `stat()` as a metadata oracle, and environment
+inheritance. The sensitive-path list is platform-aware and computed outside:
 
 ```
 $ ./oxbox -- python3 jailtest.py
 [PASS] network: outbound TCP to 1.1.1.1:443  (PermissionError)
 [PASS] network: DNS resolution               (gaierror)
 [PASS] fs read: ~/.ssh                       (PermissionError)
-[PASS] fs write: home dir (escape)           (PermissionError)
+[PASS] fs metadata: stat ~/.ssh (oracle)     (PermissionError)
 [PASS] env: parent environment not inherited (succeeded)
 ...
-jail holds: 14/14 probes passed
+jail holds: 14/14 probes passed        (linux; 13/13 on macOS)
 ```
 
 The checks that run *before* the jail — argument validation, patch validation,
@@ -54,14 +54,14 @@ the secret scanner, the inherited-descriptor guard — can't be reached from
 inside it, so they get their own suite:
 
 ```
-$ ./guardtest.sh
+$ python3 guardtest.py
 [PASS] oxseed refuses parent traversal
 [PASS] oxbox refuses --work outside sandbox/
 [PASS] oxbox refuses stdout redirected outside the sandbox
 [PASS] oxapply refuses traversal in rename headers
 [PASS] ox refuses a key in the task argument
 ...
-guards hold: 14/14 passed
+guards hold: 22/22 passed              (15/15 on Windows, jail cases skipped)
 ```
 
 Every case in it is a regression test for a defect that was actually found and
@@ -69,10 +69,33 @@ reproduced, not a hypothetical. Run both suites after any change to
 `profiles/jail.sb`, `oxbox`, or the validators. A jail you haven't tested is
 decoration.
 
+## Platforms
+
+| | Jail | Everything else |
+|---|---|---|
+| **macOS** | seatbelt (`sandbox-exec`, built in) | ✅ |
+| **Linux** | bubblewrap (`apt install bubblewrap`) | ✅ |
+| **Windows** | ❌ none — `oxbox` refuses | ✅ |
+
+All three are tested, not asserted: macOS 15.x, Debian 13 with bubblewrap
+0.11.0, and Windows 11 with PowerShell 7.6. Python 3.9+ (the system `python3`
+on macOS is still 3.9, so nothing here uses 3.10+ APIs).
+
+**On Windows there is no jail, and `oxbox` refuses to run rather than pretend.**
+No unprivileged sandbox is reachable from a stdlib script that restricts both
+the filesystem and the network: Job Objects cap CPU and memory but not file or
+network access, AppContainer needs Win32 API work plus fragile ACLs, and
+Windows Sandbox needs Pro/Enterprise and boots a desktop VM per run. Use WSL2,
+where the Linux backend works unchanged.
+
+The rest of the toolkit is fully native on Windows — `ox`, `oxseed` and
+`oxapply` are pure Python. You can talk to the model, scan for secrets, and
+quarantine its patches. Only *executing* its output needs the jail.
+
 ## Setup
 
-Requires macOS (the jail uses `sandbox-exec`), Python 3, and git. No
-third-party Python packages — `ox` is stdlib only, deliberately.
+Requires Python 3.9+ and git, plus `bubblewrap` on Linux. No third-party
+Python packages — deliberately.
 
 ```bash
 git clone https://github.com/<you>/oxbox
@@ -164,7 +187,7 @@ verified by direct experiment and **all four were real**:
 | Symlink-creating patches unvalidated | mode `120000` patches accepted | **fixed** — refused outright |
 | `oxseed` traversal unguarded | `../../../etc/hosts` copied outside the tree | **fixed** |
 | TOCTOU on shared `pending.patch` | `--check` and `--apply` re-read a predictable path | **fixed** — unique temp file per run |
-| Inherited descriptors bypass the jail | `oxbox -- cmd > ~/f` wrote through a handle opened before the jail | **fixed** — `fdguard.py` refuses unless opted in |
+| Inherited descriptors bypass the jail | `oxbox -- cmd > ~/f` wrote through a handle opened before the jail | **fixed** — `oxbox` refuses unless opted in |
 | `mach-lookup` / `ipc-posix-shm` unscoped | flagged UNCERTAIN; no escape demonstrated | **fixed** — both removed after verifying nothing needs them |
 
 All ten are now closed. The two it correctly labeled UNCERTAIN turned out to be
@@ -184,7 +207,7 @@ shape — a check that quietly stops checking:
 - Tightening metadata also broke `realpath()` on the venv, because resolving a
   path needs metadata on each ancestor directory. Fixed precisely with
   seatbelt's `path-ancestors` rather than by restoring a blanket grant.
-- `guardtest.sh` initially failed its own `oxbox` cases because it redirected
+- `guardtest` initially failed its own `oxbox` cases because it redirected
   output to a temp file outside the sandbox — tripping the very guard it was
   written to test.
 
@@ -196,8 +219,13 @@ shape — a check that quietly stops checking:
   a formality.
 - **The secret scanner is pattern-based**, so it catches recognizable key
   formats and misses bespoke ones. It reduces accidents; it is not a guarantee.
-- **macOS only.** `sandbox-exec` is deprecated-but-functional; there is no
-  Linux path yet.
+- **No jail on Windows.** `oxbox` refuses there; use WSL2. See Platforms above.
+- **`sandbox-exec` is deprecated-but-functional** on macOS. It still works and
+  Apple still ships it, but it is not a forever guarantee.
+- **The Linux backend needs unprivileged user namespaces.** Some hardened
+  distros disable them (`kernel.unprivileged_userns_clone=0`, or AppArmor's
+  `kernel.apparmor_restrict_unprivileged_userns`); bubblewrap will not work
+  there without a setuid install.
 - The model provider sees everything you send. The jail protects your machine,
   not your privacy.
 

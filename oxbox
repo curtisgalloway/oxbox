@@ -1,117 +1,272 @@
-#!/bin/bash
+#!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Curtis Galloway
 # SPDX-License-Identifier: Apache-2.0
-#
-# Run a command inside the seatbelt jail: no network, no writes outside the
-# sandbox work directory, no reads of the user's home outside it.
-#
-# Usage: ./oxbox [--work DIR] -- command args...
+"""Run a command inside a jail: no network, no writes outside the work dir.
 
-set -euo pipefail
+Backends:
+  macOS   sandbox-exec (seatbelt) with profiles/jail.sb
+  Linux   bubblewrap, everything read-only except the work dir
+  else    refuse
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK="$HERE/sandbox/work"
-PROFILE="$HERE/profiles/jail.sb"
-REAL_HOME="$HOME"
+Refusing is the point. A harness that appears to sandbox but doesn't is worse
+than none, because you would trust it. There is no "best effort" mode.
 
-ALLOW_EXTERNAL_OUTPUT=0
+Usage: ./oxbox [--work DIR] [--allow-external-output] -- command args...
+"""
 
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --work) WORK="$2"; shift 2 ;;
-    --allow-external-output) ALLOW_EXTERNAL_OUTPUT=1; shift ;;
-    --) shift; break ;;
-    *) printf 'oxbox: unexpected argument: %s\n' "$1" >&2; exit 64 ;;
-  esac
-done
+import os
+import shutil
+import stat
+import sys
 
-if [ $# -eq 0 ]; then
-  printf 'oxbox: no command given (use: ./oxbox -- pytest -q)\n' >&2
-  exit 64
-fi
+HERE = os.path.dirname(os.path.abspath(__file__))
+SANDBOX_ROOT = os.path.realpath(os.path.join(HERE, "sandbox"))
+DEFAULT_WORK = os.path.join(SANDBOX_ROOT, "work")
+PROFILE = os.path.join(HERE, "profiles", "jail.sb")
 
-if [ ! -d "$WORK" ]; then
-  printf 'oxbox: work dir does not exist: %s\n' "$WORK" >&2
-  exit 66
-fi
+F_GETPATH = 50  # macOS fcntl: resolve a descriptor back to its path
 
-WORK="$(cd "$WORK" && pwd -P)"
-SANDBOX_ROOT="$(cd "$HERE" && pwd -P)/sandbox"
+WINDOWS_HELP = """\
+oxbox: no supported sandbox on this platform.
 
-case "$WORK/" in
-  "$SANDBOX_ROOT"/*) ;;
-  *)
-    printf 'oxbox: REFUSING --work %s\n' "$WORK" >&2
-    printf 'oxbox: the profile grants write access to whatever --work names, so a\n' >&2
-    printf 'oxbox: work dir outside %s is not a jail at all.\n' "$SANDBOX_ROOT" >&2
-    exit 78
-    ;;
-esac
+Windows has no unprivileged sandbox reachable from a stdlib script that can
+restrict both the filesystem and the network. Job Objects cap CPU and memory
+but not file or network access; AppContainer needs Win32 API work plus fragile
+ACLs; Windows Sandbox needs Pro/Enterprise and boots a desktop VM per run.
 
-mkdir -p "$WORK/.oxtmp"
+Running model-generated code unsandboxed is exactly what this tool exists to
+prevent, so oxbox refuses rather than pretending.
 
-# Seatbelt gates open(), not writes to a descriptor the shell already opened.
-# `oxbox -- cmd > ~/notes.md` therefore hands jailed code a live handle to a
-# file outside the sandbox. Refuse rather than quietly make the headline
-# guarantee false; --allow-external-output opts out deliberately.
-FD_REPORT="$(mktemp -t oxbox-fdguard)"
-FD_STATUS=0
-python3 "$HERE/fdguard.py" "$SANDBOX_ROOT" "$FD_REPORT" || FD_STATUS=$?
+Use WSL2, where the Linux backend works unchanged:
 
-if [ "$FD_STATUS" -eq 3 ] && [ "$ALLOW_EXTERNAL_OUTPUT" -eq 0 ]; then
-  printf 'oxbox: REFUSING - output is redirected outside the sandbox:\n' >&2
-  while IFS= read -r line; do
-    [ -n "$line" ] && printf 'oxbox:   %s\n' "$line" >&2
-  done < "$FD_REPORT"
-  printf 'oxbox: the shell opened that file before the jail existed, so jailed\n' >&2
-  printf 'oxbox: code can write whatever it likes through the inherited handle.\n' >&2
-  printf 'oxbox: redirect inside %s, or pass --allow-external-output.\n' "$WORK" >&2
-  rm -f "$FD_REPORT"
-  exit 78
-fi
+    wsl --install -d Ubuntu
+    wsl
+    sudo apt install bubblewrap
+    ./oxbox -- python3 jailtest.py
 
-if [ "$FD_STATUS" -eq 3 ]; then
-  printf 'oxbox: WARNING - output redirected outside the sandbox (allowed):\n' >&2
-  while IFS= read -r line; do
-    [ -n "$line" ] && printf 'oxbox:   %s\n' "$line" >&2
-  done < "$FD_REPORT"
-fi
+The rest of the toolkit runs natively on Windows: ox (talk to the model),
+oxseed (build a sandbox copy), and oxapply (quarantined patch application).
+Only executing the model's output needs the jail.
+"""
 
-rm -f "$FD_REPORT"
 
-# Existence of sensitive paths must be decided OUT here. Inside the jail even
-# stat() is denied, so a probe that tests existence itself would report "absent"
-# for a path that is merely well hidden -- a test that silently stops testing.
-EXISTING_PATHS=""
-for candidate in \
-  "$REAL_HOME/.ssh" \
-  "$REAL_HOME/.aws" \
-  "$REAL_HOME/.claude" \
-  "$REAL_HOME/.zsh_history" \
-  "$REAL_HOME/Library/Keychains" \
-  "$HERE/.env"
-do
-  if [ -e "$candidate" ]; then
-    EXISTING_PATHS="${EXISTING_PATHS}${candidate}
-"
-  fi
-done
+def sensitive_paths(real_home):
+    """Paths jailtest should try to read, per platform. Existence is decided
+    HERE, outside the jail: inside, stat() is denied, so every hidden path
+    looks absent and a probe that checks for itself would skip rather than
+    test."""
+    names = [".ssh", ".aws", ".gnupg", ".config/gh", ".netrc", ".git-credentials"]
+    if sys.platform == "darwin":
+        names += [".zsh_history", ".claude", "Library/Keychains"]
+    else:
+        names += [".bash_history", ".claude", ".kube/config", ".docker/config.json"]
+    paths = [os.path.join(real_home, name) for name in names]
+    paths.append(os.path.join(HERE, ".env"))
+    if sys.platform != "darwin":
+        paths.append("/etc/shadow")
+    return paths
 
-printf 'oxbox: jail=%s work=%s\n' "$PROFILE" "$WORK" >&2
-printf 'oxbox: network=DENIED writes=%s only\n' "$WORK" >&2
-printf 'oxbox: env=CLEARED (nothing from the parent shell crosses in)\n' >&2
 
-cd "$WORK"
+def descriptor_target(fd):
+    """Absolute path a descriptor points at, or None if it is not a regular file.
 
-exec sandbox-exec -f "$PROFILE" -D "WORK=$WORK" \
-  /usr/bin/env -i \
-    HOME="$WORK" \
-    REAL_HOME="$REAL_HOME" \
-    REPO_ROOT="$HERE" \
-    OXBOX_EXISTING_PATHS="$EXISTING_PATHS" \
-    TMPDIR="$WORK/.oxtmp" \
-    PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
-    TERM="${TERM:-dumb}" \
-    LANG="${LANG:-en_US.UTF-8}" \
-    PYTHONDONTWRITEBYTECODE=1 \
-    "$@"
+    Pipes, ttys and /dev/null cannot be steered to a location of anyone's
+    choosing, so they are not escapes.
+    """
+    try:
+        info = os.fstat(fd)
+    except OSError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        return None
+
+    if sys.platform == "darwin":
+        try:
+            import fcntl
+            raw = fcntl.fcntl(fd, F_GETPATH, b"\0" * 1024)
+        except (OSError, ImportError):
+            return None
+        path = raw.split(b"\0")[0].decode("utf-8", "replace")
+    else:
+        try:
+            path = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            return None
+    return os.path.realpath(path) if path else None
+
+
+def escaping_descriptors():
+    """stdout/stderr that point at regular files outside the sandbox.
+
+    Neither backend can help here: the shell opened those files before the jail
+    existed, so the descriptor is already live. `oxbox -- cmd > ~/notes.md`
+    would let jailed code write whatever it likes there.
+    """
+    found = []
+    for fd, name in ((1, "stdout"), (2, "stderr")):
+        target = descriptor_target(fd)
+        if target is None:
+            continue
+        if target != SANDBOX_ROOT and not target.startswith(SANDBOX_ROOT + os.sep):
+            found.append(f"{name} -> {target}")
+    return found
+
+
+def macos_argv(work, command):
+    if not os.path.exists("/usr/bin/sandbox-exec"):
+        sys.exit("oxbox: /usr/bin/sandbox-exec not found; cannot jail on this macOS")
+    if not os.path.isfile(PROFILE):
+        sys.exit(f"oxbox: missing seatbelt profile: {PROFILE}")
+    return ["/usr/bin/sandbox-exec", "-f", PROFILE, "-D", f"WORK={work}", *command]
+
+
+def linux_argv(work, command):
+    bwrap = shutil.which("bwrap")
+    if not bwrap:
+        sys.exit(
+            "oxbox: bubblewrap (bwrap) not found.\n"
+            "oxbox: it is the sandbox on Linux; without it there is no jail.\n"
+            "oxbox:   Debian/Ubuntu  sudo apt install bubblewrap\n"
+            "oxbox:   Fedora/RHEL    sudo dnf install bubblewrap\n"
+            "oxbox:   Arch           sudo pacman -S bubblewrap\n"
+            "oxbox:   Alpine         sudo apk add bubblewrap"
+        )
+
+    argv = [
+        bwrap,
+        # Namespaces: --unshare-all includes the network, which is the guarantee
+        # that matters most. Nothing is bound in unless named below, so the
+        # user's home simply does not exist inside.
+        "--unshare-all",
+        "--die-with-parent",
+        # Blocks TIOCSTI-style injection back into the controlling terminal.
+        "--new-session",
+        "--proc", "/proc",
+        "--dev", "/dev",
+        "--tmpfs", "/tmp",
+    ]
+
+    # /bin, /lib, /sbin are symlinks into /usr on merged-usr distributions;
+    # binding a symlink's path would fail, so reproduce the link instead.
+    for path in ("/usr", "/bin", "/lib", "/lib32", "/lib64", "/sbin",
+                 "/etc", "/opt", "/usr/local"):
+        if not os.path.lexists(path):
+            continue
+        if os.path.islink(path):
+            argv += ["--symlink", os.readlink(path), path]
+        else:
+            argv += ["--ro-bind", path, path]
+
+    argv += [
+        "--bind", work, work,
+        "--chdir", work,
+        "--clearenv",
+    ]
+    return argv + command
+
+
+def main():
+    args = sys.argv[1:]
+    work = DEFAULT_WORK
+    allow_external = False
+
+    while args:
+        if args[0] == "--work":
+            if len(args) < 2:
+                sys.exit("oxbox: --work needs a directory")
+            work, args = args[1], args[2:]
+        elif args[0] == "--allow-external-output":
+            allow_external, args = True, args[1:]
+        elif args[0] == "--":
+            args = args[1:]
+            break
+        else:
+            sys.exit(f"oxbox: unexpected argument: {args[0]}")
+
+    command = args
+    if not command:
+        sys.exit("oxbox: no command given (use: ./oxbox -- pytest -q)")
+
+    if sys.platform == "win32":
+        sys.stderr.write(WINDOWS_HELP)
+        return 78
+    if sys.platform not in ("darwin", "linux"):
+        sys.exit(f"oxbox: no sandbox backend for platform {sys.platform!r}; refusing")
+
+    if not os.path.isdir(work):
+        sys.exit(f"oxbox: work dir does not exist: {work}")
+    work = os.path.realpath(work)
+
+    # The backend grants write access to whatever --work names, so a work dir
+    # outside the sandbox is not a jail at all.
+    if work != SANDBOX_ROOT and not work.startswith(SANDBOX_ROOT + os.sep):
+        sys.stderr.write(
+            f"oxbox: REFUSING --work {work}\n"
+            f"oxbox: the backend grants write access to whatever --work names, so a\n"
+            f"oxbox: work dir outside {SANDBOX_ROOT} is not a jail at all.\n"
+        )
+        return 78
+
+    escaping = escaping_descriptors()
+    if escaping and not allow_external:
+        sys.stderr.write("oxbox: REFUSING - output is redirected outside the sandbox:\n")
+        for item in escaping:
+            sys.stderr.write(f"oxbox:   {item}\n")
+        sys.stderr.write(
+            "oxbox: the shell opened that file before the jail existed, so jailed\n"
+            "oxbox: code can write whatever it likes through the inherited handle.\n"
+            f"oxbox: redirect inside {work}, or pass --allow-external-output.\n"
+        )
+        return 78
+    if escaping:
+        sys.stderr.write("oxbox: WARNING - output redirected outside the sandbox (allowed):\n")
+        for item in escaping:
+            sys.stderr.write(f"oxbox:   {item}\n")
+
+    real_home = os.path.expanduser("~")
+    tmpdir = os.path.join(work, ".oxtmp")
+    os.makedirs(tmpdir, exist_ok=True)
+
+    existing = [p for p in sensitive_paths(real_home) if os.path.lexists(p)]
+
+    # A fresh environment, not the caller's. The parent shell routinely holds
+    # OPENROUTER_API_KEY (via `op run`), and inheriting it would hand jailed
+    # code the key.
+    env = {
+        "HOME": work,
+        "REAL_HOME": real_home,
+        "REPO_ROOT": HERE,
+        "OXBOX_EXISTING_PATHS": "\n".join(existing),
+        "OXBOX_PLATFORM": sys.platform,
+        "TMPDIR": tmpdir,
+        "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "TERM": os.environ.get("TERM", "dumb"),
+        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+    if sys.platform == "darwin":
+        argv = macos_argv(work, command)
+    else:
+        argv = linux_argv(work, command)
+        # bwrap --clearenv wipes what execve passes, so set it inside instead.
+        setenv = []
+        for key, value in env.items():
+            setenv += ["--setenv", key, value]
+        index = argv.index("--clearenv") + 1
+        argv = argv[:index] + setenv + argv[index:]
+
+    backend = "seatbelt" if sys.platform == "darwin" else "bubblewrap"
+    sys.stderr.write(f"oxbox: backend={backend} work={work}\n")
+    sys.stderr.write(f"oxbox: network=DENIED writes={work} only\n")
+    sys.stderr.write("oxbox: env=CLEARED (nothing from the parent shell crosses in)\n")
+
+    os.chdir(work)
+    try:
+        os.execvpe(argv[0], argv, env)
+    except OSError as error:
+        sys.exit(f"oxbox: failed to start {argv[0]}: {error}")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

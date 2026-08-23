@@ -1,14 +1,17 @@
 # SPDX-FileCopyrightText: 2026 Curtis Galloway
 # SPDX-License-Identifier: Apache-2.0
-"""Self-test for the seatbelt jail. Run it INSIDE the jail:
+"""Self-test for the jail. Run it INSIDE the jail:
 
     ./oxbox -- python3 jailtest.py
 
 Every probe asserts a containment property. Anything reported FAIL means the
-jail leaks, and model-generated code must not be run in it.
+jail leaks and model-generated code must not be run in it.
 
-`oxbox` passes REAL_HOME and REPO_ROOT so the probes can aim at paths that
-actually exist on this machine rather than hardcoded ones.
+The list of sensitive paths comes from OXBOX_EXISTING_PATHS, which oxbox
+computes before the jail starts. That indirection is load-bearing: inside the
+jail stat() is denied, so a probe that checked whether a path exists would see
+"absent" for every hidden path and skip instead of testing -- passing by not
+looking. That happened once already.
 """
 
 import os
@@ -18,54 +21,43 @@ import sys
 WORK = os.environ.get("HOME", "")
 REAL_HOME = os.environ.get("REAL_HOME", "")
 REPO_ROOT = os.environ.get("REPO_ROOT", "")
+PLATFORM = os.environ.get("OXBOX_PLATFORM", sys.platform)
+EXISTING = [line for line in os.environ.get("OXBOX_EXISTING_PATHS", "").splitlines() if line]
 
 results = []
 skipped = []
 
 
+def label_for(path):
+    if REAL_HOME and path.startswith(REAL_HOME + os.sep):
+        return "~/" + os.path.relpath(path, REAL_HOME)
+    return path
+
+
 def probe(name, fn, expect_blocked=True):
     try:
         fn()
-        blocked = False
-        detail = "succeeded"
+        blocked, detail = False, "succeeded"
     except Exception as error:  # noqa: BLE001 - any denial counts as containment
-        blocked = True
-        detail = type(error).__name__
-
+        blocked, detail = True, type(error).__name__
     results.append((blocked if expect_blocked else not blocked, name, detail))
 
 
-EXISTING = {line for line in os.environ.get("OXBOX_EXISTING_PATHS", "").splitlines() if line}
+def read_probe(path):
+    def action():
+        if os.path.isdir(path):
+            os.listdir(path)
+        else:
+            with open(path, "rb") as handle:
+                handle.read(1)
+    return action
 
 
-def probe_path(name, path, mode="read"):
-    """Probe a path only if it exists outside the jail; otherwise skip honestly.
-
-    Existence comes from OXBOX_EXISTING_PATHS, computed by oxbox before the jail
-    starts. Checking it in here would be worse than useless: stat() is denied,
-    so every hidden path would look absent and the probe would skip instead of
-    testing -- passing by not looking.
-    """
-    if not path:
-        skipped.append(f"{name} (path not supplied)")
-        return
-    if mode == "read" and path not in EXISTING:
-        skipped.append(f"{name} (does not exist on this host)")
-        return
-
-    if mode == "read":
-        def action():
-            if os.path.isdir(path):
-                os.listdir(path)
-            else:
-                with open(path, "rb") as handle:
-                    handle.read(1)
-    else:
-        def action():
-            with open(path, "w") as handle:
-                handle.write("jail breach")
-
-    probe(name, action)
+def write_probe(path):
+    def action():
+        with open(path, "w") as handle:
+            handle.write("jail breach")
+    return action
 
 
 def tcp_connect():
@@ -86,6 +78,20 @@ def udp_send():
     sock.close()
 
 
+def stat_outside():
+    os.stat(EXISTING[0])
+
+
+def env_canary():
+    """The launching shell frequently holds OPENROUTER_API_KEY (via `op run`).
+    Anything visible here means the parent environment crossed the boundary."""
+    leaked = [name for name in
+              ("OXBOX_CANARY", "OPENROUTER_API_KEY", "OP_SERVICE_ACCOUNT_TOKEN")
+              if os.environ.get(name)]
+    if leaked:
+        raise AssertionError("inherited: " + ", ".join(leaked))
+
+
 def write_inside():
     with open(os.path.join(WORK, "jailtest-ok.txt"), "w") as handle:
         handle.write("expected")
@@ -100,42 +106,27 @@ probe("network: outbound TCP to 1.1.1.1:443", tcp_connect)
 probe("network: DNS resolution", dns_lookup)
 probe("network: outbound UDP", udp_send)
 
-probe_path("fs read: ~/.ssh", os.path.join(REAL_HOME, ".ssh") if REAL_HOME else "")
-probe_path("fs read: ~/.aws", os.path.join(REAL_HOME, ".aws") if REAL_HOME else "")
-probe_path("fs read: ~/.claude", os.path.join(REAL_HOME, ".claude") if REAL_HOME else "")
-probe_path("fs read: ~/.zsh_history",
-           os.path.join(REAL_HOME, ".zsh_history") if REAL_HOME else "")
-probe_path("fs read: ~/Library/Keychains",
-           os.path.join(REAL_HOME, "Library", "Keychains") if REAL_HOME else "")
-probe_path("fs read: repo .env", os.path.join(REPO_ROOT, ".env") if REPO_ROOT else "")
-
-probe_path("fs write: repo root (escape)",
-           os.path.join(REPO_ROOT, "ESCAPED.txt") if REPO_ROOT else "", mode="write")
-probe_path("fs write: home dir (escape)",
-           os.path.join(REAL_HOME, "ESCAPED.txt") if REAL_HOME else "", mode="write")
-
-def stat_outside():
-    os.stat(os.path.join(REAL_HOME, ".ssh"))
-
-
-def env_canary():
-    """The launching shell frequently holds OPENROUTER_API_KEY (via `op run`).
-    If a canary set outside the jail is visible here, the parent environment
-    crossed the boundary and any secret in it is readable by jailed code."""
-    leaked = [name for name in
-              ("OXBOX_CANARY", "OPENROUTER_API_KEY", "OP_SERVICE_ACCOUNT_TOKEN")
-              if os.environ.get(name)]
-    if leaked:
-        raise AssertionError("inherited: " + ", ".join(leaked))
-
-
-if REAL_HOME and os.path.join(REAL_HOME, ".ssh") in EXISTING:
-    probe("fs metadata: stat ~/.ssh (oracle)", stat_outside)
+if EXISTING:
+    for path in EXISTING:
+        probe(f"fs read: {label_for(path)}", read_probe(path))
+    probe(f"fs metadata: stat {label_for(EXISTING[0])} (oracle)", stat_outside)
 else:
-    skipped.append("fs metadata: stat ~/.ssh (does not exist on this host)")
+    skipped.append("fs reads (oxbox reported no sensitive paths present)")
+
+# Escape-WRITE verification deliberately does not live here; see guardtest.py.
+#
+# From inside the jail the two backends disagree in a way that makes the result
+# meaningless. seatbelt denies the open() outright, so a write to ~/ESCAPED.txt
+# raises. bubblewrap instead materialises the work dir's parent directories as
+# ephemeral tmpfs, so the same write SUCCEEDS -- into a throwaway layer the host
+# never sees. Judged from in here, identical containment looks like a pass on
+# macOS and a failure on Linux.
+#
+# The property that actually matters is "the host filesystem outside the work
+# dir is unchanged", and only something running outside the jail can check that.
+# guardtest.py does exactly that, and is decisive on both platforms.
 
 probe("env: parent environment not inherited", env_canary, expect_blocked=False)
-
 probe("fs write: inside work dir", write_inside, expect_blocked=False)
 probe("fs read: inside work dir", read_inside, expect_blocked=False)
 
@@ -151,6 +142,7 @@ for note in skipped:
     print(f"[SKIP] {note}")
 
 print()
+print(f"platform: {PLATFORM}")
 if failed:
     print(f"JAIL LEAKS: {failed} of {len(results)} probes failed")
     sys.exit(1)

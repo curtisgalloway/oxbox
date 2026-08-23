@@ -29,10 +29,10 @@ benign.
    refuses to send anything matching common credential patterns.
 3. **Patch quarantine.** `oxapply` applies diffs **only** into `sandbox/work`,
    and refuses absolute paths or `..` traversal outright.
-4. **Execution jail.** `oxbox` runs code under a seatbelt profile with **no
-   network at all** and **no writes outside the sandbox**. Verified by
-   `jailtest.py` — 14 probes covering TCP, UDP, DNS, `~/.ssh`, `~/.claude`,
-   shell history, `.env`, Keychains, and escape writes.
+4. **Execution jail.** `oxbox` runs code with **no network at all** and **no
+   writes outside the sandbox** — seatbelt on macOS, bubblewrap on Linux, and a
+   hard refusal everywhere else. Verified by `jailtest.py` from inside and
+   `guardtest.py` from outside.
 5. **Audit trail.** Every call writes `logs/<timestamp>/` containing the exact
    request, the raw response, the extracted content, and metadata. The API key
    is never logged (it lives in a header, not the payload).
@@ -73,9 +73,9 @@ executed inside it.
   keep it that way.
 - Never run model-produced code outside `oxbox`.
 - Re-run BOTH suites after any change to `profiles/jail.sb`, `oxbox`, or the
-  validators: `./oxbox -- python3 jailtest.py` (14 in-jail probes) and
-  `./guardtest.sh` (14 pre-jail refusals). A jail you have not tested since
-  editing is decoration.
+  validators: `./oxbox -- python3 jailtest.py` (in-jail probes) and
+  `python3 guardtest.py` (pre-jail refusals plus positive controls). A jail you
+  have not tested since editing is decoration.
 - Do not restore `(allow mach-lookup)` or `(allow ipc-posix-shm)`. Both were
   removed after verifying `python3` and a venv `pytest` run work without them.
   If some toolchain genuinely needs one, scope it to named services rather than
@@ -84,8 +84,8 @@ executed inside it.
   lets `realpath()` resolve the work dir without granting `stat()` across the
   filesystem — do not swap it for a broad `(subpath "/Users")`.
 - Tests must not redirect an `oxbox` invocation to a regular file outside the
-  sandbox; `fdguard.py` refuses it and the case fails for the wrong reason.
-  Use `/dev/null` or a pipe. This bit `guardtest.sh` on its first run.
+  sandbox; the descriptor guard refuses it and the case fails for the wrong
+  reason. Use `os.devnull` or a pipe. This bit `guardtest` on its first run.
 - Never decide inside the jail whether a sensitive path exists — `stat()` is
   denied, so the check reports "absent" for everything and the probe skips
   instead of testing. Existence is computed by `oxbox` and passed in via
@@ -94,3 +94,33 @@ executed inside it.
   Anything new that reaches the payload must be scanned too — the scan lives in
   `build_context`, so route new content through it rather than around it.
 - Do not send anything to this model you would not hand to an unnamed lab.
+
+## Cross-platform rules
+
+- **Never add a "best effort" mode.** `oxbox` supports seatbelt and bubblewrap
+  and refuses everywhere else, deliberately. A harness that appears to sandbox
+  but doesn't is worse than none, because it will be trusted.
+- **Python 3.9 is the floor.** The system `python3` on macOS is still 3.9, so
+  no 3.10+ APIs: no `Path.write_text(newline=...)`, and `shutil.rmtree(onexc=)`
+  stays behind its version check.
+- **Write patches and audit artifacts with explicit newlines.** Python's text
+  mode translates `\n` to `\r\n` on Windows. `oxapply` writes its temp patch
+  with `newline=""` and `ox` uses `write_lf`. Without that, git compares a CRLF
+  patch to an LF tree and rejects every patch with an error that reads like a
+  malformed diff. Cost real time to find; only reproduces on Windows.
+- **Path checks must be textual, not `Path.is_absolute()`.** On Windows
+  `/etc/passwd` has a root but no drive, so `is_absolute()` returns False and a
+  rooted path sails through. Check for `~`, `/`, `\`, and a drive letter, and
+  split traversal on both separators.
+- **Escape-write verification belongs in `guardtest.py`, not `jailtest.py`.**
+  The backends disagree from inside: seatbelt denies the `open()`, while
+  bubblewrap materialises the work dir's parents as ephemeral tmpfs so the
+  write *succeeds* into a layer the host never sees. Identical containment,
+  opposite results. Only a check running outside can ask the question that
+  matters — did the host change?
+- **Every escape test needs proof it ran.** Assert a marker written inside the
+  jail, or the whole section passes vacuously when `oxbox` fails to start.
+- **Refusal tests need positive controls beside them.** A validator that
+  rejects everything passes every refusal test. `guardtest.py` applies a known
+  good patch for exactly this reason — the CRLF bug above was invisible until
+  that control existed.

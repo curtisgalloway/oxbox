@@ -63,9 +63,12 @@ def unsafe_paths(patch):
     for raw in candidate_paths(patch):
         if raw == "/dev/null":
             continue
-        if raw.startswith("/") or raw.startswith("~"):
+        # Textual checks, not Path.is_absolute(): on Windows "/etc/passwd" has a
+        # root but no drive and reports False, and a crafted patch could name a
+        # drive letter or UNC path outright.
+        if raw.startswith(("~", "/", "\\")) or (len(raw) > 1 and raw[1] == ":"):
             bad.append(f"absolute path: {raw}")
-        elif ".." in Path(raw).parts:
+        elif ".." in Path(raw).parts or ".." in raw.replace("\\", "/").split("/"):
             bad.append(f"parent traversal: {raw}")
     for match in SYMLINK_MODE.finditer(patch):
         bad.append(f"symlink mode: {match.group(0).strip()}")
@@ -110,7 +113,12 @@ def main():
     # that was never the one validated.
     handle, temp_name = tempfile.mkstemp(prefix="pending-", suffix=".patch",
                                          dir=str(work.parent))
-    with os.fdopen(handle, "w", encoding="utf-8") as stream:
+    # newline="" is load-bearing on Windows. Python's text mode translates \n
+    # to \r\n there, so the patch would be written with CRLF endings and then
+    # compared against an LF working tree -- git rejects it with a "does not
+    # apply" that looks like a malformed diff and is not. Same patch, same
+    # bytes, applies by hand.
+    with os.fdopen(handle, "w", encoding="utf-8", newline="") as stream:
         stream.write(patch)
     patch_path = Path(temp_name)
 

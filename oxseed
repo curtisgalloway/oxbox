@@ -1,83 +1,142 @@
-#!/bin/bash
+#!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Curtis Galloway
 # SPDX-License-Identifier: Apache-2.0
-#
-# Copy files from a real repo into a disposable sandbox tree and make it a git
-# repo, so Ox's patches can be applied and diffed without touching the original.
-#
-# Usage: ./oxseed /path/to/repo file1 file2 ...
-#        ./oxseed --clean
+"""Copy files from a real repo into a disposable sandbox tree.
 
-set -euo pipefail
+Makes the copy a git repo so patches can be applied and diffed without ever
+touching the original.
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK="$HERE/sandbox/work"
+Usage: ./oxseed /path/to/repo file1 [file2 ...]
+       ./oxseed --clean
+"""
 
-if [ "${1:-}" = "--clean" ]; then
-  rm -rf "$HERE/sandbox"
-  printf 'oxseed: sandbox removed\n' >&2
-  exit 0
-fi
+import os
+import shutil
+import stat
+import subprocess
+import sys
+from pathlib import Path
 
-if [ $# -lt 2 ]; then
-  printf 'oxseed: usage: ./oxseed /path/to/repo file1 [file2 ...]\n' >&2
-  exit 64
-fi
+HERE = Path(__file__).resolve().parent
+SANDBOX = HERE / "sandbox"
+WORK = SANDBOX / "work"
 
-SRC="$(cd "$1" && pwd -P)"
-shift
 
-# Validate every argument BEFORE destroying anything. Refusing partway through
-# would still have wiped the existing sandbox on the way to saying no.
-for rel in "$@"; do
-  # The same traversal class oxapply refuses in patches applies to seed
-  # arguments, which otherwise cp -R straight past the sandbox boundary.
-  case "$rel" in
-    /*|~*)
-      printf 'oxseed: REFUSING absolute path: %s\n' "$rel" >&2
-      exit 78
-      ;;
-  esac
-  case "/$rel/" in
-    */../*)
-      printf 'oxseed: REFUSING parent traversal: %s\n' "$rel" >&2
-      exit 78
-      ;;
-  esac
+def refuse(message):
+    sys.stderr.write(f"oxseed: {message}\n")
+    sys.exit(78)
 
-  if [ ! -e "$SRC/$rel" ]; then
-    printf 'oxseed: missing in source: %s\n' "$rel" >&2
-    exit 66
-  fi
 
-  # A copied symlink aimed at ~/.ssh or /etc puts a live handle to the outside
-  # inside the work tree, for anything that touches it outside the jail.
-  if [ -L "$SRC/$rel" ]; then
-    printf 'oxseed: REFUSING symlink: %s -> %s\n' "$rel" "$(readlink "$SRC/$rel")" >&2
-    exit 78
-  fi
-done
+def rmtree_force(path):
+    """shutil.rmtree, but able to remove git's read-only object files.
 
-rm -rf "$WORK"
-mkdir -p "$WORK"
+    Git marks objects in .git/objects read-only. On Windows that makes
+    os.unlink fail with WinError 5 (Access is denied), so re-seeding an
+    existing sandbox blows up half-deleted. POSIX does not care -- permission
+    to unlink comes from the directory there -- which is why this only ever
+    shows up on Windows.
+    """
+    def handler(func, target, _exc):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+        except OSError:
+            pass
+        func(target)
 
-for rel in "$@"; do
-  mkdir -p "$WORK/$(dirname "$rel")"
-  cp -R "$SRC/$rel" "$WORK/$rel"
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=handler)
+    else:
+        shutil.rmtree(path, onerror=lambda f, p, _e: handler(f, p, None))
 
-  if [ -n "$(find "$WORK/$rel" -type l -print -quit)" ]; then
-    printf 'oxseed: REFUSING %s: directory contains symlinks\n' "$rel" >&2
-    rm -rf "$WORK/$rel"
-    exit 78
-  fi
 
-  printf 'oxseed: seeded %s\n' "$rel" >&2
-done
+def validate(source, rel):
+    """Reject anything that would land outside the sandbox.
 
-git -C "$WORK" init -q
-git -C "$WORK" add -A
-git -C "$WORK" -c user.email=seed@sandbox.invalid -c user.name=oxseed \
-  commit -q -m "pristine seed from $SRC"
+    The traversal class oxapply refuses in patches applies just as much to seed
+    arguments, which would otherwise copy straight past the boundary.
+    """
+    path = Path(rel)
+    # Path.is_absolute() is not enough on Windows: "/etc/hosts" has a root but
+    # no drive, so it reports False there and would slip through to be treated
+    # as a relative name. Check the textual forms too -- POSIX root, Windows
+    # root, UNC, drive letter, and home expansion.
+    rooted = (
+        path.is_absolute()
+        or rel.startswith(("~", "/", "\\"))
+        or (len(rel) > 1 and rel[1] == ":")
+    )
+    if rooted:
+        refuse(f"REFUSING absolute path: {rel}")
+    if ".." in path.parts or ".." in rel.replace("\\", "/").split("/"):
+        refuse(f"REFUSING parent traversal: {rel}")
 
-printf 'oxseed: work=%s (pristine commit recorded)\n' "$WORK" >&2
-printf 'oxseed: source untouched: %s\n' "$SRC" >&2
+    full = source / rel
+    if not full.exists() and not full.is_symlink():
+        sys.stderr.write(f"oxseed: missing in source: {rel}\n")
+        sys.exit(66)
+
+    # A copied symlink aimed at ~/.ssh or /etc would put a live handle to the
+    # outside inside the work tree, for anything that touches it outside the jail.
+    if full.is_symlink():
+        refuse(f"REFUSING symlink: {rel} -> {os.readlink(full)}")
+    if full.is_dir():
+        for root, _dirs, files in os.walk(full):
+            for name in files:
+                if Path(root, name).is_symlink():
+                    refuse(f"REFUSING {rel}: contains symlink {name}")
+
+
+def git(*args):
+    subprocess.run(["git", "-C", str(WORK), *args], check=True)
+
+
+def main():
+    args = sys.argv[1:]
+
+    if args and args[0] == "--clean":
+        if SANDBOX.exists():
+            rmtree_force(SANDBOX)
+        sys.stderr.write("oxseed: sandbox removed\n")
+        return 0
+
+    if len(args) < 2:
+        sys.stderr.write("oxseed: usage: ./oxseed /path/to/repo file1 [file2 ...]\n")
+        return 64
+
+    source = Path(args[0]).resolve()
+    if not source.is_dir():
+        sys.stderr.write(f"oxseed: not a directory: {args[0]}\n")
+        return 66
+    relatives = args[1:]
+
+    # Validate everything BEFORE destroying anything: refusing partway through
+    # would still have wiped the existing sandbox on the way to saying no.
+    for rel in relatives:
+        validate(source, rel)
+
+    if WORK.exists():
+        rmtree_force(WORK)
+    WORK.mkdir(parents=True)
+
+    for rel in relatives:
+        destination = WORK / rel
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        origin = source / rel
+        if origin.is_dir():
+            shutil.copytree(origin, destination, symlinks=False)
+        else:
+            shutil.copy2(origin, destination)
+        sys.stderr.write(f"oxseed: seeded {rel}\n")
+
+    git("init", "-q")
+    git("add", "-A")
+    git("-c", "user.email=seed@sandbox.invalid", "-c", "user.name=oxseed",
+        "commit", "-q", "-m", f"pristine seed from {source}")
+
+    sys.stderr.write(f"oxseed: work={WORK} (pristine commit recorded)\n")
+    sys.stderr.write(f"oxseed: source untouched: {source}\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

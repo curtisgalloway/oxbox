@@ -69,6 +69,18 @@ SYSTEM_PROMPTS = {
 }
 
 
+def write_lf(path, text):
+    """Write text with LF endings on every platform.
+
+    Audit artifacts should be byte-identical regardless of host; Python's text
+    mode would translate to CRLF on Windows. Uses open() rather than
+    Path.write_text(newline=...), which only exists on Python 3.10+ -- the
+    system python3 on macOS is still 3.9.
+    """
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+
+
 def scan_for_secrets(text, label):
     hits = []
     for pattern, description in SECRET_PATTERNS:
@@ -168,8 +180,8 @@ def main():
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
     log_dir = Path(args.log_dir) / stamp
     log_dir.mkdir(parents=True, exist_ok=True)
-    (log_dir / "request.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    (log_dir / "meta.json").write_text(json.dumps({
+    write_lf(log_dir / "request.json", json.dumps(payload, indent=2))
+    write_lf(log_dir / "meta.json", json.dumps({
         "timestamp": stamp,
         "model": args.model,
         "mode": args.mode,
@@ -178,7 +190,7 @@ def main():
         "context_bytes": total_bytes,
         "secret_scan_hits": findings,
         "forced": args.force,
-    }, indent=2), encoding="utf-8")
+    }, indent=2))
 
     sys.stderr.write(f"ox: log -> {log_dir}\n")
     sys.stderr.write(f"ox: model={args.model} mode={args.mode} effort={args.effort} "
@@ -205,12 +217,12 @@ def main():
             body = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", "replace")
-        (log_dir / "error.txt").write_text(f"{error.code}\n{detail}", encoding="utf-8")
+        write_lf(log_dir / "error.txt", f"{error.code}\n{detail}")
         sys.exit(f"ox: HTTP {error.code}: {detail[:500]}")
     except urllib.error.URLError as error:
         sys.exit(f"ox: network error: {error.reason}")
 
-    (log_dir / "response.json").write_text(json.dumps(body, indent=2), encoding="utf-8")
+    write_lf(log_dir / "response.json", json.dumps(body, indent=2))
 
     if "error" in body and body["error"]:
         sys.exit(f"ox: api error: {json.dumps(body['error'])[:500]}")
@@ -221,8 +233,8 @@ def main():
     content = message.get("content") or ""
 
     if reasoning:
-        (log_dir / "reasoning.txt").write_text(reasoning, encoding="utf-8")
-    (log_dir / "content.md").write_text(content, encoding="utf-8")
+        write_lf(log_dir / "reasoning.txt", reasoning)
+    write_lf(log_dir / "content.md", content)
 
     tool_calls = message.get("tool_calls")
     if tool_calls:

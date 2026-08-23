@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: 2026 Curtis Galloway
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# sketchy-ai-sandbox
+# oxbox
 
 A supervised harness for running an **untrusted** model against real code.
 
@@ -78,6 +78,7 @@ executed inside it.
   denied, so the check reports "absent" for everything and the probe skips
   instead of testing. Existence is computed by `oxbox` and passed in via
   `OXBOX_EXISTING_PATHS`. This bit once already.
-- **Known open gap:** `--files` bodies are secret-scanned; the task string and
-  `--stdin` are not. Do not pipe credential-bearing text into `--stdin`.
+- The secret scanner covers `--files` bodies, the task argument, and `--stdin`.
+  Anything new that reaches the payload must be scanned too — the scan lives in
+  `build_context`, so route new content through it rather than around it.
 - Do not send anything to this model you would not hand to an unnamed lab.

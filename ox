@@ -78,9 +78,12 @@ def scan_for_secrets(text, label):
     return hits
 
 
-def build_context(paths, force):
+def build_context(paths, force, task=""):
     blocks = []
-    findings = []
+    # The task string goes to the provider exactly like file bodies do, so it
+    # gets scanned exactly like file bodies do. Scanning only --files left
+    # `cat creds.txt | ox --stdin "explain this"` sending them unchecked.
+    findings = scan_for_secrets(task, "<task text>") if task else []
     total = 0
     for raw in paths:
         path = Path(raw)
@@ -146,7 +149,7 @@ def main():
         sys.exit("ox: OPENROUTER_API_KEY not set (run under: op run --env-file .env -- ./ox ...)")
 
     paths = [p.strip() for p in args.files.split(",") if p.strip()]
-    context, total_bytes, findings = build_context(paths, args.force)
+    context, total_bytes, findings = build_context(paths, args.force, task)
 
     user_content = f"{task.strip()}\n\n{context}" if context else task.strip()
 
@@ -192,7 +195,7 @@ def main():
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "X-Title": "sketchy-ai supervised bridge",
+            "X-Title": "oxbox supervised bridge",
         },
         method="POST",
     )

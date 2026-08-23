@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: 2026 Curtis Galloway
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# sketchy-ai-sandbox
+# oxbox
 
 A small harness for pointing an **untrusted** LLM at your code without giving it
 your machine.
@@ -58,8 +58,8 @@ Requires macOS (the jail uses `sandbox-exec`), Python 3, and git. No
 third-party Python packages — `ox` is stdlib only, deliberately.
 
 ```bash
-git clone https://github.com/<you>/sketchy-ai-sandbox
-cd sketchy-ai-sandbox
+git clone https://github.com/<you>/oxbox
+cd oxbox
 export OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
@@ -142,7 +142,7 @@ verified by direct experiment and **all four were real**:
 | Parent environment inherited into the jail | `OPENROUTER_API_KEY` and every other exported var readable by jailed code | **fixed** — `env -i` with an explicit allowlist |
 | `--work` accepts any directory | `--work <repo>` wrote `PWNED.txt` to the repo root | **fixed** — refuses anything outside `sandbox/` |
 | Global `file-read-metadata` | `stat()` on `~/.ssh` returned size and mtime | **fixed** — scoped to readable paths |
-| Task text skips the secret scanner | a key in the prompt string was sent unscanned | **open** — see below |
+| Task text skips the secret scanner | a key in the prompt string was sent unscanned | **fixed** — task and `--stdin` now scanned too |
 | `rename`/`copy` headers unvalidated | a rename-only patch reported "targets (0)" and passed | **fixed** — extended headers now checked |
 | Symlink-creating patches unvalidated | mode `120000` patches accepted | **fixed** — refused outright |
 | `oxseed` traversal unguarded | `../../../etc/hosts` copied outside the tree | **fixed** |
@@ -161,8 +161,6 @@ sandbox. Also fixed.
   attacker-controlled bytes through the inherited fd. Seatbelt gates `open()`,
   not writes to an already-open descriptor. Don't redirect jail output to
   anywhere that matters.
-- **`--mode ask`/`--stdin` task text is not secret-scanned.** Only `--files`
-  bodies are. Piping a config full of credentials into `--stdin` will send them.
 - **`mach-lookup` and `ipc-posix-shm` are unrestricted**, exposing the XPC
   namespace and shared memory to jailed code. Neither is a demonstrated escape;
   both are broader than they need to be.

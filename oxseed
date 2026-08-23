@@ -1,0 +1,49 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copy files from a real repo into a disposable sandbox tree and make it a git
+# repo, so Ox's patches can be applied and diffed without touching the original.
+#
+# Usage: ./oxseed /path/to/repo file1 file2 ...
+#        ./oxseed --clean
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORK="$HERE/sandbox/work"
+
+if [ "${1:-}" = "--clean" ]; then
+  rm -rf "$HERE/sandbox"
+  printf 'oxseed: sandbox removed\n' >&2
+  exit 0
+fi
+
+if [ $# -lt 2 ]; then
+  printf 'oxseed: usage: ./oxseed /path/to/repo file1 [file2 ...]\n' >&2
+  exit 64
+fi
+
+SRC="$(cd "$1" && pwd -P)"
+shift
+
+rm -rf "$WORK"
+mkdir -p "$WORK"
+
+for rel in "$@"; do
+  if [ ! -e "$SRC/$rel" ]; then
+    printf 'oxseed: missing in source: %s\n' "$rel" >&2
+    exit 66
+  fi
+  mkdir -p "$WORK/$(dirname "$rel")"
+  cp -R "$SRC/$rel" "$WORK/$rel"
+  printf 'oxseed: seeded %s\n' "$rel" >&2
+done
+
+git -C "$WORK" init -q
+git -C "$WORK" add -A
+git -C "$WORK" -c user.email=seed@sandbox.invalid -c user.name=oxseed \
+  commit -q -m "pristine seed from $SRC"
+
+printf 'oxseed: work=%s (pristine commit recorded)\n' "$WORK" >&2
+printf 'oxseed: source untouched: %s\n' "$SRC" >&2

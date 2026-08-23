@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+"""Extract a diff from an ox response and apply it ONLY inside the sandbox.
+
+Refuses absolute paths, parent-directory traversal, and anything that would
+land outside the work tree. Never touches a real repository.
+"""
+
+import argparse
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+FENCE = re.compile(r"```(?:diff|patch)\s*\n(.*?)```", re.DOTALL)
+PATH_LINE = re.compile(r"^(?:---|\+\+\+)\s+(?:[ab]/)?(\S+)", re.MULTILINE)
+
+
+def extract(text):
+    blocks = FENCE.findall(text)
+    if blocks:
+        return "\n".join(block.rstrip() for block in blocks) + "\n"
+    if text.lstrip().startswith(("--- ", "diff --git")):
+        return text
+    return None
+
+
+def unsafe_paths(patch):
+    bad = []
+    for raw in PATH_LINE.findall(patch):
+        if raw == "/dev/null":
+            continue
+        if raw.startswith("/") or raw.startswith("~"):
+            bad.append(f"absolute path: {raw}")
+        elif ".." in Path(raw).parts:
+            bad.append(f"parent traversal: {raw}")
+    return bad
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="oxapply")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--log", help="an ox log dir containing content.md")
+    source.add_argument("--diff", help="a file containing a raw diff")
+    parser.add_argument("--work", default=str(HERE / "sandbox" / "work"))
+    parser.add_argument("--commit", action="store_true",
+                        help="commit the applied patch in the sandbox git repo")
+    args = parser.parse_args()
+
+    if args.log:
+        content_path = Path(args.log) / "content.md"
+        if not content_path.is_file():
+            sys.exit(f"oxapply: no content.md in {args.log}")
+        patch = extract(content_path.read_text(encoding="utf-8"))
+        if patch is None:
+            sys.exit("oxapply: no diff block found in the response")
+    else:
+        patch = Path(args.diff).read_text(encoding="utf-8")
+
+    work = Path(args.work).resolve()
+    if not work.is_dir():
+        sys.exit(f"oxapply: work dir does not exist: {work}")
+    if not (work / ".git").exists():
+        sys.exit(f"oxapply: {work} is not a git repo (run ./oxseed first)")
+
+    bad = unsafe_paths(patch)
+    if bad:
+        sys.stderr.write("oxapply: REFUSING - patch targets paths outside the sandbox:\n")
+        for item in bad:
+            sys.stderr.write(f"  {item}\n")
+        sys.exit(2)
+
+    patch_path = work.parent / "pending.patch"
+    patch_path.write_text(patch, encoding="utf-8")
+
+    targets = sorted(set(PATH_LINE.findall(patch)) - {"/dev/null"})
+    sys.stderr.write(f"oxapply: patch -> {patch_path}\n")
+    sys.stderr.write(f"oxapply: targets ({len(targets)}): {', '.join(targets)}\n")
+
+    strategies = [
+        ("strict", []),
+        ("recount", ["--recount"]),
+        ("recount+C1", ["--recount", "-C1"]),
+    ]
+
+    chosen = None
+    last_error = ""
+    for name, flags in strategies:
+        check = subprocess.run(
+            ["git", "-C", str(work), "apply", "--check", *flags, str(patch_path)],
+            capture_output=True, text=True,
+        )
+        if check.returncode == 0:
+            chosen = (name, flags)
+            break
+        last_error = check.stderr
+
+    if chosen is None:
+        sys.stderr.write("oxapply: patch does not apply at any strictness level:\n")
+        sys.stderr.write(last_error)
+        sys.exit(3)
+
+    name, flags = chosen
+    if name != "strict":
+        sys.stderr.write(
+            f"oxapply: WARNING - patch only applied with '{name}'. The model emitted a\n"
+            f"oxapply: malformed hunk (usually wrong line counts or missing trailing\n"
+            f"oxapply: context). Re-read the resulting diff carefully.\n"
+        )
+
+    applied = subprocess.run(
+        ["git", "-C", str(work), "apply", "--stat", "--apply", *flags, str(patch_path)],
+        capture_output=True, text=True,
+    )
+    sys.stdout.write(applied.stdout)
+    if applied.returncode != 0:
+        sys.stderr.write(applied.stderr)
+        sys.exit(3)
+
+    if args.commit:
+        subprocess.run(["git", "-C", str(work), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(work), "-c", "user.email=ox@sandbox.invalid",
+             "-c", "user.name=ox-alpha", "commit", "-q", "-m", "ox patch"],
+            check=True,
+        )
+
+    sys.stderr.write("oxapply: applied inside sandbox only\n")
+    sys.stderr.write(f"oxapply: review with: git -C {work} diff HEAD\n")
+
+
+if __name__ == "__main__":
+    main()

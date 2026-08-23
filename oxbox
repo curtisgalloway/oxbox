@@ -1,0 +1,52 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+#
+# Run a command inside the seatbelt jail: no network, no writes outside the
+# sandbox work directory, no reads of the user's home outside it.
+#
+# Usage: ./oxbox [--work DIR] -- command args...
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORK="$HERE/sandbox/work"
+PROFILE="$HERE/profiles/jail.sb"
+REAL_HOME="$HOME"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --work) WORK="$2"; shift 2 ;;
+    --) shift; break ;;
+    *) printf 'oxbox: unexpected argument: %s\n' "$1" >&2; exit 64 ;;
+  esac
+done
+
+if [ $# -eq 0 ]; then
+  printf 'oxbox: no command given (use: ./oxbox -- pytest -q)\n' >&2
+  exit 64
+fi
+
+if [ ! -d "$WORK" ]; then
+  printf 'oxbox: work dir does not exist: %s\n' "$WORK" >&2
+  exit 66
+fi
+
+WORK="$(cd "$WORK" && pwd -P)"
+
+mkdir -p "$WORK/.oxtmp"
+
+printf 'oxbox: jail=%s work=%s\n' "$PROFILE" "$WORK" >&2
+printf 'oxbox: network=DENIED writes=%s only\n' "$WORK" >&2
+
+cd "$WORK"
+
+exec sandbox-exec -f "$PROFILE" -D "WORK=$WORK" \
+  /usr/bin/env \
+    HOME="$WORK" \
+    REAL_HOME="$REAL_HOME" \
+    REPO_ROOT="$HERE" \
+    TMPDIR="$WORK/.oxtmp" \
+    PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    "$@"

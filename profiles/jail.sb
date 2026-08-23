@@ -1,0 +1,52 @@
+;; SPDX-FileCopyrightText: 2026 Curtis Galloway
+;; SPDX-License-Identifier: Apache-2.0
+
+(version 1)
+
+(deny default)
+(deny network*)
+(deny file-write*)
+
+(allow process-exec)
+(allow process-fork)
+(allow sysctl-read)
+(allow signal (target self))
+(allow mach-lookup)
+(allow ipc-posix-shm)
+(allow file-map-executable)
+
+(allow file-read*
+  (subpath "/usr")
+  (subpath "/bin")
+  (subpath "/sbin")
+  (subpath "/System")
+  (subpath "/Library")
+  (subpath "/opt/homebrew")
+  (subpath "/opt/local")
+  (subpath "/usr/local")
+  (subpath "/Applications/Xcode.app")
+  (literal "/Applications")
+  (subpath "/private/etc")
+  (subpath "/private/var/db/timezone")
+  (subpath (param "WORK"))
+  (literal "/dev/null")
+  (literal "/dev/zero")
+  (literal "/dev/random")
+  (literal "/dev/urandom")
+  (literal "/dev/tty")
+  (literal "/")
+  (literal "/private")
+  (literal "/private/var")
+  (literal "/private/tmp")
+  (literal "/opt")
+  (literal "/Users"))
+
+(allow file-write*
+  (subpath (param "WORK"))
+  (literal "/dev/null")
+  (literal "/dev/stdout")
+  (literal "/dev/stderr")
+  (literal "/dev/tty")
+  (literal "/dev/dtracehelper"))
+
+(allow file-read-metadata)

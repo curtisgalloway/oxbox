@@ -82,6 +82,15 @@ executed inside it.
 - Never point `oxapply` at a real repository. It is sandbox-only by design;
   keep it that way.
 - Never run model-produced code outside `oxbox`.
+- **A key ox can send is a key the jail must not see.** `VENUES` in `ox` and the
+  name list in `jailtest.py`'s `env_canary` move together — adding a venue
+  without adding its key variable to that probe leaves the new credential
+  outside the test that exists to catch exactly this.
+- **Never widen the destination without pinning the credential.** `--base-url`
+  requires `--api-key-env` on purpose: `ox` sends the key as a Bearer token to
+  whatever URL it is given, so a bare base-url flag over a hardcoded key is a
+  credential-exfiltration path wearing a convenience flag. Named venues bind
+  URL and key variable in one table entry; keep it that way.
 - Re-run BOTH suites after any change to `profiles/jail.sb`, `oxbox`, or the
   validators: `./oxbox -- python3 jailtest.py` (in-jail probes) and
   `python3 guardtest.py` (pre-jail refusals plus positive controls). A jail you

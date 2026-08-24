@@ -14,7 +14,26 @@ don't know who the counterparty is. This repo exists so you can *try* one
 anyway, on real code, without extending it any trust it hasn't earned.
 
 The default target is `stealth/ox-alpha`, but nothing here is specific to it.
-Point `--model` at whatever you're suspicious of this week.
+Point `--model` at whatever you're suspicious of this week, and `--venue` at
+wherever it lives:
+
+```bash
+./ox --venue zenmux   --model z-ai/glm-5.3-free   --mode review --files x.py "..."
+./ox --venue opencode --model x-preview-f-free    --mode review --files x.py "..."
+./ox --venue requesty --model mistral/leanstral-1-5 --mode review --files x.py "..."
+```
+
+**Each venue carries its own API key variable** — `OPENROUTER_API_KEY`,
+`ZENMUX_API_KEY`, `OPENCODE_ZEN_API_KEY`, `REQUESTY_API_KEY` — and `ox` reads
+only the one belonging to the venue you asked for. That pairing is the security
+property: a single `--base-url` flag over one hardcoded key would mean a
+mistyped host receives your OpenRouter credential. An unlisted endpoint is still
+reachable via `--base-url`, but only together with `--api-key-env` naming the
+variable it may have, so no credential travels somewhere by default.
+
+The destination is recorded in each run's `meta.json` (`venue`, `endpoint`,
+`key_env`) alongside the model, because an audit trail that omits where the code
+went is not an audit trail.
 
 ## The premise
 

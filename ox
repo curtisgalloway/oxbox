@@ -19,8 +19,41 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-API_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "stealth/ox-alpha"
+# Where a request may be sent, and which key goes with it.
+#
+# The pairing is the point. `ox` sends the key as a Bearer token to whatever URL
+# it is pointed at, so one `--base-url` flag over one hardcoded key would mean a
+# mistyped host receives your OpenRouter credential. Binding each venue to its
+# own environment variable makes that impossible by construction: asking for
+# zenmux reads ZENMUX_API_KEY and nothing else.
+#
+# Every venue below speaks the OpenAI chat-completions shape. That was verified
+# rather than assumed — OpenCode's own docs advertise /responses and /messages,
+# and /chat/completions works anyway.
+VENUES = {
+    "openrouter": {
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "key_env": "OPENROUTER_API_KEY",
+        "default_model": "stealth/ox-alpha",
+    },
+    "zenmux": {
+        "url": "https://zenmux.ai/api/v1/chat/completions",
+        "key_env": "ZENMUX_API_KEY",
+        "default_model": None,
+    },
+    "opencode": {
+        "url": "https://opencode.ai/zen/v1/chat/completions",
+        "key_env": "OPENCODE_ZEN_API_KEY",
+        "default_model": None,
+    },
+    "requesty": {
+        "url": "https://router.requesty.ai/v1/chat/completions",
+        "key_env": "REQUESTY_API_KEY",
+        "default_model": None,
+    },
+}
+DEFAULT_VENUE = "openrouter"
+DEFAULT_MODEL = VENUES[DEFAULT_VENUE]["default_model"]
 MAX_PAYLOAD_BYTES = 400_000
 TIMEOUT_SECONDS = 900
 
@@ -139,7 +172,16 @@ def main():
                         help="comma-separated files to include as context")
     parser.add_argument("--mode", choices=sorted(SYSTEM_PROMPTS), default="diff",
                         help="output contract (default: diff)")
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--venue", choices=sorted(VENUES), default=DEFAULT_VENUE,
+                        help="where to send the request; each venue uses its own "
+                             "API key variable (default: %s)" % DEFAULT_VENUE)
+    parser.add_argument("--base-url", default=None,
+                        help="send to an arbitrary chat-completions endpoint. "
+                             "Requires --api-key-env, so a credential is never "
+                             "sent to an unlisted host by default.")
+    parser.add_argument("--api-key-env", default=None,
+                        help="environment variable holding the key for --base-url")
+    parser.add_argument("--model", default=None)
     parser.add_argument("--effort", choices=["low", "high", "max"], default="high")
     parser.add_argument("--max-tokens", type=int, default=32000)
     parser.add_argument("--temperature", type=float, default=0.2)
@@ -156,9 +198,31 @@ def main():
     if not task or not task.strip():
         sys.exit("ox: no task given")
 
-    api_key = os.environ.get("OPENROUTER_API_KEY")
+    # Resolve destination and credential together. They are never chosen
+    # independently: an unlisted host requires you to name the variable whose
+    # key it may have, so no credential travels somewhere by default.
+    if args.base_url:
+        if not args.api_key_env:
+            sys.exit("ox: --base-url requires --api-key-env, so a key is never "
+                     "sent to an unlisted host by accident")
+        api_url = args.base_url
+        key_env = args.api_key_env
+        venue = "custom"
+    else:
+        if args.api_key_env:
+            sys.exit("ox: --api-key-env only applies with --base-url; "
+                     "a named venue already carries its own key variable")
+        venue = args.venue
+        api_url = VENUES[venue]["url"]
+        key_env = VENUES[venue]["key_env"]
+
+    model = args.model or (VENUES[venue]["default_model"] if venue != "custom" else None)
+    if not model:
+        sys.exit("ox: --model is required for venue %r (no default)" % venue)
+
+    api_key = os.environ.get(key_env)
     if not api_key and not args.dry_run:
-        sys.exit("ox: OPENROUTER_API_KEY not set (run under: op run --env-file .env -- ./ox ...)")
+        sys.exit("ox: %s not set (run under: op run --env-file .env -- ./ox ...)" % key_env)
 
     paths = [p.strip() for p in args.files.split(",") if p.strip()]
     context, total_bytes, findings = build_context(paths, args.force, task)
@@ -166,7 +230,7 @@ def main():
     user_content = f"{task.strip()}\n\n{context}" if context else task.strip()
 
     payload = {
-        "model": args.model,
+        "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPTS[args.mode]},
             {"role": "user", "content": user_content},
@@ -183,7 +247,10 @@ def main():
     write_lf(log_dir / "request.json", json.dumps(payload, indent=2))
     write_lf(log_dir / "meta.json", json.dumps({
         "timestamp": stamp,
-        "model": args.model,
+        "model": model,
+        "venue": venue,
+        "endpoint": api_url,
+        "key_env": key_env,
         "mode": args.mode,
         "effort": args.effort,
         "files": paths,
@@ -193,7 +260,7 @@ def main():
     }, indent=2))
 
     sys.stderr.write(f"ox: log -> {log_dir}\n")
-    sys.stderr.write(f"ox: model={args.model} mode={args.mode} effort={args.effort} "
+    sys.stderr.write(f"ox: venue={venue} model={model} mode={args.mode} effort={args.effort} "
                      f"context={total_bytes}B files={len(paths)}\n")
 
     if args.dry_run:
@@ -202,7 +269,7 @@ def main():
         return
 
     request = urllib.request.Request(
-        API_URL,
+        api_url,
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",

@@ -83,10 +83,15 @@ def stat_outside():
 
 
 def env_canary():
-    """The launching shell frequently holds OPENROUTER_API_KEY (via `op run`).
-    Anything visible here means the parent environment crossed the boundary."""
+    """The launching shell frequently holds provider keys (via `op run`).
+    Anything visible here means the parent environment crossed the boundary.
+
+    Every venue in ox's VENUES table contributes a variable here. A key that ox
+    can send is a key the jail must not see, so the two lists move together."""
     leaked = [name for name in
-              ("OXBOX_CANARY", "OPENROUTER_API_KEY", "OP_SERVICE_ACCOUNT_TOKEN")
+              ("OXBOX_CANARY", "OP_SERVICE_ACCOUNT_TOKEN",
+               "OPENROUTER_API_KEY", "ZENMUX_API_KEY",
+               "OPENCODE_ZEN_API_KEY", "REQUESTY_API_KEY")
               if os.environ.get(name)]
     if leaked:
         raise AssertionError("inherited: " + ", ".join(leaked))

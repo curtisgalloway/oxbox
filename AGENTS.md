@@ -61,6 +61,16 @@ executed inside it.
   `404: No endpoints available matching your guardrail restrictions and data
   policy` — account-wide, not key-specific. Stealth models require prompt
   logging enabled at <https://openrouter.ai/settings/privacy>.
+- Cloaked endpoints also run dry, which is a *different* failure from the
+  404 above: `429 ... temporarily rate-limited upstream` with
+  `"limit_source": "upstream_provider_shared_pool"`. The free listing shares
+  one quota across all its users, so no key or privacy-setting change fixes
+  it — only backing off. Retry on a timescale of ~10 minutes, not seconds
+  (two attempts 150 s apart both failed). Do not "fix" a 429 by touching the
+  privacy toggle; that is the 404's remedy and it is already right.
+- `ox` exits non-zero on an API error, but a pipeline masks it: `./ox … |
+  tail` reports `tail`'s exit status, not `ox`'s. Any script that decides
+  whether a run succeeded must use `set -o pipefail` or match on the output.
 - Emits unified diffs with **zero trailing context**, ignoring an explicit
   instruction to include three lines. Such patches are rejected by both
   `git apply` and GNU `patch`. `oxapply` falls back to `--recount -C1` and

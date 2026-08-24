@@ -103,6 +103,26 @@ SYSTEM_PROMPTS = {
 }
 
 
+class NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse to follow redirects, so the credential cannot be re-aimed.
+
+    urllib follows 3xx automatically and its default handler rebuilds the
+    follow-up request keeping every original header — including
+    `Authorization`. A 302 from a provider therefore hands the Bearer token to
+    whatever host the `Location` line names, on any scheme, and ox would then
+    print that host's reply as the model's answer. curl and requests strip the
+    header on a cross-host redirect; urllib does not.
+
+    Returning None turns the 3xx into an HTTPError, which the caller already
+    logs to error.txt and reports cleanly. Verified by experiment: before this,
+    a 302 to another host forwarded the key and the attacker's content was
+    printed as model output.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def write_lf(path, text):
     """Write text with LF endings on every platform.
 
@@ -206,6 +226,13 @@ def main():
         if not args.api_key_env:
             sys.exit("ox: --base-url requires --api-key-env, so a key is never "
                      "sent to an unlisted host by accident")
+        # https only. A plaintext endpoint puts the Bearer token on the wire in
+        # cleartext, which defeats the point of pairing it with a host at all.
+        # Validated here rather than at request time so a bad URL is a clean
+        # error instead of a ValueError traceback after the logs are written.
+        if not args.base_url.startswith("https://"):
+            sys.exit("ox: --base-url must be an https:// URL (got %r); a "
+                     "credential must not travel in cleartext" % args.base_url)
         api_url = args.base_url
         key_env = args.api_key_env
         venue = "custom"
@@ -286,7 +313,8 @@ def main():
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+        opener = urllib.request.build_opener(NoRedirects)
+        with opener.open(request, timeout=TIMEOUT_SECONDS) as response:
             body = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", "replace")
@@ -300,7 +328,12 @@ def main():
     if "error" in body and body["error"]:
         sys.exit(f"ox: api error: {json.dumps(body['error'])[:500]}")
 
-    choice = body.get("choices", [{}])[0]
+    choices = body.get("choices") or []
+    # Some providers return an empty choices list on a content filter. That
+    # is a real response, not a crash, and the log already holds the raw body.
+    if not choices:
+        sys.exit("ox: provider returned no choices (see response.json in the log)")
+    choice = choices[0]
     message = choice.get("message", {}) or {}
     reasoning = message.get("reasoning") or ""
     content = message.get("content") or ""

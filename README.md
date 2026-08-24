@@ -193,6 +193,23 @@ Reading the diff, the things worth flagging:
   endpoints require prompt logging to be *enabled* at
   <https://openrouter.ai/settings/privacy>. The toggle that makes it free is
   the same one that hands over your prompts.
+- **And they run out.** A different failure, with a different fix:
+  `429: stealth/ox-alpha is temporarily rate-limited upstream`, carrying
+  `"limit_source": "upstream_provider_shared_pool"`. Free cloaked listings
+  share one upstream quota across everybody using them, so this is neither
+  your key nor your account — it is the pool being busy, and no settings
+  change clears it. Unlike the 404, it is transient: back off and retry.
+  Two attempts 150 s apart both failed for a 72 KB review; 10-minute spacing
+  is a saner starting point. Distinguish the two by the code, because the
+  404's advice (go enable prompt logging) is the wrong move here and sends
+  you to a settings page that is already correct.
+
+  Worth planning around if you script `ox`: a long review can simply be
+  unavailable for a while, and the model you are evaluating is exactly the
+  kind least likely to have capacity when you want it. Note also that
+  `ox` exits non-zero on an API error, but a pipeline hides that
+  (`./ox … | tail` reports `tail`'s status) — use `set -o pipefail`, or
+  match on the output, before treating a scripted run as successful.
 
 ## The self-audit
 

@@ -91,10 +91,16 @@ executed inside it.
   whatever URL it is given, so a bare base-url flag over a hardcoded key is a
   credential-exfiltration path wearing a convenience flag. Named venues bind
   URL and key variable in one table entry; keep it that way.
-- Re-run BOTH suites after any change to `profiles/jail.sb`, `oxbox`, or the
-  validators: `./oxbox -- python3 jailtest.py` (in-jail probes) and
-  `python3 guardtest.py` (pre-jail refusals plus positive controls). A jail you
-  have not tested since editing is decoration.
+- Re-run ALL THREE suites after any change to `profiles/jail.sb`, `oxbox`, `ox`,
+  or the validators: `python3 guardtest.py` (pre-jail refusals plus positive
+  controls), `python3 wiretest.py` (what the request actually carries, against a
+  local listener), and `./oxbox -- python3 jailtest.py` (in-jail probes). A jail
+  you have not tested since editing is decoration.
+- **A wire test must drive `ox`, never rebuild its logic.** The first version of
+  the redirect check constructed an opener with `NoRedirects` itself, so it passed
+  even after `ox` stopped using it — it asserted a property of the test. Every
+  assertion in `wiretest.py` has been mutation-checked: break the behaviour in
+  `ox` and confirm the test goes red before trusting it.
 - Do not restore `(allow mach-lookup)` or `(allow ipc-posix-shm)`. Both were
   removed after verifying `python3` and a venv `pytest` run work without them.
   If some toolchain genuinely needs one, scope it to named services rather than

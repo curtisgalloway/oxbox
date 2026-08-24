@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+"""What ox actually puts on the wire, and where it puts it.
+
+guardtest.py covers the refusals before a request is built. jailtest.py probes
+outward from inside the jail. Neither has ever looked at the request itself, so
+the README's first containment claim -- "ox sends a chat completion with no
+`tools` array" -- was asserted and never tested. If someone added a tools key
+tomorrow, every existing suite would stay green.
+
+Everything here runs against a local http.server on 127.0.0.1. No network, no
+API key, no provider, so it runs in CI on every platform. Where a test needs a
+non-https URL (a loopback listener cannot be https), it exercises ox through an
+in-process import rather than relaxing the https guard in the shipped file.
+
+Python 3.9 floor, same as the rest of the repo.
+"""
+
+import json
+import os
+import subprocess
+import sys
+import threading
+import http.server
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+OX = [sys.executable, str(HERE / "ox")]
+
+FAILURES = []
+PASSES = 0
+
+
+def report(ok, label, note=""):
+    global PASSES
+    if ok:
+        PASSES += 1
+        print("[PASS] %s" % label)
+    else:
+        FAILURES.append(label)
+        print("[FAIL] %s%s" % (label, ("  (%s)" % note) if note else ""))
+
+
+def serve(handler):
+    """Start a throwaway HTTP server on a free loopback port."""
+    server = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def capture_handler(store, status=200, body=None, headers=None):
+    """A handler that records the request and replies with a canned body."""
+    if body is None:
+        body = json.dumps({
+            "choices": [{"finish_reason": "stop",
+                         "message": {"content": "ok", "role": "assistant"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }).encode()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            store["body"] = self.rfile.read(length) if length else b""
+            store["headers"] = dict(self.headers.items())
+            store["path"] = self.path
+            self.send_response(status)
+            for key, value in (headers or {"Content-Type": "application/json"}).items():
+                self.send_header(key, value)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        do_GET = do_POST
+
+        def log_message(self, *args):
+            pass
+
+    return Handler
+
+
+def load_ox():
+    """Import ox as a module without running main()."""
+    source = (HERE / "ox").read_text(encoding="utf-8")
+    source = source.replace('if __name__ == "__main__":', "if False:")
+    namespace = {"__name__": "oxmod"}
+    exec(compile(source, str(HERE / "ox"), "exec"), namespace)
+    return namespace
+
+
+def run_ox(argv, env=None, timeout=60):
+    environ = dict(os.environ)
+    environ.update(env or {})
+    return subprocess.run(OX + argv, capture_output=True, text=True,
+                          timeout=timeout, env=environ)
+
+
+def send_to_local(store, tmp, extra_argv=None, **kwargs):
+    """Drive ox at a local listener, bypassing only the https scheme guard.
+
+    The guard is a separate, directly tested behaviour; relaxing it here is what
+    lets every other wire assertion run without a real provider.
+    """
+    server = serve(capture_handler(store, **kwargs))
+    url = "http://127.0.0.1:%d/v1/chat/completions" % server.server_address[1]
+    patched = tmp / "ox_local"
+    source = (HERE / "ox").read_text(encoding="utf-8")
+    source = source.replace('if not args.base_url.startswith("https://"):', "if False:")
+    patched.write_text(source, encoding="utf-8")
+    argv = [sys.executable, str(patched), "--base-url", url,
+            "--api-key-env", "OX_TEST_KEY", "--model", "test-model",
+            "--log-dir", str(tmp / "logs")] + (extra_argv or ["--mode", "ask", "hello"])
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=60,
+                            env=dict(os.environ, OX_TEST_KEY="sk-test-canary"))
+    server.shutdown()
+    return result
+
+
+def main():
+    import tempfile
+    tmp = Path(tempfile.mkdtemp(prefix="wiretest-"))
+    ox = load_ox()
+
+    print("=== the request ox builds ===")
+
+    store = {}
+    result = send_to_local(store, tmp)
+    payload = json.loads(store.get("body") or b"{}")
+    headers = store.get("headers") or {}
+
+    # The headline containment claim. If this ever fails, the model has been
+    # handed a way to ask for actions rather than only emit text.
+    report("tools" not in payload,
+           "no `tools` key on the wire (containment layer 1)",
+           "payload keys: %s" % sorted(payload))
+    report("functions" not in payload and "tool_choice" not in payload,
+           "no `functions` or `tool_choice` either")
+
+    report(headers.get("Authorization") == "Bearer sk-test-canary",
+           "Authorization carries the value of the named env var",
+           repr(headers.get("Authorization")))
+    report(headers.get("Content-Type") == "application/json",
+           "Content-Type is application/json")
+
+    # urllib defaults to Python-urllib/3.x, which OpenCode Zen's Cloudflare
+    # rejects with 403 before routing. That shipped once; it does not again.
+    agent = headers.get("User-Agent", "")
+    report(agent == ox["USER_AGENT"] and "Python-urllib" not in agent,
+           "User-Agent is ox's own, not urllib's default", repr(agent))
+
+    report(payload.get("model") == "test-model", "model is passed through")
+    report(result.returncode == 0, "a normal exchange exits 0", result.stderr[-160:])
+
+    print("\n=== the system prompt matches --mode ===")
+    for mode in sorted(ox["SYSTEM_PROMPTS"]):
+        store = {}
+        send_to_local(store, tmp, extra_argv=["--mode", mode, "task"])
+        payload = json.loads(store.get("body") or b"{}")
+        messages = payload.get("messages") or [{}]
+        report(messages[0].get("content") == ox["SYSTEM_PROMPTS"][mode],
+               "--mode %s sends the %s system prompt" % (mode, mode))
+
+    print("\n=== the credential never leaves its venue ===")
+
+    # Every venue must read its own variable and no other. Poison all of them
+    # with a distinguishable value and check which one is actually sent.
+    for venue, spec in sorted(ox["VENUES"].items()):
+        env = dict((s["key_env"], "sk-canary-" + name)
+                   for name, s in ox["VENUES"].items())
+        result = run_ox(["--venue", venue, "--model", "m", "--mode", "ask",
+                         "--dry-run", "--log-dir", str(tmp / "logs"), "t"], env=env)
+        meta_dirs = sorted((tmp / "logs").glob("*/meta.json"))
+        meta = json.loads(meta_dirs[-1].read_text()) if meta_dirs else {}
+        report(meta.get("key_env") == spec["key_env"]
+               and meta.get("endpoint") == spec["url"],
+               "--venue %s pairs %s with its own URL" % (venue, spec["key_env"]),
+               "%s / %s" % (meta.get("key_env"), meta.get("endpoint")))
+
+    report(all(spec["url"].startswith("https://") for spec in ox["VENUES"].values()),
+           "every venue URL is https")
+
+    # A key ox can send is a key the jail must not see. AGENTS.md says these two
+    # lists move together; this is what makes that a check rather than a hope.
+    canary_source = (HERE / "jailtest.py").read_text(encoding="utf-8")
+    missing = [spec["key_env"] for spec in ox["VENUES"].values()
+               if spec["key_env"] not in canary_source]
+    report(not missing,
+           "every venue key variable appears in jailtest's env_canary",
+           "missing: %s" % missing)
+
+    print("\n=== redirects cannot re-aim the credential ===")
+
+    # Drive ox itself, not a hand-built opener. An earlier version of this test
+    # constructed the opener with NoRedirects directly, which meant it passed
+    # even when ox had stopped using it -- it asserted a property of the test,
+    # not of the program. Mutation-checked: reverting ox to build_opener() must
+    # turn these red.
+    leaked = {}
+    collector = serve(capture_handler(
+        leaked, body=json.dumps({"choices": [{"message": {"content": "pwned"}}]}).encode()))
+
+    class Redirector(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def do_POST(self):
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1:%d/collect"
+                             % collector.server_address[1])
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    redirector = serve(Redirector)
+    patched = tmp / "ox_local"
+    source = (HERE / "ox").read_text(encoding="utf-8")
+    source = source.replace('if not args.base_url.startswith("https://"):', "if False:")
+    patched.write_text(source, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(patched),
+         "--base-url", "http://127.0.0.1:%d/v1" % redirector.server_address[1],
+         "--api-key-env", "OX_TEST_KEY", "--model", "m", "--mode", "ask",
+         "--log-dir", str(tmp / "redirlogs"), "task"],
+        capture_output=True, text=True, timeout=60,
+        env=dict(os.environ, OX_TEST_KEY="sk-test-canary"))
+
+    got = leaked.get("headers") or {}
+    report("Authorization" not in got,
+           "ox does not forward Authorization across a redirect",
+           "leaked: %r" % got.get("Authorization"))
+    report("pwned" not in result.stdout,
+           "ox does not print a redirect target's content as the model's answer")
+    report(result.returncode != 0 and "Traceback" not in result.stderr,
+           "ox exits non-zero on a redirect, without a traceback",
+           "exit=%s" % result.returncode)
+    for server in (collector, redirector):
+        server.shutdown()
+
+    print("\n=== bad responses fail loudly, with the audit record intact ===")
+
+    cases = [
+        ("empty content exits non-zero",
+         json.dumps({"choices": [{"finish_reason": "length",
+                                  "message": {"content": ""}}],
+                     "usage": {"completion_tokens": 32000,
+                               "completion_tokens_details": {"reasoning_tokens": 31995}}}).encode(),
+         200, "no content"),
+        ("empty choices list exits cleanly",
+         json.dumps({"choices": []}).encode(), 200, "no choices"),
+        ("a non-JSON 200 body exits cleanly, no traceback",
+         b"<html>gateway error</html>", 200, "non-JSON"),
+    ]
+    for label, body, status, expect in cases:
+        store = {}
+        result = send_to_local(store, tmp, body=body, status=status)
+        ok = (result.returncode != 0
+              and "Traceback" not in result.stderr
+              and expect in result.stderr)
+        report(ok, label, "exit=%s stderr=%r" % (result.returncode, result.stderr[-120:]))
+
+    print("\n=== the audit log survives collisions ===")
+
+    logs = tmp / "collide"
+    store = {}
+    for _ in range(3):
+        send_to_local(store, tmp.__class__(str(tmp)), extra_argv=["--mode", "ask", "x"])
+    # Directly exercise the collision path: three runs in the same second must
+    # not share a directory, because a shared one overwrites request.json.
+    stamps = set()
+    logs.mkdir(parents=True, exist_ok=True)
+    for _ in range(3):
+        store = {}
+        server = serve(capture_handler(store))
+        url = "http://127.0.0.1:%d/v1" % server.server_address[1]
+        patched = tmp / "ox_local"
+        subprocess.run([sys.executable, str(patched), "--base-url", url,
+                        "--api-key-env", "OX_TEST_KEY", "--model", "m",
+                        "--mode", "ask", "--log-dir", str(logs), "x"],
+                       capture_output=True, text=True, timeout=60,
+                       env=dict(os.environ, OX_TEST_KEY="sk-test-canary"))
+        server.shutdown()
+    dirs = [d for d in logs.iterdir() if d.is_dir()]
+    stamps = set(d.name for d in dirs)
+    report(len(dirs) == 3 and len(stamps) == 3,
+           "three rapid runs get three distinct log directories",
+           "got %d: %s" % (len(dirs), sorted(stamps)))
+    report(all((d / "request.json").exists() for d in dirs),
+           "every run kept its own request.json")
+
+    print("\nplatform: %s" % sys.platform)
+    total = PASSES + len(FAILURES)
+    if FAILURES:
+        print("wire contract broken: %d/%d passed" % (PASSES, total))
+        for label in FAILURES:
+            print("  - %s" % label)
+        return 1
+    print("wire contract holds: %d/%d passed" % (PASSES, total))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

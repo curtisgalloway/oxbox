@@ -38,8 +38,13 @@ The layers that are supposed to hold:
   payload without passing the scanner. The scan lives in `build_context`; a
   path that routes around it is a bug even if the scanner would have missed the
   content anyway.
-- **The key leaking.** The API key lives in a header and must never appear in
-  `logs/`. Anywhere it does is a bug.
+- **The key going anywhere but its venue.** The API key is paired with one
+  destination host. Anything that re-aims it elsewhere, or records it, is a
+  bug: appearing in `logs/`, riding a redirect to another host, crossing a
+  plaintext hop, or being sent to a venue other than the one it belongs to.
+  This is not hypothetical — a 302 handed the Bearer token to any host that
+  asked, because `urllib` does not strip `Authorization` across hosts the way
+  `curl` and `requests` do.
 - **Guards that stop guarding.** A validator that silently starts passing
   everything, a probe that skips instead of testing, a refusal that no longer
   refuses. This class has bitten this repo more than once and is worth a report

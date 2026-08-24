@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+
+# Actions in ci.yml are pinned to commit SHAs, which is the point — a mutable
+# tag lets whoever can retag run code in CI. Pinning without this file just
+# means the pins go stale instead, so Dependabot owns keeping them current and
+# each bump arrives as a reviewable PR with the version in the comment updated.
+#
+# No Python ecosystem entry: this project deliberately has no third-party
+# Python dependencies, so there is nothing there to update.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    labels:
+      - dependencies

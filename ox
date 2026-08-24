@@ -357,6 +357,25 @@ def main():
         f"reasoning_chars={len(reasoning)}\n"
     )
 
+    # An empty completion is a failure for every caller, and the API called it a
+    # success. Without this, content.md is a 0-byte file with no error beside it
+    # and a script reading it gets a silent no-op that looks like a clean run.
+    #
+    # Seen in practice: a reasoning model spent 31,995 of 32,000 completion
+    # tokens thinking and emitted nothing, twice, at two different budgets. The
+    # usage numbers are the diagnosis, so print them rather than a bare failure.
+    if not content.strip():
+        detail = ""
+        if usage.get("completion_tokens_details", {}).get("reasoning_tokens"):
+            detail = (" — %s of %s completion tokens went to reasoning"
+                      % (usage["completion_tokens_details"]["reasoning_tokens"],
+                         usage.get("completion_tokens")))
+        sys.exit(
+            "ox: model returned no content (finish=%s)%s\n"
+            "ox: the raw response and any reasoning are in %s"
+            % (choice.get("finish_reason"), detail, log_dir)
+        )
+
     print(content)
 
 

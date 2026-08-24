@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+
+# Both suites, on every platform the harness claims to support. The README
+# asserts a support matrix; this is what keeps that claim honest.
+#
+# guardtest runs the pre-jail refusals (which is why it also runs on Windows,
+# where there is no jail and the jail cases skip). jailtest runs *inside* the
+# jail and probes outward.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  guards:
+    name: guards (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install bubblewrap
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+      # Ubuntu 24.04 carries the AppArmor patch that restricts unprivileged
+      # user namespaces, which is what bwrap needs. Documented in AGENTS.md as
+      # a distro that will not work without this knob.
+      - name: Permit unprivileged user namespaces
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: guardtest
+        run: python guardtest.py
+
+  # AGENTS.md pins Python 3.9 as the floor because the system python3 on macOS
+  # is still 3.9. Nothing else in CI would catch a 3.10+ API sneaking in.
+  python-floor:
+    name: guards (3.9 floor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+      - name: Permit unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: guardtest
+        run: python guardtest.py
+
+  jail:
+    name: jail (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install bubblewrap
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+      - name: Permit unprivileged user namespaces
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # The backends disagree about the working directory: seatbelt leaves it
+      # alone, bubblewrap --chdir's into the work dir and binds nothing else of
+      # the repo, so a root-relative `jailtest.py` resolves on macOS and does
+      # not exist on Linux. Putting a copy in the work dir satisfies both.
+      - name: Stage jailtest inside the work dir
+        run: |
+          mkdir -p sandbox/work
+          cp jailtest.py sandbox/work/jailtest.py
+      # /usr/bin/python3 on both platforms: /usr is bound read-only inside the
+      # jail, and bwrap --clearenv means PATH lookups are not worth relying on.
+      - name: jailtest (probing from inside the jail)
+        run: python3 oxbox -- /usr/bin/python3 jailtest.py

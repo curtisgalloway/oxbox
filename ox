@@ -269,9 +269,24 @@ def main():
         "include_reasoning": True,
     }
 
+    # The stamp has one-second resolution, so two runs started in the same
+    # second — trivially reachable from a script driving several models at once
+    # — used to share a directory under exist_ok=True and overwrite each other's
+    # request.json and response.json. Losing an audit record to a name collision
+    # is the one failure this log must not have, so claim the directory
+    # exclusively and suffix on collision rather than merging into it.
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
-    log_dir = Path(args.log_dir) / stamp
-    log_dir.mkdir(parents=True, exist_ok=True)
+    base = Path(args.log_dir)
+    base.mkdir(parents=True, exist_ok=True)
+    log_dir = base / stamp
+    attempt = 1
+    while True:
+        try:
+            log_dir.mkdir(exist_ok=False)
+            break
+        except FileExistsError:
+            attempt += 1
+            log_dir = base / ("%s-%d" % (stamp, attempt))
     write_lf(log_dir / "request.json", json.dumps(payload, indent=2))
     write_lf(log_dir / "meta.json", json.dumps({
         "timestamp": stamp,
@@ -315,7 +330,20 @@ def main():
     try:
         opener = urllib.request.build_opener(NoRedirects)
         with opener.open(request, timeout=TIMEOUT_SECONDS) as response:
-            body = json.loads(response.read().decode("utf-8"))
+            raw = response.read()
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as error:
+            # A 200 carrying HTML — a proxy error page, a captive portal, an
+            # auth gateway — is not a protocol error, so nothing above catches
+            # it. Without this it surfaced as a raw JSONDecodeError traceback
+            # with no error.txt, which is the one shape an audit trail must not
+            # take. Keep the bytes; they are the evidence.
+            write_lf(log_dir / "error.txt",
+                     "non-JSON response body\n%s\n\n%s"
+                     % (error, raw[:2000].decode("utf-8", "replace")))
+            sys.exit("ox: provider returned a non-JSON body (%s); raw bytes in %s"
+                     % (error, log_dir / "error.txt"))
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", "replace")
         write_lf(log_dir / "error.txt", f"{error.code}\n{detail}")

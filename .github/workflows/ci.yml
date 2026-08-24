@@ -47,6 +47,11 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: guardtest
         run: python guardtest.py
+      # What ox puts on the wire, against a local listener: no tools array, the
+      # credential paired to its own venue, no forwarding across a redirect.
+      # No network and no key, so it runs everywhere guardtest does.
+      - name: wiretest
+        run: python wiretest.py
 
   # AGENTS.md pins Python 3.9 as the floor because the system python3 on macOS
   # is still 3.9. Nothing else in CI would catch a 3.10+ API sneaking in.
@@ -69,6 +74,8 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: guardtest
         run: python guardtest.py
+      - name: wiretest
+        run: python wiretest.py
 
   jail:
     name: jail (${{ matrix.os }})

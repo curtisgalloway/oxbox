@@ -54,6 +54,7 @@ VENUES = {
 }
 DEFAULT_VENUE = "openrouter"
 DEFAULT_MODEL = VENUES[DEFAULT_VENUE]["default_model"]
+USER_AGENT = "oxbox (+https://github.com/curtisgalloway/oxbox)"
 MAX_PAYLOAD_BYTES = 400_000
 TIMEOUT_SECONDS = 900
 
@@ -275,6 +276,11 @@ def main():
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "X-Title": "oxbox supervised bridge",
+            # Not cosmetic. urllib defaults to `Python-urllib/3.x`, which
+            # OpenCode Zen's Cloudflare rejects outright with `403 error code:
+            # 1010` before the request reaches any route. Identifying the client
+            # is the difference between that venue working and not.
+            "User-Agent": USER_AGENT,
         },
         method="POST",
     )

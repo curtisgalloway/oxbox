@@ -19,6 +19,7 @@ import shutil
 import stat
 import sys
 
+VERSION = "0.1.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 SANDBOX_ROOT = os.path.realpath(os.path.join(HERE, "sandbox"))
 DEFAULT_WORK = os.path.join(SANDBOX_ROOT, "work")
@@ -171,6 +172,9 @@ def main():
     allow_external = False
 
     while args:
+        if args[0] == "--version":
+            print("oxbox %s" % VERSION)
+            return 0
         if args[0] == "--work":
             if len(args) < 2:
                 sys.exit("oxbox: --work needs a directory")

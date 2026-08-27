@@ -218,8 +218,13 @@ Reading the diff, the things worth flagging:
   share one upstream quota across everybody using them, so this is neither
   your key nor your account — it is the pool being busy, and no settings
   change clears it. Unlike the 404, it is transient: back off and retry.
-  Two attempts 150 s apart both failed for a 72 KB review; 10-minute spacing
-  is a saner starting point. Distinguish the two by the code, because the
+  Measured over ~30 attempts across an 18-batch review run: a serial queue
+  with a 120-second retry floor cleared every 429 within three attempts,
+  while three requests launched concurrently were all refused immediately.
+  Concurrency is the trigger, not volume — run one request at a time, retry
+  at two-minute spacing, and never fan out against the shared pool. (An
+  earlier two-attempt sample suggested 10-minute spacing; the larger run
+  corrected it.) Distinguish the two failures by the code, because the
   404's advice (go enable prompt logging) is the wrong move here and sends
   you to a settings page that is already correct.
 

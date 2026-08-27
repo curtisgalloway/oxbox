@@ -204,7 +204,17 @@ def main():
                         help="environment variable holding the key for --base-url")
     parser.add_argument("--model", default=None)
     parser.add_argument("--effort", choices=["low", "high", "max"], default="high")
-    parser.add_argument("--max-tokens", type=int, default=32000)
+    # Reasoning tokens bill against max_tokens, and current reasoning models
+    # spend most of the budget thinking before they answer. At the old 32,000
+    # default two different models ran out mid-answer: one truncated a review
+    # after 122,707 characters of reasoning (the identical request at 100,000
+    # finished, with nearly four times the findings), the other spent 99.9% of
+    # the budget reasoning and returned empty content. The cap costs nothing
+    # unless tokens are actually generated, so the default errs high; pass a
+    # lower value for models whose completion limit rejects it.
+    parser.add_argument("--max-tokens", type=int, default=100000,
+                        help="completion budget; reasoning tokens count "
+                             "against it (default: %(default)s)")
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--stdin", action="store_true",
                         help="read the task from stdin instead of an argument")

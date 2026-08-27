@@ -10,6 +10,7 @@ anything touches a real tree.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -57,6 +58,8 @@ DEFAULT_MODEL = VENUES[DEFAULT_VENUE]["default_model"]
 USER_AGENT = "oxbox (+https://github.com/curtisgalloway/oxbox)"
 MAX_PAYLOAD_BYTES = 400_000
 TIMEOUT_SECONDS = 900
+DEFAULT_MAX_TOKENS = 100000
+MANIFEST_VERSION = 0
 
 SECRET_PATTERNS = [
     (r"sk-[A-Za-z0-9_\-]{20,}", "OpenAI-style API key"),
@@ -123,6 +126,16 @@ class NoRedirects(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class AttemptFailed(Exception):
+    """A post-send failure: the request went out and came back unusable.
+
+    Raised instead of exiting so that --failover can move to the next
+    manifest entry; without --failover the caller turns it into the same
+    sys.exit it always was. Pre-send refusals (secret scan, payload size,
+    bad arguments) stay as exits — they would fail identically everywhere.
+    """
+
+
 def write_lf(path, text):
     """Write text with LF endings on every platform.
 
@@ -183,6 +196,115 @@ def build_context(paths, force, task=""):
     return "\n\n".join(blocks), total, findings
 
 
+def load_manifest(path, allow_paid):
+    """Read a survey manifest and decide which entries this run may use.
+
+    The manifest chooses provider and model; it never chooses where a
+    credential goes. `venue` must name an entry in ox's own VENUES table —
+    the URL and key variable come from there — and a `base_url` in the file
+    is documentation only: cross-checked, warned about, never honored. A
+    tampered manifest therefore cannot re-aim a key; the worst it can do is
+    pick a venue the operator already listed and keyed.
+
+    Entries the run may not use are kept, with the reason, rather than
+    dropped: the skip list is part of the answer to "why did my code go
+    where it went", so it belongs in the status record and on stderr.
+    """
+    try:
+        raw = Path(path).read_bytes()
+    except OSError as error:
+        sys.exit("ox: cannot read manifest %s: %s" % (path, error))
+    digest = hashlib.sha256(raw).hexdigest()
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as error:
+        sys.exit("ox: manifest %s is not valid JSON: %s" % (path, error))
+
+    version = data.get("manifest_version")
+    if not isinstance(version, int) or version > MANIFEST_VERSION:
+        sys.exit("ox: manifest version %r is newer than this ox understands "
+                 "(%d); update ox, or use an older manifest" % (version, MANIFEST_VERSION))
+
+    defaults = data.get("defaults") or {}
+    unknown = sorted(set(defaults) - {"max_tokens"})
+    if unknown:
+        sys.stderr.write("ox: ignoring unrecognized manifest defaults: %s\n"
+                         % ", ".join(unknown))
+
+    recs = data.get("recommendations")
+    if not isinstance(recs, list) or not recs:
+        sys.exit("ox: manifest %s has no recommendations" % path)
+
+    entries = []
+    for index, rec in enumerate(recs):
+        entry = {
+            "position": index + 1,
+            "venue": rec.get("venue"),
+            "model": rec.get("model"),
+            # Omitted cost means unknown, and unknown behaves as paid: the
+            # survey never asserts free-status it has not measured, and ox
+            # never spends on the strength of an absence.
+            "cost": rec.get("cost") or "unknown",
+            "why": rec.get("why") or "",
+            "params": rec.get("params") or {},
+            "skip": None,
+            "url": None,
+            "key_env": None,
+        }
+        rank = rec.get("rank")
+        if rank not in (None, index + 1):
+            sys.stderr.write("ox: manifest rank %r disagrees with position %d; "
+                             "position is authoritative\n" % (rank, index + 1))
+        spec = VENUES.get(entry["venue"])
+        if spec is None:
+            entry["skip"] = "unknown venue %r" % (entry["venue"],)
+        elif not entry["model"]:
+            entry["skip"] = "no model named"
+        elif entry["cost"] != "free" and not allow_paid:
+            entry["skip"] = "cost=%s (pass --allow-paid to use it)" % entry["cost"]
+        elif not os.environ.get(spec["key_env"]):
+            entry["skip"] = "%s not set" % spec["key_env"]
+        else:
+            entry["url"] = spec["url"]
+            entry["key_env"] = spec["key_env"]
+            base = (rec.get("base_url") or "").rstrip("/")
+            if base and entry["url"] != base and not entry["url"].startswith(base + "/"):
+                sys.stderr.write(
+                    "ox: WARNING: manifest base_url %r for venue %s disagrees "
+                    "with ox's table (%s); the table wins — a manifest never "
+                    "chooses where a credential goes\n"
+                    % (rec.get("base_url"), entry["venue"], entry["url"]))
+        entries.append(entry)
+
+    info = {"path": str(path), "sha256": digest,
+            "issue_date": data.get("issue_date"), "defaults": defaults}
+    return entries, info
+
+
+def make_log_dir(base):
+    """Claim a fresh directory for one request.
+
+    The stamp has one-second resolution, so two runs started in the same
+    second — trivially reachable from a script driving several models at
+    once, or from failover attempts inside one run — used to share a
+    directory under exist_ok=True and overwrite each other's request.json
+    and response.json. Losing an audit record to a name collision is the
+    one failure this log must not have, so claim the directory exclusively
+    and suffix on collision rather than merging into it.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    base.mkdir(parents=True, exist_ok=True)
+    log_dir = base / stamp
+    attempt = 1
+    while True:
+        try:
+            log_dir.mkdir(exist_ok=False)
+            return stamp, log_dir
+        except FileExistsError:
+            attempt += 1
+            log_dir = base / ("%s-%d" % (stamp, attempt))
+
+
 def write_status(status):
     """Write the run summary everywhere it belongs.
 
@@ -203,6 +325,110 @@ def write_status(status):
             write_lf(target, json.dumps(record, indent=2))
         except OSError as error:
             sys.stderr.write("ox: could not write status to %s: %s\n" % (target, error))
+
+
+def send_and_parse(api_url, api_key, payload, log_dir):
+    """Send one request and extract the answer, or raise AttemptFailed.
+
+    Every outcome leaves evidence in log_dir — response.json on any JSON
+    reply, error.txt on an HTTP error or a non-JSON body, reasoning.txt and
+    content.md on success — so a failed attempt is as auditable as a
+    successful one.
+    """
+    request = urllib.request.Request(
+        api_url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "X-Title": "oxbox supervised bridge",
+            # Not cosmetic. urllib defaults to `Python-urllib/3.x`, which
+            # OpenCode Zen's Cloudflare rejects outright with `403 error code:
+            # 1010` before the request reaches any route. Identifying the client
+            # is the difference between that venue working and not.
+            "User-Agent": USER_AGENT,
+        },
+        method="POST",
+    )
+
+    try:
+        opener = urllib.request.build_opener(NoRedirects)
+        with opener.open(request, timeout=TIMEOUT_SECONDS) as response:
+            raw = response.read()
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as error:
+            # A 200 carrying HTML — a proxy error page, a captive portal, an
+            # auth gateway — is not a protocol error, so nothing above catches
+            # it. Without this it surfaced as a raw JSONDecodeError traceback
+            # with no error.txt, which is the one shape an audit trail must not
+            # take. Keep the bytes; they are the evidence.
+            write_lf(log_dir / "error.txt",
+                     "non-JSON response body\n%s\n\n%s"
+                     % (error, raw[:2000].decode("utf-8", "replace")))
+            raise AttemptFailed(
+                "ox: provider returned a non-JSON body (%s); raw bytes in %s"
+                % (error, log_dir / "error.txt"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", "replace")
+        write_lf(log_dir / "error.txt", f"{error.code}\n{detail}")
+        raise AttemptFailed(f"ox: HTTP {error.code}: {detail[:500]}")
+    except urllib.error.URLError as error:
+        raise AttemptFailed(f"ox: network error: {error.reason}")
+
+    write_lf(log_dir / "response.json", json.dumps(body, indent=2))
+
+    if "error" in body and body["error"]:
+        raise AttemptFailed(f"ox: api error: {json.dumps(body['error'])[:500]}")
+
+    choices = body.get("choices") or []
+    # Some providers return an empty choices list on a content filter. That
+    # is a real response, not a crash, and the log already holds the raw body.
+    if not choices:
+        raise AttemptFailed("ox: provider returned no choices "
+                            "(see response.json in the log)")
+    choice = choices[0]
+    message = choice.get("message", {}) or {}
+    reasoning = message.get("reasoning") or ""
+    content = message.get("content") or ""
+
+    if reasoning:
+        write_lf(log_dir / "reasoning.txt", reasoning)
+    write_lf(log_dir / "content.md", content)
+
+    if message.get("tool_calls"):
+        sys.stderr.write(
+            "ox: WARNING: model emitted tool_calls despite no tools being offered; "
+            "logged but ignored\n"
+        )
+
+    usage = body.get("usage", {}) or {}
+    sys.stderr.write(
+        f"ox: finish={choice.get('finish_reason')} "
+        f"prompt_tokens={usage.get('prompt_tokens')} "
+        f"completion_tokens={usage.get('completion_tokens')} "
+        f"reasoning_chars={len(reasoning)}\n"
+    )
+
+    # An empty completion is a failure for every caller, and the API called it
+    # a success. Without this, content.md is a 0-byte file with no error beside
+    # it and a script reading it gets a silent no-op that looks like a clean
+    # run. Seen in practice: a reasoning model spent 31,995 of 32,000
+    # completion tokens thinking and emitted nothing, twice, at two different
+    # budgets. The usage numbers are the diagnosis, so include them.
+    if not content.strip():
+        detail = ""
+        if usage.get("completion_tokens_details", {}).get("reasoning_tokens"):
+            detail = (" — %s of %s completion tokens went to reasoning"
+                      % (usage["completion_tokens_details"]["reasoning_tokens"],
+                         usage.get("completion_tokens")))
+        raise AttemptFailed(
+            "ox: model returned no content (finish=%s)%s\n"
+            "ox: the raw response and any reasoning are in %s"
+            % (choice.get("finish_reason"), detail, log_dir)
+        )
+
+    return choice, usage, reasoning, content
 
 
 def main():
@@ -229,6 +455,8 @@ def main():
         "reasoning_tokens": None,
         "reasoning_chars": None,
         "truncated": None,
+        "manifest": None,
+        "attempts": None,
         "status_file": None,
     }
     try:
@@ -260,9 +488,26 @@ def run(status):
                         help="comma-separated files to include as context")
     parser.add_argument("--mode", choices=sorted(SYSTEM_PROMPTS), default="diff",
                         help="output contract (default: diff)")
-    parser.add_argument("--venue", choices=sorted(VENUES), default=DEFAULT_VENUE,
+    # --venue and --max-tokens default to None so that "explicitly given"
+    # is distinguishable from "defaulted": explicit flags beat a manifest,
+    # which beats the built-in defaults, and that precedence needs to know
+    # which one it is looking at.
+    parser.add_argument("--venue", choices=sorted(VENUES), default=None,
                         help="where to send the request; each venue uses its own "
                              "API key variable (default: %s)" % DEFAULT_VENUE)
+    parser.add_argument("--manifest", default=None,
+                        help="pick venue and model from a survey manifest file "
+                             "(first permitted entry). The manifest chooses "
+                             "provider and model only; credentials always come "
+                             "from the venue's own environment variable.")
+    parser.add_argument("--allow-paid", action="store_true",
+                        help="let --manifest use entries whose cost is not "
+                             "confirmed free (paid or unknown)")
+    parser.add_argument("--failover", action="store_true",
+                        help="with --manifest: on a failure after the request "
+                             "is sent, move to the next permitted entry instead "
+                             "of stopping (default: probe mode — one request, "
+                             "one destination)")
     parser.add_argument("--base-url", default=None,
                         help="send to an arbitrary chat-completions endpoint. "
                              "Requires --api-key-env, so a credential is never "
@@ -279,9 +524,10 @@ def run(status):
     # the budget reasoning and returned empty content. The cap costs nothing
     # unless tokens are actually generated, so the default errs high; pass a
     # lower value for models whose completion limit rejects it.
-    parser.add_argument("--max-tokens", type=int, default=100000,
+    parser.add_argument("--max-tokens", type=int, default=None,
                         help="completion budget; reasoning tokens count "
-                             "against it (default: %(default)s)")
+                             "against it (default: %d, or the manifest's "
+                             "value when --manifest is given)" % DEFAULT_MAX_TOKENS)
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--stdin", action="store_true",
                         help="read the task from stdin instead of an argument")
@@ -320,8 +566,25 @@ def run(status):
 
     # Resolve destination and credential together. They are never chosen
     # independently: an unlisted host requires you to name the variable whose
-    # key it may have, so no credential travels somewhere by default.
-    if args.base_url:
+    # key it may have, and a manifest may only name venues from ox's own
+    # table, so no credential travels somewhere by default.
+    manifest_info = None
+    if args.failover and not args.manifest:
+        sys.exit("ox: --failover requires --manifest; a single destination "
+                 "has nothing to fail over to")
+    if args.manifest:
+        # The manifest chooses provider and model; every other destination
+        # flag conflicts with it rather than silently mixing.
+        for value, name in ((args.venue, "--venue"), (args.model, "--model"),
+                            (args.base_url, "--base-url"),
+                            (args.api_key_env, "--api-key-env")):
+            if value:
+                sys.exit("ox: %s conflicts with --manifest; the manifest "
+                         "chooses the destination" % name)
+        entries, manifest_info = load_manifest(args.manifest, args.allow_paid)
+        status["manifest"] = {"path": manifest_info["path"],
+                              "sha256": manifest_info["sha256"]}
+    elif args.base_url:
         if not args.api_key_env:
             sys.exit("ox: --base-url requires --api-key-env, so a key is never "
                      "sent to an unlisted host by accident")
@@ -332,186 +595,155 @@ def run(status):
         if not args.base_url.startswith("https://"):
             sys.exit("ox: --base-url must be an https:// URL (got %r); a "
                      "credential must not travel in cleartext" % args.base_url)
-        api_url = args.base_url
-        key_env = args.api_key_env
-        venue = "custom"
+        if not args.model:
+            sys.exit("ox: --model is required for venue 'custom' (no default)")
+        entries = [{"position": 1, "venue": "custom", "model": args.model,
+                    "cost": None, "why": "", "params": {}, "skip": None,
+                    "url": args.base_url, "key_env": args.api_key_env}]
     else:
         if args.api_key_env:
             sys.exit("ox: --api-key-env only applies with --base-url; "
                      "a named venue already carries its own key variable")
-        venue = args.venue
-        api_url = VENUES[venue]["url"]
-        key_env = VENUES[venue]["key_env"]
+        venue = args.venue or DEFAULT_VENUE
+        model = args.model or VENUES[venue]["default_model"]
+        if not model:
+            sys.exit("ox: --model is required for venue %r (no default)" % venue)
+        entries = [{"position": 1, "venue": venue, "model": model,
+                    "cost": None, "why": "", "params": {}, "skip": None,
+                    "url": VENUES[venue]["url"],
+                    "key_env": VENUES[venue]["key_env"]}]
 
-    model = args.model or (VENUES[venue]["default_model"] if venue != "custom" else None)
-    if not model:
-        sys.exit("ox: --model is required for venue %r (no default)" % venue)
-    status["venue"] = venue
-    status["model"] = model
-
-    api_key = os.environ.get(key_env)
-    if not api_key and not args.dry_run:
-        sys.exit("ox: %s not set (run under: op run --env-file .env -- ./ox ...)" % key_env)
+    if not args.manifest and not os.environ.get(entries[0]["key_env"]) \
+            and not args.dry_run:
+        sys.exit("ox: %s not set (run under: op run --env-file .env -- ./ox ...)"
+                 % entries[0]["key_env"])
 
     paths = [p.strip() for p in args.files.split(",") if p.strip()]
     context, total_bytes, findings = build_context(paths, args.force, task)
 
     user_content = f"{task.strip()}\n\n{context}" if context else task.strip()
 
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPTS[args.mode]},
-            {"role": "user", "content": user_content},
-        ],
-        "max_tokens": args.max_tokens,
-        "temperature": args.temperature,
-        "reasoning": {"effort": args.effort},
-        "include_reasoning": True,
-    }
+    attempts = [] if manifest_info else None
+    total = len(entries)
+    chosen = None
+    for entry in entries:
+        label = ("manifest[%d/%d] %s/%s" % (entry["position"], total,
+                                            entry["venue"], entry["model"])
+                 if manifest_info else "%s/%s" % (entry["venue"], entry["model"]))
+        if entry["skip"]:
+            sys.stderr.write("ox: %s skipped: %s\n" % (label, entry["skip"]))
+            attempts.append({"position": entry["position"],
+                             "venue": entry["venue"], "model": entry["model"],
+                             "skipped": entry["skip"]})
+            continue
 
-    # The stamp has one-second resolution, so two runs started in the same
-    # second — trivially reachable from a script driving several models at once
-    # — used to share a directory under exist_ok=True and overwrite each other's
-    # request.json and response.json. Losing an audit record to a name collision
-    # is the one failure this log must not have, so claim the directory
-    # exclusively and suffix on collision rather than merging into it.
-    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
-    base = Path(args.log_dir)
-    base.mkdir(parents=True, exist_ok=True)
-    log_dir = base / stamp
-    attempt = 1
-    while True:
+        # Explicit flag beats the entry's params, which beat the manifest's
+        # issue-wide defaults, which beat the built-in default.
+        if args.max_tokens is not None:
+            max_tokens = args.max_tokens
+        elif entry["params"].get("max_tokens"):
+            max_tokens = entry["params"]["max_tokens"]
+        elif manifest_info and manifest_info["defaults"].get("max_tokens"):
+            max_tokens = manifest_info["defaults"]["max_tokens"]
+        else:
+            max_tokens = DEFAULT_MAX_TOKENS
+
+        payload = {
+            "model": entry["model"],
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPTS[args.mode]},
+                {"role": "user", "content": user_content},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": args.temperature,
+            "reasoning": {"effort": args.effort},
+            "include_reasoning": True,
+        }
+
+        stamp, log_dir = make_log_dir(Path(args.log_dir))
+        status["log_dir"] = str(log_dir)
+        status["venue"] = entry["venue"]
+        status["model"] = entry["model"]
+        meta = {
+            "timestamp": stamp,
+            "model": entry["model"],
+            "venue": entry["venue"],
+            "endpoint": entry["url"],
+            "key_env": entry["key_env"],
+            "mode": args.mode,
+            "effort": args.effort,
+            "max_tokens": max_tokens,
+            "files": paths,
+            "context_bytes": total_bytes,
+            "secret_scan_hits": findings,
+            "forced": args.force,
+        }
+        if manifest_info:
+            # An audit trail that says where the code went but not why the
+            # destination was chosen is incomplete: record which manifest,
+            # byte-exactly, and which entry.
+            meta["manifest"] = {"path": manifest_info["path"],
+                                "sha256": manifest_info["sha256"],
+                                "entry_position": entry["position"]}
+        write_lf(log_dir / "request.json", json.dumps(payload, indent=2))
+        write_lf(log_dir / "meta.json", json.dumps(meta, indent=2))
+
+        sys.stderr.write(f"ox: log -> {log_dir}\n")
+        if manifest_info:
+            why = " — %s" % entry["why"] if entry["why"] else ""
+            sys.stderr.write("ox: %s%s\n" % (label, why))
+        sys.stderr.write("ox: venue=%s model=%s mode=%s effort=%s "
+                         "context=%dB files=%d\n"
+                         % (entry["venue"], entry["model"], args.mode,
+                            args.effort, total_bytes, len(paths)))
+
+        if args.dry_run:
+            sys.stderr.write("ox: dry run, nothing sent\n")
+            print(json.dumps(payload, indent=2))
+            return
+
+        record = {"position": entry["position"], "venue": entry["venue"],
+                  "model": entry["model"], "log_dir": str(log_dir)}
         try:
-            log_dir.mkdir(exist_ok=False)
-            break
-        except FileExistsError:
-            attempt += 1
-            log_dir = base / ("%s-%d" % (stamp, attempt))
-    status["log_dir"] = str(log_dir)
-    write_lf(log_dir / "request.json", json.dumps(payload, indent=2))
-    write_lf(log_dir / "meta.json", json.dumps({
-        "timestamp": stamp,
-        "model": model,
-        "venue": venue,
-        "endpoint": api_url,
-        "key_env": key_env,
-        "mode": args.mode,
-        "effort": args.effort,
-        "files": paths,
-        "context_bytes": total_bytes,
-        "secret_scan_hits": findings,
-        "forced": args.force,
-    }, indent=2))
+            choice, usage, reasoning, content = send_and_parse(
+                entry["url"], os.environ.get(entry["key_env"]), payload, log_dir)
+        except AttemptFailed as failure:
+            if attempts is not None:
+                record["error"] = str(failure)
+                attempts.append(record)
+                status["attempts"] = attempts
+            if not args.failover:
+                sys.exit(str(failure))
+            sys.stderr.write("%s\nox: %s failed; trying the next entry\n"
+                             % (failure, label))
+            continue
 
-    sys.stderr.write(f"ox: log -> {log_dir}\n")
-    sys.stderr.write(f"ox: venue={venue} model={model} mode={args.mode} effort={args.effort} "
-                     f"context={total_bytes}B files={len(paths)}\n")
+        details = usage.get("completion_tokens_details") or {}
+        status["finish_reason"] = choice.get("finish_reason")
+        status["prompt_tokens"] = usage.get("prompt_tokens")
+        status["completion_tokens"] = usage.get("completion_tokens")
+        status["reasoning_tokens"] = details.get("reasoning_tokens")
+        status["reasoning_chars"] = len(reasoning)
+        status["truncated"] = choice.get("finish_reason") == "length"
+        if attempts is not None:
+            record["finish_reason"] = choice.get("finish_reason")
+            attempts.append(record)
+        chosen = content
+        break
 
-    if args.dry_run:
-        sys.stderr.write("ox: dry run, nothing sent\n")
-        print(json.dumps(payload, indent=2))
-        return
-
-    request = urllib.request.Request(
-        api_url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "X-Title": "oxbox supervised bridge",
-            # Not cosmetic. urllib defaults to `Python-urllib/3.x`, which
-            # OpenCode Zen's Cloudflare rejects outright with `403 error code:
-            # 1010` before the request reaches any route. Identifying the client
-            # is the difference between that venue working and not.
-            "User-Agent": USER_AGENT,
-        },
-        method="POST",
-    )
-
-    try:
-        opener = urllib.request.build_opener(NoRedirects)
-        with opener.open(request, timeout=TIMEOUT_SECONDS) as response:
-            raw = response.read()
-        try:
-            body = json.loads(raw.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError) as error:
-            # A 200 carrying HTML — a proxy error page, a captive portal, an
-            # auth gateway — is not a protocol error, so nothing above catches
-            # it. Without this it surfaced as a raw JSONDecodeError traceback
-            # with no error.txt, which is the one shape an audit trail must not
-            # take. Keep the bytes; they are the evidence.
-            write_lf(log_dir / "error.txt",
-                     "non-JSON response body\n%s\n\n%s"
-                     % (error, raw[:2000].decode("utf-8", "replace")))
-            sys.exit("ox: provider returned a non-JSON body (%s); raw bytes in %s"
-                     % (error, log_dir / "error.txt"))
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", "replace")
-        write_lf(log_dir / "error.txt", f"{error.code}\n{detail}")
-        sys.exit(f"ox: HTTP {error.code}: {detail[:500]}")
-    except urllib.error.URLError as error:
-        sys.exit(f"ox: network error: {error.reason}")
-
-    write_lf(log_dir / "response.json", json.dumps(body, indent=2))
-
-    if "error" in body and body["error"]:
-        sys.exit(f"ox: api error: {json.dumps(body['error'])[:500]}")
-
-    choices = body.get("choices") or []
-    # Some providers return an empty choices list on a content filter. That
-    # is a real response, not a crash, and the log already holds the raw body.
-    if not choices:
-        sys.exit("ox: provider returned no choices (see response.json in the log)")
-    choice = choices[0]
-    message = choice.get("message", {}) or {}
-    reasoning = message.get("reasoning") or ""
-    content = message.get("content") or ""
-
-    if reasoning:
-        write_lf(log_dir / "reasoning.txt", reasoning)
-    write_lf(log_dir / "content.md", content)
-
-    tool_calls = message.get("tool_calls")
-    if tool_calls:
-        sys.stderr.write(
-            "ox: WARNING: model emitted tool_calls despite no tools being offered; "
-            "logged but ignored\n"
-        )
-
-    usage = body.get("usage", {}) or {}
-    sys.stderr.write(
-        f"ox: finish={choice.get('finish_reason')} "
-        f"prompt_tokens={usage.get('prompt_tokens')} "
-        f"completion_tokens={usage.get('completion_tokens')} "
-        f"reasoning_chars={len(reasoning)}\n"
-    )
-    details = usage.get("completion_tokens_details") or {}
-    status["finish_reason"] = choice.get("finish_reason")
-    status["prompt_tokens"] = usage.get("prompt_tokens")
-    status["completion_tokens"] = usage.get("completion_tokens")
-    status["reasoning_tokens"] = details.get("reasoning_tokens")
-    status["reasoning_chars"] = len(reasoning)
-    status["truncated"] = choice.get("finish_reason") == "length"
-
-    # An empty completion is a failure for every caller, and the API called it a
-    # success. Without this, content.md is a 0-byte file with no error beside it
-    # and a script reading it gets a silent no-op that looks like a clean run.
-    #
-    # Seen in practice: a reasoning model spent 31,995 of 32,000 completion
-    # tokens thinking and emitted nothing, twice, at two different budgets. The
-    # usage numbers are the diagnosis, so print them rather than a bare failure.
-    if not content.strip():
-        detail = ""
-        if usage.get("completion_tokens_details", {}).get("reasoning_tokens"):
-            detail = (" — %s of %s completion tokens went to reasoning"
-                      % (usage["completion_tokens_details"]["reasoning_tokens"],
-                         usage.get("completion_tokens")))
-        sys.exit(
-            "ox: model returned no content (finish=%s)%s\n"
-            "ox: the raw response and any reasoning are in %s"
-            % (choice.get("finish_reason"), detail, log_dir)
-        )
+    status["attempts"] = attempts
+    if chosen is None:
+        # Only reachable with --manifest: every entry was skipped, or (under
+        # --failover) every attempted entry failed after sending. Without
+        # --failover the first failure already exited above, message intact.
+        lines = []
+        for item in attempts or []:
+            reason = item.get("skipped") or item.get("error") or "not attempted"
+            lines.append("  [%s] %s/%s: %s"
+                         % (item.get("position"), item.get("venue"),
+                            item.get("model"), reason.splitlines()[0]))
+        sys.exit("ox: no manifest entry produced an answer:\n" + "\n".join(lines))
+    content = chosen
 
     # Truncation with content is quieter than truncation without: the answer
     # reads as complete unless you notice the missing tail. Seen in practice

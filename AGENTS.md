@@ -68,10 +68,13 @@ executed inside it.
   it — only backing off. Serial requests with a 120-second retry floor
   clear it (measured: ~30 attempts across 18 batches, all cleared within
   three tries); concurrent requests trigger it reliably, so never fan out
-  against the shared pool. Retries belong in the caller, not in `ox` —
+  against the shared pool. Timed retries belong in the caller, not in `ox` —
   exiting non-zero with the provider's error text intact is what makes the
-  failure class diagnosable. Do not "fix" a 429 by touching the
-  privacy toggle; that is the 404's remedy and it is already right.
+  failure class diagnosable. (`--failover` is not a retry: it is one pass
+  across *different* manifest entries, which is the polite move against a
+  shared pool, not a second draw on the same one.) Do not "fix" a 429 by
+  touching the privacy toggle; that is the 404's remedy and it is already
+  right.
 - `ox` exits non-zero on an API error, but a pipeline masks it: `./ox … |
   tail` reports `tail`'s exit status, not `ox`'s. A script that must pipe
   needs `set -o pipefail`; better is not to pipe — `--output` writes the
@@ -99,6 +102,17 @@ executed inside it.
   whatever URL it is given, so a bare base-url flag over a hardcoded key is a
   credential-exfiltration path wearing a convenience flag. Named venues bind
   URL and key variable in one table entry; keep it that way.
+- **A manifest chooses provider and model, never where a credential goes.**
+  `--manifest` resolves `venue` against the VENUES table; the file's
+  `base_url` is cross-checked documentation and is never honored, so a
+  tampered manifest cannot re-aim a key. Keep it that way — a downloaded
+  file with the power to aim a Bearer token is the exact hole the venue
+  table exists to close.
+- **Failover is opt-in and belongs to `--manifest` only.** The default is
+  probe mode: one request, one destination, because a survey measurement
+  that silently switched targets would be corrupt data. `--failover` is one
+  pass across permitted entries — no wrap-around, no waiting — and every
+  attempt gets its own log directory and status entry.
 - Re-run ALL THREE suites after any change to `profiles/jail.sb`, `oxbox`, `ox`,
   or the validators: `python3 guardtest.py` (pre-jail refusals plus positive
   controls), `python3 wiretest.py` (what the request actually carries, against a

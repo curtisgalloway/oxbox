@@ -325,6 +325,132 @@ def main():
            "a truncated answer is flagged in status and on stderr",
            "exit=%s stderr=%r" % (result.returncode, result.stderr[-120:]))
 
+    print("\n=== a manifest picks the destination, never the credential ===")
+
+    # Two local venues: "openrouter" always answers 429, "opencode" answers
+    # properly. The patched ox has its VENUES table pointed at them, which is
+    # the point — a manifest names venues, and the table maps venue to URL
+    # and key variable. The manifest's own base_url is never consulted.
+    flaky = {}
+    flaky_server = serve(capture_handler(
+        flaky, status=429,
+        body=json.dumps({"error": {"message": "rate-limited", "code": 429}}).encode()))
+    solid = {}
+    solid_server = serve(capture_handler(solid))
+    source = (HERE / "ox").read_text(encoding="utf-8")
+    source = source.replace(
+        "https://openrouter.ai/api/v1/chat/completions",
+        "http://127.0.0.1:%d/or/v1/chat/completions" % flaky_server.server_address[1])
+    source = source.replace(
+        "https://opencode.ai/zen/v1/chat/completions",
+        "http://127.0.0.1:%d/oc/v1/chat/completions" % solid_server.server_address[1])
+    patched = tmp / "ox_manifest"
+    patched.write_text(source, encoding="utf-8")
+
+    manifest = tmp / "manifest.json"
+    manifest.write_text(json.dumps({
+        "manifest_version": 0,
+        "issue_date": "2026-08-27",
+        "defaults": {"max_tokens": 55555},
+        "recommendations": [
+            {"rank": 1, "venue": "openrouter", "model": "top-paid",
+             "cost": "paid", "why": "best, but costs money"},
+            {"rank": 2, "venue": "acme", "model": "x", "cost": "free"},
+            {"rank": 3, "venue": "openrouter", "model": "flaky-free",
+             "cost": "free", "params": {"max_tokens": 4242}},
+            {"rank": 4, "venue": "opencode", "model": "solid-free",
+             "cost": "free"},
+        ],
+    }), encoding="utf-8")
+    menv = dict(os.environ,
+                OPENROUTER_API_KEY="sk-canary-openrouter",
+                OPENCODE_ZEN_API_KEY="sk-canary-opencode")
+    sfile = tmp / "manifest-status.json"
+
+    result = subprocess.run(
+        [sys.executable, str(patched), "--manifest", str(manifest),
+         "--failover", "--mode", "ask", "--status-file", str(sfile),
+         "--log-dir", str(tmp / "mlogs"), "hello"],
+        capture_output=True, text=True, timeout=60, env=menv)
+    stat = json.loads(sfile.read_text()) if sfile.exists() else {}
+    report(result.returncode == 0 and result.stdout.strip() == "ok",
+           "--failover lands on the first working entry",
+           "exit=%s stderr=%r" % (result.returncode, result.stderr[-160:]))
+    report((flaky.get("headers") or {}).get("Authorization") == "Bearer sk-canary-openrouter"
+           and (solid.get("headers") or {}).get("Authorization") == "Bearer sk-canary-opencode",
+           "each attempt carries its own venue's key, never another's",
+           "%r / %r" % ((flaky.get("headers") or {}).get("Authorization"),
+                        (solid.get("headers") or {}).get("Authorization")))
+    flaky_payload = json.loads(flaky.get("body") or b"{}")
+    solid_payload = json.loads(solid.get("body") or b"{}")
+    report(flaky_payload.get("max_tokens") == 4242
+           and solid_payload.get("max_tokens") == 55555,
+           "entry params beat manifest defaults, which beat built-ins",
+           "%s / %s" % (flaky_payload.get("max_tokens"),
+                        solid_payload.get("max_tokens")))
+    kinds = [(a.get("skipped") and "skip") or (a.get("error") and "error")
+             or a.get("finish_reason") for a in stat.get("attempts") or []]
+    report(kinds == ["skip", "skip", "error", "stop"],
+           "the status record audits every entry: skip, skip, error, success",
+           repr(kinds))
+    report(bool((stat.get("manifest") or {}).get("sha256"))
+           and stat.get("model") == "solid-free",
+           "the winning entry and the manifest's sha256 are recorded")
+
+    # Probe mode is the default: the first permitted entry's failure is the
+    # run's failure, and no other venue is contacted.
+    solid.clear()
+    result = subprocess.run(
+        [sys.executable, str(patched), "--manifest", str(manifest),
+         "--mode", "ask", "--status-file", str(sfile),
+         "--log-dir", str(tmp / "mlogs"), "hello"],
+        capture_output=True, text=True, timeout=60, env=menv)
+    report(result.returncode != 0 and "HTTP 429" in result.stderr and not solid,
+           "without --failover the first permitted entry's failure stops the run",
+           "exit=%s contacted=%r" % (result.returncode, bool(solid)))
+
+    result = subprocess.run(
+        [sys.executable, str(patched), "--manifest", str(manifest),
+         "--model", "m", "--mode", "ask",
+         "--log-dir", str(tmp / "mlogs"), "hello"],
+        capture_output=True, text=True, timeout=60, env=menv)
+    report(result.returncode != 0 and "conflicts" in result.stderr,
+           "--model conflicts with --manifest instead of silently mixing")
+
+    result = subprocess.run(
+        [sys.executable, str(patched), "--failover", "--mode", "ask",
+         "--log-dir", str(tmp / "mlogs"), "hello"],
+        capture_output=True, text=True, timeout=60, env=menv)
+    report(result.returncode != 0 and "requires --manifest" in result.stderr,
+           "--failover without --manifest is refused")
+
+    newer = tmp / "manifest-v99.json"
+    newer.write_text(json.dumps({"manifest_version": 99,
+                                 "recommendations": [{}]}), encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(patched), "--manifest", str(newer),
+         "--mode", "ask", "--log-dir", str(tmp / "mlogs"), "hello"],
+        capture_output=True, text=True, timeout=60, env=menv)
+    report(result.returncode != 0 and "newer than this ox understands" in result.stderr,
+           "a manifest from the future is refused, not misread")
+
+    paid_only = tmp / "manifest-paid.json"
+    paid_only.write_text(json.dumps({
+        "manifest_version": 0,
+        "recommendations": [{"rank": 1, "venue": "openrouter",
+                             "model": "top-paid", "cost": "paid"}],
+    }), encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(patched), "--manifest", str(paid_only),
+         "--mode", "ask", "--log-dir", str(tmp / "mlogs"), "hello"],
+        capture_output=True, text=True, timeout=60, env=menv)
+    report(result.returncode != 0
+           and "no manifest entry produced an answer" in result.stderr
+           and "--allow-paid" in result.stderr,
+           "an all-skipped manifest exits with each entry's reason")
+    for server in (flaky_server, solid_server):
+        server.shutdown()
+
     print("\n=== the audit log survives collisions ===")
 
     logs = tmp / "collide"

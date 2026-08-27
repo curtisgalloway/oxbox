@@ -180,6 +180,45 @@ Modes: `--mode diff` (default, returns a patch), `--mode review` (findings, no
 patch), `--mode ask` (plain question). Add `--dry-run` to build and log a
 request without sending it.
 
+## Survey manifests
+
+The Oxbox Survey publishes a machine-readable manifest with each issue — an
+ordered list of that week's recommended models. `--manifest` points ox at the
+file instead of transcribing venue and model by hand:
+
+```bash
+./ox --manifest oxbox-manifest-2026-08-27.json --files x.py --mode review "..."
+```
+
+ox takes the first *permitted* entry: cost confirmed `free` unless you pass
+`--allow-paid` (an entry of unknown cost counts as paid), a venue this ox
+knows, and that venue's key variable actually set. Skipped entries are
+announced with their reasons, and the run's status record lists every one.
+
+Two usage models, chosen explicitly:
+
+- **Probe mode (the default).** One request, one destination, exactly what a
+  survey measurement needs. If the chosen entry fails, the run fails.
+- **`--failover`.** For everyday use — you want an answer, not a data point.
+  On a failure after the request is sent (429, 5xx, network error, empty
+  response), ox moves to the next permitted entry. One pass, no waiting:
+  waiting out a busy pool on a timer is still the caller's job. Each attempt
+  is announced on stderr and gets its own log directory, and the status
+  record carries the full attempt list.
+
+  Passing `--failover` is consent to send the payload to *any* permitted
+  entry until one answers. The manifest is the blast radius; the cost gate
+  and which key variables you export bound it.
+
+The manifest chooses provider and model — **never where a credential goes**.
+`venue` must name an entry in ox's own table; the URL and key variable come
+from there, and a `base_url` in the file is documentation that ox
+cross-checks and refuses to honor. A tampered manifest cannot re-aim a key.
+Precedence: explicit flags beat the entry's `params`, which beat the
+manifest's `defaults`, which beat the built-ins. Each attempt's `meta.json`
+records the manifest's sha256 and the entry used, because an audit trail
+should say why the destination was chosen, not just what it was.
+
 ## What to actually watch for
 
 The harness contains the model; it does not evaluate it. That part is yours.

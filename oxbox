@@ -21,9 +21,34 @@ import sys
 
 VERSION = "0.1.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
-SANDBOX_ROOT = os.path.realpath(os.path.join(HERE, "sandbox"))
+# The project root is the working directory, not the script's directory: an
+# installed oxbox lives in /usr/bin, and the sandbox belongs to whatever
+# project you are standing in. oxseed and oxapply anchor the same way, so all
+# three agree on where sandbox/ is. Running a source checkout from its root
+# behaves exactly as before.
+PROJECT_ROOT = os.getcwd()
+SANDBOX_ROOT = os.path.realpath(os.path.join(PROJECT_ROOT, "sandbox"))
 DEFAULT_WORK = os.path.join(SANDBOX_ROOT, "work")
-PROFILE = os.path.join(HERE, "profiles", "jail.sb")
+
+
+def find_profile():
+    """The seatbelt profile, wherever this oxbox is installed.
+
+    A source checkout carries it at profiles/jail.sb next to the script; a
+    package (deb, Homebrew) installs the script into <prefix>/bin and the
+    profile into <prefix>/share/oxbox/jail.sb. Refusing when neither exists
+    is deliberate — there is no jail without the profile, and no jail means
+    no run.
+    """
+    candidates = [
+        os.path.join(HERE, "profiles", "jail.sb"),
+        os.path.normpath(os.path.join(HERE, "..", "share", "oxbox", "jail.sb")),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    sys.exit("oxbox: seatbelt profile jail.sb not found; looked in:\n"
+             + "\n".join("oxbox:   " + path for path in candidates))
 
 F_GETPATH = 50  # macOS fcntl: resolve a descriptor back to its path
 
@@ -62,7 +87,7 @@ def sensitive_paths(real_home):
     else:
         names += [".bash_history", ".claude", ".kube/config", ".docker/config.json"]
     paths = [os.path.join(real_home, name) for name in names]
-    paths.append(os.path.join(HERE, ".env"))
+    paths.append(os.path.join(PROJECT_ROOT, ".env"))
     if sys.platform != "darwin":
         paths.append("/etc/shadow")
     return paths
@@ -116,9 +141,8 @@ def escaping_descriptors():
 def macos_argv(work, command):
     if not os.path.exists("/usr/bin/sandbox-exec"):
         sys.exit("oxbox: /usr/bin/sandbox-exec not found; cannot jail on this macOS")
-    if not os.path.isfile(PROFILE):
-        sys.exit(f"oxbox: missing seatbelt profile: {PROFILE}")
-    return ["/usr/bin/sandbox-exec", "-f", PROFILE, "-D", f"WORK={work}", *command]
+    profile = find_profile()
+    return ["/usr/bin/sandbox-exec", "-f", profile, "-D", f"WORK={work}", *command]
 
 
 def linux_argv(work, command):
@@ -239,7 +263,7 @@ def main():
     env = {
         "HOME": work,
         "REAL_HOME": real_home,
-        "REPO_ROOT": HERE,
+        "REPO_ROOT": PROJECT_ROOT,
         "OXBOX_EXISTING_PATHS": "\n".join(existing),
         "OXBOX_PLATFORM": sys.platform,
         "TMPDIR": tmpdir,

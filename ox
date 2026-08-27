@@ -537,7 +537,11 @@ def run(status):
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--stdin", action="store_true",
                         help="read the task from stdin instead of an argument")
-    parser.add_argument("--log-dir", default=str(Path(__file__).resolve().parent / "logs"))
+    # Anchored to the working directory, not the script's: an installed ox
+    # lives in /usr/bin or a Homebrew Cellar, where a script-relative logs/
+    # is unwritable or worse. The working directory is the project; running
+    # from a source checkout's root behaves exactly as before.
+    parser.add_argument("--log-dir", default=str(Path.cwd() / "logs"))
     parser.add_argument("--output", default=None,
                         help="write the model's answer to this file instead of "
                              "stdout; written only when the run succeeds")

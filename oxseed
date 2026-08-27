@@ -18,8 +18,10 @@ import sys
 from pathlib import Path
 
 VERSION = "0.1.0"
-HERE = Path(__file__).resolve().parent
-SANDBOX = HERE / "sandbox"
+# The sandbox lives under the working directory, not the script's: an
+# installed oxseed lives in /usr/bin, and the project you are seeding for is
+# wherever you are standing. A source checkout run from its root is unchanged.
+SANDBOX = Path.cwd() / "sandbox"
 WORK = SANDBOX / "work"
 
 

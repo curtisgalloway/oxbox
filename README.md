@@ -139,11 +139,30 @@ patch that restricts user namespaces on an Ubuntu 24.04 host; there is no
 Requires Python 3.9+ and git, plus `bubblewrap` on Linux. No third-party
 Python packages — deliberately.
 
+**Install from a package:**
+
+```bash
+# Debian/Ubuntu: the .deb from the latest GitHub Release
+sudo apt install ./oxbox_<version>_all.deb
+
+# macOS (or Linux) via Homebrew
+brew install curtisgalloway/tap/oxbox
+```
+
+**Or run from a checkout:**
+
 ```bash
 git clone https://github.com/curtisgalloway/oxbox
 cd oxbox
 export OPENROUTER_API_KEY=sk-or-v1-...
 ```
+
+Either way, the tools operate on the **working directory**: `oxseed` builds
+`./sandbox/`, `ox` logs to `./logs/`, and `oxbox` jails into `./sandbox/work`
+— so stand in the project directory you are working from (a source checkout
+run from its root behaves the same as always). The test suites assert against
+the checkout layout, so verifying the jail on a new machine is a git-clone
+operation even when the tools came from a package.
 
 If you use 1Password, copy `.env.example` to `.env`, point it at your item, and
 prefix commands with `op run --env-file .env --`. Any method that puts

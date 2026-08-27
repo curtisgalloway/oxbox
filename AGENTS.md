@@ -142,6 +142,29 @@ executed inside it.
   `build_context`, so route new content through it rather than around it.
 - Do not send anything to this model you would not hand to an unnamed lab.
 
+## Packaging rules
+
+- **State anchors at the working directory; only code anchors at the script.**
+  `sandbox/`, `logs/`, and the `.env` sensitive-path probe are
+  working-directory relative, because installed tools live in `/usr/bin` or a
+  Homebrew Cellar where script-relative state is unwritable or worse. The
+  seatbelt profile is the one script-relative lookup: `profiles/jail.sb`
+  beside the script (checkout) or `../share/oxbox/jail.sb` (installed prefix)
+  — see `find_profile` in `oxbox`. Keep new state cwd-anchored and new code
+  assets on the profile's two-location pattern.
+- **All three tools must agree on where the sandbox is.** `oxseed` creates
+  it, `oxapply` writes into it, `oxbox` jails into it; they all derive it
+  from the working directory. Changing the anchor in one without the others
+  quietly splits the sandbox in two.
+- **The test suites assert against the checkout layout** (`guardtest`
+  chdirs to the repo root for exactly this reason) and are not packaged.
+  Verifying the jail on a new machine is a git-clone operation; the release
+  workflow's smoke test runs jailtest against the installed tools so a
+  package that breaks the jail cannot ship.
+- **The tag must match the tools.** Every tool carries `VERSION`; wiretest
+  asserts the four agree, and the release workflow refuses a tag that
+  disagrees with `ox --version`. Bump all four together.
+
 ## Cross-platform rules
 
 - **Never add a "best effort" mode.** `oxbox` supports seatbelt and bubblewrap

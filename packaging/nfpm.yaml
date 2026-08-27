@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+
+# nfpm manifest for the Linux .deb (built by .github/workflows/release.yml).
+# VERSION is injected as an environment variable by the workflow. Pure Python,
+# so the package is arch-independent (arch: all) and nothing is compiled.
+#
+# Layout matches what the tools expect when installed (see find_profile in
+# oxbox): executables on PATH, and shared data under /usr/share/oxbox — though
+# the seatbelt profile is macOS-only, so the Linux .deb does not ship it; the
+# Linux jail is bubblewrap, listed as a hard dependency because without it
+# there is no jail and oxbox refuses to run.
+#
+# Not packaged: the test suites (guardtest/wiretest/jailtest). They assert
+# against a source checkout's layout; verifying the jail on a new machine is
+# a git-clone operation, and README says so.
+
+name: oxbox
+arch: all
+version: ${VERSION}
+platform: linux
+section: utils
+priority: optional
+maintainer: Curtis Galloway <4055365+curtisgalloway@users.noreply.github.com>
+homepage: https://github.com/curtisgalloway/oxbox
+license: Apache-2.0
+description: |
+  Supervised harness for pointing an untrusted LLM at your code.
+  No tools, no shell, no network path back to your machine: ox talks to
+  the model (text in, text out, full audit log), oxseed builds a
+  disposable sandbox copy, oxapply quarantines its patches into the
+  sandbox, and oxbox executes the result under bubblewrap with no
+  network and no writes outside the sandbox.
+depends:
+  - python3
+  - bubblewrap
+  - git
+contents:
+  - src: ox
+    dst: /usr/bin/ox
+    file_info:
+      mode: 0o755
+  - src: oxbox
+    dst: /usr/bin/oxbox
+    file_info:
+      mode: 0o755
+  - src: oxapply
+    dst: /usr/bin/oxapply
+    file_info:
+      mode: 0o755
+  - src: oxseed
+    dst: /usr/bin/oxseed
+    file_info:
+      mode: 0o755
+  - src: LICENSE
+    dst: /usr/share/doc/oxbox/LICENSE
+  - src: README.md
+    dst: /usr/share/doc/oxbox/README.md

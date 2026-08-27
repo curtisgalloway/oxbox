@@ -74,6 +74,10 @@ def expect_allowed(label, argv):
 
 
 def main():
+    # The tools anchor sandbox/ and logs/ at their working directory, and this
+    # suite's expectations are all HERE-relative — so stand in the repo root
+    # regardless of where the suite was invoked from.
+    os.chdir(HERE)
     temp = Path(tempfile.mkdtemp(prefix="oxbox-guardtest"))
     source = temp / "src"
     source.mkdir()

@@ -183,7 +183,74 @@ def build_context(paths, force, task=""):
     return "\n\n".join(blocks), total, findings
 
 
+def write_status(status):
+    """Write the run summary everywhere it belongs.
+
+    Two destinations: `status.json` beside the other audit artifacts once the
+    log directory exists, and the path named by --status-file if the caller
+    gave one. A failed write warns rather than raises — this runs on the way
+    out, and clobbering the real exit status with an OSError would replace the
+    diagnosis with a symptom.
+    """
+    record = {key: value for key, value in status.items() if key != "status_file"}
+    targets = []
+    if status.get("log_dir"):
+        targets.append(Path(status["log_dir"]) / "status.json")
+    if status.get("status_file"):
+        targets.append(Path(status["status_file"]))
+    for target in targets:
+        try:
+            write_lf(target, json.dumps(record, indent=2))
+        except OSError as error:
+            sys.stderr.write("ox: could not write status to %s: %s\n" % (target, error))
+
+
 def main():
+    # ox reports failure in its exit code, but the common scripted pattern
+    # (`./ox ... | tee review.md`) reports the last command's status, so a
+    # failed run reads as success unless the caller remembered pipefail. The
+    # status record turns that shell trivia into a checkable fact: every exit
+    # after argument parsing — success, refusal, HTTP error, empty content —
+    # lands here and writes how the run ended. sys.exit() raises SystemExit,
+    # so one wrapper catches every path without threading a result through.
+    status = {
+        "ok": False,
+        "exit_code": None,
+        "error": None,
+        "venue": None,
+        "model": None,
+        "mode": None,
+        "dry_run": False,
+        "log_dir": None,
+        "output": None,
+        "finish_reason": None,
+        "prompt_tokens": None,
+        "completion_tokens": None,
+        "reasoning_tokens": None,
+        "reasoning_chars": None,
+        "truncated": None,
+        "status_file": None,
+    }
+    try:
+        run(status)
+    except SystemExit as exc:
+        if exc.code is None or exc.code == 0:
+            status["ok"] = True
+            status["exit_code"] = 0
+        elif isinstance(exc.code, int):
+            status["exit_code"] = exc.code
+        else:
+            # sys.exit("message") — Python prints it to stderr and exits 1.
+            status["error"] = str(exc.code)
+            status["exit_code"] = 1
+        write_status(status)
+        raise
+    status["ok"] = True
+    status["exit_code"] = 0
+    write_status(status)
+
+
+def run(status):
     parser = argparse.ArgumentParser(
         prog="ox",
         description="Send a task to an untrusted model. No tools, full audit log.",
@@ -219,11 +286,33 @@ def main():
     parser.add_argument("--stdin", action="store_true",
                         help="read the task from stdin instead of an argument")
     parser.add_argument("--log-dir", default=str(Path(__file__).resolve().parent / "logs"))
+    parser.add_argument("--output", default=None,
+                        help="write the model's answer to this file instead of "
+                             "stdout; written only when the run succeeds")
+    parser.add_argument("--status-file", default=None,
+                        help="write a JSON run summary here on every exit, "
+                             "success or failure, so a script checks a fact "
+                             "instead of relying on pipeline exit codes")
     parser.add_argument("--force", action="store_true",
                         help="send even if the secret scan or size guard trips")
     parser.add_argument("--dry-run", action="store_true",
                         help="build and log the request, print it, send nothing")
     args = parser.parse_args()
+
+    status["mode"] = args.mode
+    status["dry_run"] = args.dry_run
+    status["output"] = args.output
+    status["status_file"] = args.status_file
+    if args.status_file:
+        # Mark the run in progress immediately, so a crash or kill can never
+        # leave a stale success record from an earlier run for a script to
+        # read. The exit path overwrites this with the real outcome.
+        write_status(status)
+    if args.output and os.path.exists(args.output):
+        # Same hazard, other file: a leftover answer from a previous run must
+        # not read as this run's. Naming the path hands ox the file, like -o
+        # anywhere else.
+        os.remove(args.output)
 
     task = sys.stdin.read() if args.stdin else args.task
     if not task or not task.strip():
@@ -257,6 +346,8 @@ def main():
     model = args.model or (VENUES[venue]["default_model"] if venue != "custom" else None)
     if not model:
         sys.exit("ox: --model is required for venue %r (no default)" % venue)
+    status["venue"] = venue
+    status["model"] = model
 
     api_key = os.environ.get(key_env)
     if not api_key and not args.dry_run:
@@ -297,6 +388,7 @@ def main():
         except FileExistsError:
             attempt += 1
             log_dir = base / ("%s-%d" % (stamp, attempt))
+    status["log_dir"] = str(log_dir)
     write_lf(log_dir / "request.json", json.dumps(payload, indent=2))
     write_lf(log_dir / "meta.json", json.dumps({
         "timestamp": stamp,
@@ -394,6 +486,13 @@ def main():
         f"completion_tokens={usage.get('completion_tokens')} "
         f"reasoning_chars={len(reasoning)}\n"
     )
+    details = usage.get("completion_tokens_details") or {}
+    status["finish_reason"] = choice.get("finish_reason")
+    status["prompt_tokens"] = usage.get("prompt_tokens")
+    status["completion_tokens"] = usage.get("completion_tokens")
+    status["reasoning_tokens"] = details.get("reasoning_tokens")
+    status["reasoning_chars"] = len(reasoning)
+    status["truncated"] = choice.get("finish_reason") == "length"
 
     # An empty completion is a failure for every caller, and the API called it a
     # success. Without this, content.md is a 0-byte file with no error beside it
@@ -414,7 +513,24 @@ def main():
             % (choice.get("finish_reason"), detail, log_dir)
         )
 
-    print(content)
+    # Truncation with content is quieter than truncation without: the answer
+    # reads as complete unless you notice the missing tail. Seen in practice
+    # as a review cut off mid-sentence at the old default budget, four
+    # findings into what turned out to be fifteen. Warn rather than fail —
+    # a partial answer has value in front of a human — and let scripts
+    # check `truncated` in the status record instead.
+    if status["truncated"]:
+        sys.stderr.write(
+            "ox: WARNING: output truncated at the max_tokens cap "
+            "(finish=length); raise --max-tokens\n"
+        )
+
+    if args.output:
+        # Match stdout byte-for-byte: print() appends the trailing newline.
+        write_lf(args.output, content if content.endswith("\n") else content + "\n")
+        sys.stderr.write("ox: answer -> %s\n" % args.output)
+    else:
+        print(content)
 
 
 if __name__ == "__main__":

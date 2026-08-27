@@ -141,6 +141,19 @@ def main():
            and result.stdout.strip() == "ox %s" % ox["VERSION"],
            "ox --version prints it", repr(result.stdout))
 
+    # Installed tools anchor state at the working directory, not the script's:
+    # /usr/bin/logs is not a thing. A dry run from a scratch directory must
+    # leave its log there and nothing in the repo.
+    scratch = tmp / "scratch-cwd"
+    scratch.mkdir()
+    result = subprocess.run(OX + ["--mode", "ask", "--dry-run", "t"],
+                            capture_output=True, text=True, timeout=60,
+                            cwd=str(scratch))
+    logged = sorted((scratch / "logs").glob("*/meta.json"))
+    report(result.returncode == 0 and len(logged) == 1,
+           "the default log dir is the working directory's logs/",
+           "exit=%s found=%d" % (result.returncode, len(logged)))
+
     print("\n=== the request ox builds ===")
 
     store = {}

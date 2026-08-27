@@ -16,7 +16,6 @@ import tempfile
 from pathlib import Path
 
 VERSION = "0.1.0"
-HERE = Path(__file__).resolve().parent
 FENCE = re.compile(r"```(?:diff|patch)\s*\n(.*?)```", re.DOTALL)
 PATH_LINE = re.compile(r"^(?:---|\+\+\+)\s+(?:[ab]/)?(\S+)", re.MULTILINE)
 
@@ -82,7 +81,10 @@ def main():
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--log", help="an ox log dir containing content.md")
     source.add_argument("--diff", help="a file containing a raw diff")
-    parser.add_argument("--work", default=str(HERE / "sandbox" / "work"))
+    # Working-directory anchored, like oxseed's sandbox: the two must agree
+    # on where the sandbox is, and neither can be script-relative once
+    # installed to /usr/bin.
+    parser.add_argument("--work", default=str(Path.cwd() / "sandbox" / "work"))
     parser.add_argument("--commit", action="store_true",
                         help="commit the applied patch in the sandbox git repo")
     args = parser.parse_args()

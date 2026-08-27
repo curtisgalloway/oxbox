@@ -1,0 +1,147 @@
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+
+# Build the Linux .deb and attach it to a GitHub Release when a v* tag is
+# pushed, then ask the Homebrew tap to re-pin its formula. workflow_dispatch
+# builds the package as an artifact only (no Release, no tap bump), for
+# testing the pipeline.
+#
+# Pure Python, arch-independent: one build on the stock runner, no container
+# needed. The smoke test is the part that earns trust — it installs the .deb
+# for real and runs the full in-jail probe suite against the INSTALLED tools
+# from a scratch directory, which exercises exactly what a package must get
+# right: PATH installs, working-directory anchoring, and a jail that holds.
+
+name: Release package
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NFPM_VERSION: 2.46.3
+
+jobs:
+  package:
+    name: package and smoke-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0~dev.$(printf '%.7s' "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A tag that disagrees with the tools' own VERSION would ship a package
+      # whose --version lies about what it is. Refuse before building.
+      - name: Check the tag matches the tools' VERSION
+        if: github.ref_type == 'tag'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          reported="$(python3 ox --version)"
+          if [ "$reported" != "ox ${VERSION}" ]; then
+            echo "::error::tag says ${VERSION} but the tools say '${reported}'"
+            exit 1
+          fi
+
+      - name: Install nfpm
+        run: |
+          curl -fsSL -o /tmp/nfpm.deb \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb"
+          sudo apt-get install -y /tmp/nfpm.deb
+
+      - name: Build .deb
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          nfpm package -f packaging/nfpm.yaml -p deb \
+            -t "dist/oxbox_${VERSION}_all.deb"
+
+      - name: Install the .deb and its dependencies
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y "./dist/oxbox_${VERSION}_all.deb"
+
+      # Same knob ci.yml uses: Ubuntu 24.04's AppArmor patch restricts the
+      # unprivileged user namespaces bubblewrap needs.
+      - name: Permit unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Smoke-test the installed tools from a scratch directory
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          test -x /usr/bin/ox
+          test -x /usr/bin/oxbox
+          test -x /usr/bin/oxapply
+          test -x /usr/bin/oxseed
+          test -f /usr/share/doc/oxbox/LICENSE
+          scratch="$RUNNER_TEMP/smoke"
+          mkdir -p "$scratch/srcrepo"
+          echo 'print("hi")' > "$scratch/srcrepo/thing.py"
+          cd "$scratch"
+          [ "$(/usr/bin/ox --version)" = "ox ${VERSION}" ]
+          /usr/bin/oxseed "$scratch/srcrepo" thing.py
+          # A dry run needs no key and proves logs land in the working
+          # directory, not somewhere script-relative under /usr.
+          /usr/bin/ox --mode ask --dry-run "hello" > /dev/null
+          test -f "$scratch"/logs/*/meta.json
+          # The full in-jail probe suite, against the installed oxbox.
+          cp "$GITHUB_WORKSPACE/jailtest.py" sandbox/work/jailtest.py
+          /usr/bin/oxbox -- /usr/bin/python3 jailtest.py
+
+      - name: Attach to the GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          files: dist/*
+          generate_release_notes: true
+
+  bump-tap:
+    name: bump Homebrew tap
+    if: github.ref_type == 'tag'
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Tell the tap to re-pin its formula. The tap workflow does the actual
+      # edit with its own GITHUB_TOKEN — this only needs permission to fire
+      # the dispatch, which the default token can't do cross-repo.
+      # HOMEBREW_TAP_DISPATCH_TOKEN is a fine-grained PAT with Contents:write
+      # on curtisgalloway/homebrew-tap. Absent, skip rather than fail: the
+      # tap's workflow_dispatch covers the manual path.
+      - name: Dispatch formula bump to homebrew-tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_DISPATCH_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_DISPATCH_TOKEN not set — skipping tap bump." \
+                 "Run the tap's 'Bump oxbox formula' workflow by hand instead."
+            exit 0
+          fi
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer ${TAP_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/curtisgalloway/homebrew-tap/dispatches \
+            -d "{\"event_type\":\"oxbox-release\",\"client_payload\":{\"tag\":\"${TAG}\"}}"
+          echo "Dispatched oxbox-release (${TAG}) to homebrew-tap."

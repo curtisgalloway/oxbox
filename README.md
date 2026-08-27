@@ -227,8 +227,11 @@ Reading the diff, the things worth flagging:
   unavailable for a while, and the model you are evaluating is exactly the
   kind least likely to have capacity when you want it. Note also that
   `ox` exits non-zero on an API error, but a pipeline hides that
-  (`./ox … | tail` reports `tail`'s status) — use `set -o pipefail`, or
-  match on the output, before treating a scripted run as successful.
+  (`./ox … | tail` reports `tail`'s status). If you must pipe, use
+  `set -o pipefail`; better, skip the pipeline: `--output review.md` writes
+  the answer to a file, and `--status-file status.json` writes a run summary
+  (`ok`, `error`, `finish_reason`, token counts, `truncated`) on every exit,
+  so a script checks a fact instead of shell plumbing.
 
 ## The self-audit
 

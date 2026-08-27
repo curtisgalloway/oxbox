@@ -261,6 +261,70 @@ def main():
               and expect in result.stderr)
         report(ok, label, "exit=%s stderr=%r" % (result.returncode, result.stderr[-120:]))
 
+    print("\n=== scripted runs check facts, not pipeline exit codes ===")
+
+    # `ox | tee review.md` reports tee's status, so a failed run reads as
+    # success unless the caller remembered pipefail. --output and
+    # --status-file exist so nothing needs to be piped and nothing needs to
+    # be remembered. Success first: the answer lands in the file, stdout
+    # stays quiet, and the status record says how the run ended.
+    out_file = tmp / "answer.md"
+    status_file = tmp / "status.json"
+    store = {}
+    result = send_to_local(store, tmp, extra_argv=[
+        "--mode", "ask", "--output", str(out_file),
+        "--status-file", str(status_file), "hello"])
+    report(out_file.exists() and out_file.read_text() == "ok\n",
+           "--output writes the answer to the named file",
+           repr(out_file.read_text() if out_file.exists() else None))
+    report(result.stdout.strip() == "",
+           "--output leaves stdout quiet", repr(result.stdout[:80]))
+    stat = json.loads(status_file.read_text()) if status_file.exists() else {}
+    report(stat.get("ok") is True and stat.get("exit_code") == 0
+           and stat.get("finish_reason") == "stop",
+           "--status-file records a successful run",
+           json.dumps(stat)[:160])
+    report(bool(stat.get("log_dir"))
+           and (Path(stat["log_dir"]) / "status.json").exists(),
+           "status.json also lands beside the audit log")
+
+    # Failure: pre-seed both files with a previous run's leftovers, then fail
+    # with empty content. The stale answer must be gone — a script must never
+    # read an old answer as this run's — and the status must say failed, why,
+    # and where the evidence is.
+    out_file.write_text("stale answer from an earlier run")
+    empty = json.dumps({"choices": [{"finish_reason": "length",
+                                     "message": {"content": ""}}],
+                        "usage": {"completion_tokens": 100000}}).encode()
+    store = {}
+    result = send_to_local(store, tmp, body=empty, extra_argv=[
+        "--mode", "ask", "--output", str(out_file),
+        "--status-file", str(status_file), "hello"])
+    stat = json.loads(status_file.read_text()) if status_file.exists() else {}
+    report(result.returncode != 0 and stat.get("ok") is False
+           and stat.get("exit_code") == result.returncode
+           and "no content" in (stat.get("error") or ""),
+           "--status-file records a failed run with the error",
+           json.dumps(stat)[:160])
+    report(not out_file.exists(),
+           "--output never leaves a stale answer behind a failed run")
+
+    # Truncation with content is the quiet failure: the answer reads as
+    # complete unless you notice the missing tail. It stays exit 0 — a
+    # partial answer has value in front of a human — but the status record
+    # and stderr both say so.
+    truncated = json.dumps({"choices": [{"finish_reason": "length",
+                                         "message": {"content": "partial"}}],
+                            "usage": {"completion_tokens": 100000}}).encode()
+    store = {}
+    result = send_to_local(store, tmp, body=truncated, extra_argv=[
+        "--mode", "ask", "--status-file", str(status_file), "hello"])
+    stat = json.loads(status_file.read_text()) if status_file.exists() else {}
+    report(result.returncode == 0 and stat.get("truncated") is True
+           and "truncated" in result.stderr,
+           "a truncated answer is flagged in status and on stderr",
+           "exit=%s stderr=%r" % (result.returncode, result.stderr[-120:]))
+
     print("\n=== the audit log survives collisions ===")
 
     logs = tmp / "collide"

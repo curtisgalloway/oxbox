@@ -69,8 +69,12 @@ executed inside it.
   (two attempts 150 s apart both failed). Do not "fix" a 429 by touching the
   privacy toggle; that is the 404's remedy and it is already right.
 - `ox` exits non-zero on an API error, but a pipeline masks it: `./ox … |
-  tail` reports `tail`'s exit status, not `ox`'s. Any script that decides
-  whether a run succeeded must use `set -o pipefail` or match on the output.
+  tail` reports `tail`'s exit status, not `ox`'s. A script that must pipe
+  needs `set -o pipefail`; better is not to pipe — `--output` writes the
+  answer to a file (removed first, so a failed run cannot leave a stale one)
+  and `--status-file` writes a JSON summary (`ok`, `error`, `finish_reason`,
+  token counts, `truncated`, `log_dir`) on every exit. The same record is
+  always written as `status.json` in the run's log directory.
 - Emits unified diffs with **zero trailing context**, ignoring an explicit
   instruction to include three lines. Such patches are rejected by both
   `git apply` and GNU `patch`. `oxapply` falls back to `--recount -C1` and

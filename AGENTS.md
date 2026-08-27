@@ -65,8 +65,12 @@ executed inside it.
   404 above: `429 ... temporarily rate-limited upstream` with
   `"limit_source": "upstream_provider_shared_pool"`. The free listing shares
   one quota across all its users, so no key or privacy-setting change fixes
-  it — only backing off. Retry on a timescale of ~10 minutes, not seconds
-  (two attempts 150 s apart both failed). Do not "fix" a 429 by touching the
+  it — only backing off. Serial requests with a 120-second retry floor
+  clear it (measured: ~30 attempts across 18 batches, all cleared within
+  three tries); concurrent requests trigger it reliably, so never fan out
+  against the shared pool. Retries belong in the caller, not in `ox` —
+  exiting non-zero with the provider's error text intact is what makes the
+  failure class diagnosable. Do not "fix" a 429 by touching the
   privacy toggle; that is the 404's remedy and it is already right.
 - `ox` exits non-zero on an API error, but a pipeline masks it: `./ox … |
   tail` reports `tail`'s exit status, not `ox`'s. A script that must pipe

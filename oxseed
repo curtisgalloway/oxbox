@@ -17,6 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+VERSION = "0.1.0"
 HERE = Path(__file__).resolve().parent
 SANDBOX = HERE / "sandbox"
 WORK = SANDBOX / "work"
@@ -92,6 +93,10 @@ def git(*args):
 
 def main():
     args = sys.argv[1:]
+
+    if args and args[0] == "--version":
+        print("oxseed %s" % VERSION)
+        return 0
 
     if args and args[0] == "--clean":
         if SANDBOX.exists():

@@ -123,7 +123,25 @@ def main():
     tmp = Path(tempfile.mkdtemp(prefix="wiretest-"))
     ox = load_ox()
 
-    print("=== the request ox builds ===")
+    print("=== one version, declared four times, all equal ===")
+
+    # Each tool is a standalone script, so each carries its own VERSION
+    # constant. Four copies of one fact drift unless something checks; this
+    # is the check, same pattern as the env_canary list agreement below.
+    import re as _re
+    versions = {}
+    for tool in ("ox", "oxbox", "oxapply", "oxseed"):
+        match = _re.search(r'^VERSION = "([^"]+)"', (HERE / tool).read_text(encoding="utf-8"),
+                           _re.MULTILINE)
+        versions[tool] = match.group(1) if match else None
+    report(len(set(versions.values())) == 1 and None not in versions.values(),
+           "all four tools declare the same VERSION", repr(versions))
+    result = run_ox(["--version"])
+    report(result.returncode == 0
+           and result.stdout.strip() == "ox %s" % ox["VERSION"],
+           "ox --version prints it", repr(result.stdout))
+
+    print("\n=== the request ox builds ===")
 
     store = {}
     result = send_to_local(store, tmp)

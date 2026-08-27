@@ -15,6 +15,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+VERSION = "0.1.0"
 HERE = Path(__file__).resolve().parent
 FENCE = re.compile(r"```(?:diff|patch)\s*\n(.*?)```", re.DOTALL)
 PATH_LINE = re.compile(r"^(?:---|\+\+\+)\s+(?:[ab]/)?(\S+)", re.MULTILINE)
@@ -77,6 +78,7 @@ def unsafe_paths(patch):
 
 def main():
     parser = argparse.ArgumentParser(prog="oxapply")
+    parser.add_argument("--version", action="version", version="oxapply %s" % VERSION)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--log", help="an ox log dir containing content.md")
     source.add_argument("--diff", help="a file containing a raw diff")

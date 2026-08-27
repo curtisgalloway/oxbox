@@ -55,6 +55,10 @@ VENUES = {
 }
 DEFAULT_VENUE = "openrouter"
 DEFAULT_MODEL = VENUES[DEFAULT_VENUE]["default_model"]
+# One VERSION per tool, all four equal — wiretest enforces the agreement, and
+# the release workflow checks the tag matches. Packaged installs make "which
+# oxbox do I have" a real question; --version is the answer.
+VERSION = "0.1.0"
 USER_AGENT = "oxbox (+https://github.com/curtisgalloway/oxbox)"
 MAX_PAYLOAD_BYTES = 400_000
 TIMEOUT_SECONDS = 900
@@ -440,6 +444,7 @@ def main():
     # lands here and writes how the run ended. sys.exit() raises SystemExit,
     # so one wrapper catches every path without threading a result through.
     status = {
+        "ox_version": VERSION,
         "ok": False,
         "exit_code": None,
         "error": None,
@@ -484,6 +489,7 @@ def run(status):
         description="Send a task to an untrusted model. No tools, full audit log.",
     )
     parser.add_argument("task", nargs="?", help="the task or question (or use --stdin)")
+    parser.add_argument("--version", action="version", version="ox %s" % VERSION)
     parser.add_argument("--files", default="",
                         help="comma-separated files to include as context")
     parser.add_argument("--mode", choices=sorted(SYSTEM_PROMPTS), default="diff",
@@ -666,6 +672,7 @@ def run(status):
         status["model"] = entry["model"]
         meta = {
             "timestamp": stamp,
+            "ox_version": VERSION,
             "model": entry["model"],
             "venue": entry["venue"],
             "endpoint": entry["url"],

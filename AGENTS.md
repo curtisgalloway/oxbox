@@ -168,11 +168,22 @@ executed inside it.
 - **State anchors at the working directory; only code anchors at the script.**
   `sandbox/`, `logs/`, and the `.env` sensitive-path probe are
   working-directory relative, because installed tools live in `/usr/bin` or a
-  Homebrew Cellar where script-relative state is unwritable or worse. The
-  seatbelt profile is the one script-relative lookup: `profiles/jail.sb`
-  beside the script (checkout) or `../share/oxbox/jail.sb` (installed prefix)
-  — see `find_profile` in `oxbox`. Keep new state cwd-anchored and new code
-  assets on the profile's two-location pattern.
+  Homebrew Cellar where script-relative state is unwritable or worse. Two
+  assets are script-relative, and both use the same two-location pattern:
+  the seatbelt profile (`profiles/jail.sb` beside the script, or
+  `../share/oxbox/jail.sb` in an installed prefix — `find_profile` in
+  `oxbox`) and the ox-review skill (`.claude/skills/ox-review` beside the
+  script, or `../share/oxbox/ox-review` — `find_skill` in `ox`). Keep new
+  state cwd-anchored and new code assets on that pattern.
+- **A packaged asset needs a smoke-test line, or it will be forgotten.**
+  `ox --skill` reads a file the package has to ship, and the failure mode is
+  silent until someone installs the .deb and asks for it. The release
+  workflow runs `--skill` against the installed ox and greps for the
+  rewritten script path, which fails both when the file is missing and when
+  the path rewriting stops working. The Homebrew formula lives in
+  `curtisgalloway/homebrew-tap` and needs the same `share/oxbox/ox-review`
+  layout; a tap that installs only the four executables leaves `--skill`
+  refusing on brew installs.
 - **All three tools must agree on where the sandbox is.** `oxseed` creates
   it, `oxapply` writes into it, `oxbox` jails into it; they all derive it
   from the working directory. Changing the anchor in one without the others

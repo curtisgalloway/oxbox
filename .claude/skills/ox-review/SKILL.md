@@ -42,6 +42,10 @@ Three things do the work:
 | `scripts/exposure.py` | Answers "can a stranger already clone this?" with a real unauthenticated probe. Called by preflight; run it alone to re-check. |
 | `scripts/oxreview.py` | Runs one review batch. Serializes every batch machine-wide and backs off on a busy pool. |
 
+`ox --skill` prints this document with the script paths of whichever
+installation you are standing in, so an agent that has `ox` on `PATH` can find
+the runbook without being told where it lives — and `ox --help` lists the flag.
+
 Run everything from the project root. oxbox anchors its state at the working
 directory: `logs/` and the queue live beside the code under review.
 
@@ -229,9 +233,12 @@ that flow deliberately.
 ## Installing this in another project
 
 The scripts are self-contained (Python 3.9+, standard library only, no
-third-party packages — the same floor the rest of oxbox holds to). Copy
-`.claude/skills/ox-review/` into the target project's `.claude/skills/`, or into
-`~/.claude/skills/` to have it everywhere, then make sure `ox` is reachable:
+third-party packages — the same floor the rest of oxbox holds to). An agent that
+only has `ox` on `PATH` can work straight from `ox --skill`, whose printed
+commands already point at the installed scripts. To make Claude Code load this
+as a skill in another project, copy `.claude/skills/ox-review/` into that
+project's `.claude/skills/`, or into `~/.claude/skills/` to have it everywhere,
+then make sure `ox` is reachable:
 installed on `PATH`, named by `OX`, or an oxbox checkout pointed at by
 `OXBOX_HOME`.
 

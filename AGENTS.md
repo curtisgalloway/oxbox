@@ -173,8 +173,15 @@ executed inside it.
   the seatbelt profile (`profiles/jail.sb` beside the script, or
   `../share/oxbox/jail.sb` in an installed prefix — `find_profile` in
   `oxbox`) and the ox-review skill (`.claude/skills/ox-review` beside the
-  script, or `../share/oxbox/ox-review` — `find_skill` in `ox`). Keep new
-  state cwd-anchored and new code assets on that pattern.
+  script, or `../share/oxbox/ox-review` — `find_skill`, carried by all four
+  tools). Keep new state cwd-anchored and new code assets on that pattern.
+- **`find_skill`/`print_skill` is duplicated four times on purpose, like
+  `VERSION`.** Each tool is a standalone script, so sharing the block would
+  mean shipping a module and a `sys.path` to find it on — which is a bigger
+  change to the packaging story than the block is worth. What makes four
+  copies safe is the check: wiretest runs `--skill` on all four and asserts
+  identical stdout, a zero exit, and a provenance line naming the tool you
+  actually ran. Edit one copy, edit all four, and let that case prove it.
 - **A packaged asset needs a smoke-test line, or it will be forgotten.**
   `ox --skill` reads a file the package has to ship, and the failure mode is
   silent until someone installs the .deb and asks for it. The release

@@ -107,10 +107,16 @@ jobs:
           # --skill reads a packaged file, so it fails exactly when the
           # package forgets to ship one. It must also rewrite the runbook's
           # script paths to where they landed, or the commands it prints
-          # name a .claude directory that does not exist here.
-          /usr/bin/ox --skill 2>/dev/null > skill.md
-          grep -q '^name: ox-review' skill.md
-          grep -q '/usr/share/oxbox/ox-review/scripts/preflight.py' skill.md
+          # name a .claude directory that does not exist here. All four
+          # tools answer it, and wiretest already proves they agree in a
+          # checkout — what only an installed system can show is that the
+          # lookup still resolves from /usr/bin.
+          for tool in ox oxbox oxseed oxapply; do
+            "/usr/bin/$tool" --skill 2>/dev/null > "skill-$tool.md"
+            grep -q '^name: ox-review' "skill-$tool.md"
+            grep -q '/usr/share/oxbox/ox-review/scripts/preflight.py' "skill-$tool.md"
+            cmp -s skill-ox.md "skill-$tool.md"
+          done
           test -f /usr/share/oxbox/ox-review/scripts/exposure.py
           # The full in-jail probe suite, against the installed oxbox.
           cp "$GITHUB_WORKSPACE/jailtest.py" sandbox/work/jailtest.py

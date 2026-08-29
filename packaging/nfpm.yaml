@@ -14,6 +14,9 @@
 # Not packaged: the test suites (guardtest/wiretest/jailtest). They assert
 # against a source checkout's layout; verifying the jail on a new machine is
 # a git-clone operation, and README says so.
+#
+# Packaged, though it is not an executable: the ox-review skill, because
+# `ox --skill` has to find it on an installed system as well as in a checkout.
 
 name: oxbox
 arch: all
@@ -50,6 +53,24 @@ contents:
       mode: 0o755
   - src: oxseed
     dst: /usr/bin/oxseed
+    file_info:
+      mode: 0o755
+  # The ox-review agent skill. `ox --skill` prints it, and looks for it here
+  # when installed — the same two-location rule oxbox uses for jail.sb. A
+  # package that ships ox without it turns --skill into a refusal, so the
+  # release smoke test runs --skill against the installed ox.
+  - src: .claude/skills/ox-review/SKILL.md
+    dst: /usr/share/oxbox/ox-review/SKILL.md
+  - src: .claude/skills/ox-review/scripts/preflight.py
+    dst: /usr/share/oxbox/ox-review/scripts/preflight.py
+    file_info:
+      mode: 0o755
+  - src: .claude/skills/ox-review/scripts/exposure.py
+    dst: /usr/share/oxbox/ox-review/scripts/exposure.py
+    file_info:
+      mode: 0o755
+  - src: .claude/skills/ox-review/scripts/oxreview.py
+    dst: /usr/share/oxbox/ox-review/scripts/oxreview.py
     file_info:
       mode: 0o755
   - src: LICENSE

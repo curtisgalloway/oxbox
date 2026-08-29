@@ -85,7 +85,11 @@ def load_ox():
     """Import ox as a module without running main()."""
     source = (HERE / "ox").read_text(encoding="utf-8")
     source = source.replace('if __name__ == "__main__":', "if False:")
-    namespace = {"__name__": "oxmod"}
+    # __file__ too, not just __name__: a real import provides both, and ox
+    # anchors its script-relative asset lookup (find_skill) on __file__ the
+    # way oxbox anchors find_profile. A namespace missing it does not fail
+    # like the real module, it fails at import with a NameError.
+    namespace = {"__name__": "oxmod", "__file__": str(HERE / "ox")}
     exec(compile(source, str(HERE / "ox"), "exec"), namespace)
     return namespace
 

@@ -55,6 +55,12 @@ VENUES = {
 }
 DEFAULT_VENUE = "openrouter"
 DEFAULT_MODEL = VENUES[DEFAULT_VENUE]["default_model"]
+HERE = os.path.dirname(os.path.abspath(__file__))
+SKILL_NAME = "ox-review"
+# The path the runbook uses to name its own scripts. It is written for a
+# checkout, where the skill sits where Claude Code looks for it; --skill
+# rewrites it to wherever this ox actually found the skill.
+SKILL_PATH_IN_TEXT = ".claude/skills/" + SKILL_NAME
 # One VERSION per tool, all four equal — wiretest enforces the agreement, and
 # the release workflow checks the tag matches. Packaged installs make "which
 # oxbox do I have" a real question; --version is the answer.
@@ -198,6 +204,48 @@ def build_context(paths, force, task=""):
         )
 
     return "\n\n".join(blocks), total, findings
+
+
+def find_skill():
+    """The ox-review runbook, wherever this ox is installed.
+
+    Same two-location rule as oxbox's seatbelt profile: a source checkout
+    carries it at .claude/skills/ox-review next to the script, where Claude
+    Code finds it on its own; a package installs the script into <prefix>/bin
+    and the skill into <prefix>/share/oxbox/ox-review. Code assets anchor at
+    the script — only state anchors at the working directory.
+    """
+    candidates = [
+        os.path.join(HERE, ".claude", "skills", SKILL_NAME),
+        os.path.normpath(os.path.join(HERE, "..", "share", "oxbox", SKILL_NAME)),
+    ]
+    for directory in candidates:
+        if os.path.isfile(os.path.join(directory, "SKILL.md")):
+            return directory
+    sys.exit("ox: the %s skill was not found; looked in:\n" % SKILL_NAME
+             + "\n".join("ox:   " + path for path in candidates)
+             + "\nox: a Homebrew install may predate the skill; reinstall or "
+               "read it at https://github.com/curtisgalloway/oxbox")
+
+
+def print_skill():
+    """Print the runbook, with the paths this installation actually uses.
+
+    An agent finds this through `ox --help`, so the copy it reads has to be
+    runnable where it is standing. The text names its scripts by their
+    checkout path; an installed ox keeps them under a prefix instead, and a
+    runbook whose commands do not exist is worse than no runbook. Provenance
+    goes to stderr and the document to stdout, the same split ox uses
+    everywhere else, so piping this into a file yields the document alone.
+    """
+    directory = find_skill()
+    path = os.path.join(directory, "SKILL.md")
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError as error:
+        sys.exit("ox: cannot read %s: %s" % (path, error))
+    sys.stderr.write("ox: skill -> %s\n" % path)
+    sys.stdout.write(text.replace(SKILL_PATH_IN_TEXT, directory))
 
 
 def load_manifest(path, allow_paid):
@@ -553,7 +601,18 @@ def run(status):
                         help="send even if the secret scan or size guard trips")
     parser.add_argument("--dry-run", action="store_true",
                         help="build and log the request, print it, send nothing")
+    parser.add_argument("--skill", action="store_true",
+                        help="print the %s agent skill — a runbook for driving a "
+                             "review from an agent, with the script paths this "
+                             "installation actually uses — and exit" % SKILL_NAME)
     args = parser.parse_args()
+
+    if args.skill:
+        # Answered before the status record is touched, because this is a
+        # question about the installation rather than a run: no destination,
+        # no payload, nothing to audit.
+        print_skill()
+        sys.exit(0)
 
     status["mode"] = args.mode
     status["dry_run"] = args.dry_run

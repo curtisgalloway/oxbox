@@ -247,6 +247,30 @@ def main():
                    OX + ["--dry-run", "--mode", "ask",
                          "explain what a unified diff is"])
 
+    print("\n=== --skill ===")
+    # --skill answers a question about the installation, not about a run, so
+    # it must not open one. The hazard is ordering: move the handler below
+    # the status/log setup in ox and --skill starts leaving audit artifacts
+    # for a request that was never built, which is a lie in the audit trail.
+    # Naming both destinations here means the case fails if that happens.
+    skill_out = temp / "skill.md"
+    skill_logs = temp / "skill-logs"
+    skill_status = temp / "skill-status.json"
+    with open(skill_out, "w", encoding="utf-8") as sink:
+        code = subprocess.run(OX + ["--skill", "--log-dir", str(skill_logs),
+                                    "--status-file", str(skill_status)],
+                              stdout=sink, stderr=subprocess.DEVNULL).returncode
+    text = skill_out.read_text(encoding="utf-8") if skill_out.exists() else ""
+    report(code == 0 and text.startswith("---") and "name: ox-review" in text,
+           "ox --skill prints the runbook", f"exit={code} bytes={len(text)}")
+    # The printed copy has to name scripts where this ox found them, or the
+    # commands an agent reads are commands it cannot run.
+    report(str(HERE / ".claude" / "skills" / "ox-review") in text,
+           "ox --skill rewrites the script paths to this installation")
+    report(not skill_logs.exists() and not skill_status.exists(),
+           "ox --skill opens no run: no log directory, no status record",
+           f"logs={skill_logs.exists()} status={skill_status.exists()}")
+
     shutil.rmtree(temp, ignore_errors=True)
 
     print()

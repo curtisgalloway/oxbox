@@ -1,4 +1,5 @@
 logs/
+.ox-review/
 sandbox/
 .env
 __pycache__/

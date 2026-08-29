@@ -260,7 +260,21 @@ def main():
         code = subprocess.run(OX + ["--skill", "--log-dir", str(skill_logs),
                                     "--status-file", str(skill_status)],
                               stdout=sink, stderr=subprocess.DEVNULL).returncode
-    text = skill_out.read_text(encoding="utf-8") if skill_out.exists() else ""
+    raw = skill_out.read_bytes() if skill_out.exists() else b""
+    # The runbook is UTF-8 with LF endings on disk and has to arrive that way
+    # whatever the host's locale codepage is. Windows text-mode stdout used to
+    # re-encode it -- cp1252 renders SKILL.md's em dashes as 0x97 -- and turn
+    # every newline into CRLF, so `--skill > runbook.md` there wrote a file no
+    # UTF-8 reader could open. Assert the bytes rather than just decoding them:
+    # a decode that raises reports this as a traceback, and a traceback is a
+    # worse failure report than a red line naming the contract that broke.
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = ""
+    report(bool(raw) and b"\r\n" not in raw and "—" in text,
+           "ox --skill emits UTF-8 with LF endings",
+           "bytes=%d crlf=%s decoded=%s" % (len(raw), b"\r\n" in raw, bool(text)))
     report(code == 0 and text.startswith("---") and "name: ox-review" in text,
            "ox --skill prints the runbook", f"exit={code} bytes={len(text)}")
     # The printed copy has to name scripts where this ox found them, or the

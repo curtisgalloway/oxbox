@@ -158,7 +158,15 @@ def print_skill():
     except OSError as error:
         sys.exit("oxseed: cannot read %s: %s" % (path, error))
     sys.stderr.write("oxseed: skill -> %s\n" % path)
-    sys.stdout.write(text.replace(SKILL_PATH_IN_TEXT, directory))
+    # The document is UTF-8 with LF endings on disk and has to leave that way.
+    # Windows' sys.stdout would encode it in the locale codepage instead --
+    # cp1252 renders SKILL.md's em dashes as 0x97 -- and translate every \n to
+    # \r\n on the way out, so `--skill > runbook.md` there produced a file no
+    # UTF-8 reader could open. Same hazard write_lf exists for, one stream over.
+    body = text.replace(SKILL_PATH_IN_TEXT, directory).encode("utf-8")
+    sys.stdout.flush()
+    sys.stdout.buffer.write(body)
+    sys.stdout.buffer.flush()
 
 
 def main():

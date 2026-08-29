@@ -223,6 +223,16 @@ executed inside it.
   with `newline=""` and `ox` uses `write_lf`. Without that, git compares a CRLF
   patch to an LF tree and rejects every patch with an error that reads like a
   malformed diff. Cost real time to find; only reproduces on Windows.
+- **A document printed to stdout needs the same care as one written to a file.**
+  `--skill` prints SKILL.md, and Windows' text-mode `sys.stdout` re-encodes it
+  in the locale codepage — cp1252 renders the runbook's em dashes as `0x97` —
+  and translates every `\n` to `\r\n` on the way out. `ox --skill > runbook.md`
+  there produced a file no UTF-8 reader could open, and it took `guardtest`
+  down with a `UnicodeDecodeError` traceback instead of a red line. All four
+  tools now write the document as UTF-8 bytes through `sys.stdout.buffer`, the
+  stdout counterpart of `write_lf`, and `guardtest` asserts the contract on the
+  bytes so the failure reports itself. Only CI and a real Windows host catch
+  this; macOS and Linux are byte-identical either way.
 - **Path checks must be textual, not `Path.is_absolute()`.** On Windows
   `/etc/passwd` has a root but no drive, so `is_absolute()` returns False and a
   rooted path sails through. Check for `~`, `/`, `\`, and a drive letter, and

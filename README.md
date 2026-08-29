@@ -244,6 +244,9 @@ should say why the destination was chosen, not just what it was.
 ox --skill          # print the runbook, with this installation's paths
 ```
 
+All four tools answer `--skill`, and it is in each one's `--help`, so an agent
+that reached for `oxseed` or `oxbox` first still finds it.
+
 `.claude/skills/ox-review/` is a Claude Code skill that hands the whole review
 loop to an agent: it picks the current manifest, batches the files, fans the
 work out across subagents, and merges what comes back. Copy the directory into
@@ -252,11 +255,13 @@ Python 3.9+ like everything else here, and they find `ox` on `PATH`, via `OX`,
 or in the checkout named by `OXBOX_HOME`.
 
 An agent that has never seen this README finds it a different way: `--skill` is
-in `ox --help`, and printing it substitutes the script paths of the installation
-it is standing in — a checkout's `.claude/skills/ox-review`, or
+in every tool's `--help`, and printing it substitutes the script paths of the
+installation it is standing in — a checkout's `.claude/skills/ox-review`, or
 `/usr/share/oxbox/ox-review` from the package — so the commands it reads are
 commands it can run. The document goes to stdout and the path it came from to
-stderr, so `ox --skill > runbook.md` yields the document alone.
+stderr, so `ox --skill > runbook.md` yields the document alone. wiretest asserts
+the four print the same bytes, the same way it asserts they declare one
+VERSION.
 
 Two things in it are worth knowing about even if you never run an agent.
 

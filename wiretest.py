@@ -145,6 +145,35 @@ def main():
            and result.stdout.strip() == "ox %s" % ox["VERSION"],
            "ox --version prints it", repr(result.stdout))
 
+    # Same hazard, bigger payload: find_skill/print_skill is carried by each
+    # tool because each is a standalone script, and four copies of one
+    # document drift unless something compares them. Compare the output
+    # rather than the source — that is what a caller actually receives, and
+    # it catches a lookup that silently resolves somewhere else as well as a
+    # block someone edited in one file only.
+    skills = {}
+    for tool in ("ox", "oxbox", "oxapply", "oxseed"):
+        done = subprocess.run([sys.executable, str(HERE / tool), "--skill"],
+                              capture_output=True, text=True, timeout=30)
+        skills[tool] = (done.returncode, done.stdout)
+    codes = {tool: code for tool, (code, _) in skills.items()}
+    report(set(codes.values()) == {0},
+           "every tool exits 0 for --skill", repr(codes))
+    bodies = {text for _, text in skills.values()}
+    report(len(bodies) == 1 and next(iter(bodies)).startswith("---"),
+           "all four tools print the same skill",
+           "%d distinct outputs, lengths %r"
+           % (len(bodies), sorted(len(text) for _, text in skills.values())))
+    # The provenance line is the one part that differs, and it has to name the
+    # tool you actually ran or an error message points at the wrong program.
+    prefixes = {}
+    for tool in ("ox", "oxbox", "oxapply", "oxseed"):
+        done = subprocess.run([sys.executable, str(HERE / tool), "--skill"],
+                              capture_output=True, text=True, timeout=30)
+        prefixes[tool] = done.stderr.startswith("%s: skill -> " % tool)
+    report(all(prefixes.values()),
+           "each tool names itself on the provenance line", repr(prefixes))
+
     # Installed tools anchor state at the working directory, not the script's:
     # /usr/bin/logs is not a thing. A dry run from a scratch directory must
     # leave its log there and nothing in the repo.

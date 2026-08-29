@@ -18,6 +18,19 @@ import sys
 from pathlib import Path
 
 VERSION = "0.1.0"
+HERE = os.path.dirname(os.path.abspath(__file__))
+USAGE = """\
+usage: oxseed /path/to/repo file1 [file2 ...]
+       oxseed --clean
+
+Copy files from a real repo into a disposable ./sandbox tree and make it a
+git repo, so patches can be applied and diffed without touching the original.
+
+  --clean     remove ./sandbox and exit
+  --skill     print the ox-review agent skill and exit
+  --version   print the version and exit
+  --help      print this and exit
+"""
 # The sandbox lives under the working directory, not the script's: an
 # installed oxseed lives in /usr/bin, and the project you are seeding for is
 # wherever you are standing. A source checkout run from its root is unchanged.
@@ -93,8 +106,71 @@ def git(*args):
     subprocess.run(["git", "-C", str(WORK), *args], check=True)
 
 
+SKILL_NAME = "ox-review"
+# The path the runbook uses to name its own scripts. It is written for a
+# checkout, where the skill sits where Claude Code looks for it; --skill
+# rewrites it to wherever this tool actually found the skill.
+SKILL_PATH_IN_TEXT = ".claude/skills/" + SKILL_NAME
+
+
+def find_skill():
+    """The ox-review runbook, wherever this tool is installed.
+
+    Same two-location rule as oxbox's seatbelt profile: a source checkout
+    carries it at .claude/skills/ox-review next to the script, where Claude
+    Code finds it on its own; a package installs the script into <prefix>/bin
+    and the skill into <prefix>/share/oxbox/ox-review. Code assets anchor at
+    the script — only state anchors at the working directory.
+
+    All four tools carry this, the way all four carry VERSION: each is a
+    standalone script, so sharing it would mean shipping a module and a
+    sys.path to find it on. wiretest asserts the four print the same bytes,
+    which is what keeps four copies of one document from drifting.
+    """
+    candidates = [
+        os.path.join(HERE, ".claude", "skills", SKILL_NAME),
+        os.path.normpath(os.path.join(HERE, "..", "share", "oxbox", SKILL_NAME)),
+    ]
+    for directory in candidates:
+        if os.path.isfile(os.path.join(directory, "SKILL.md")):
+            return directory
+    sys.exit("oxseed: the %s skill was not found; looked in:\n" % SKILL_NAME
+             + "\n".join("oxseed:   " + path for path in candidates)
+             + "\noxseed: a Homebrew install may predate the skill; reinstall or "
+               "read it at https://github.com/curtisgalloway/oxbox")
+
+
+def print_skill():
+    """Print the runbook, with the paths this installation actually uses.
+
+    An agent finds this through --help, so the copy it reads has to be
+    runnable where it is standing. The text names its scripts by their
+    checkout path; an installed tool keeps them under a prefix instead, and a
+    runbook whose commands do not exist is worse than no runbook. Provenance
+    goes to stderr and the document to stdout, the same split these tools use
+    everywhere else, so piping this into a file yields the document alone.
+    """
+    directory = find_skill()
+    path = os.path.join(directory, "SKILL.md")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError as error:
+        sys.exit("oxseed: cannot read %s: %s" % (path, error))
+    sys.stderr.write("oxseed: skill -> %s\n" % path)
+    sys.stdout.write(text.replace(SKILL_PATH_IN_TEXT, directory))
+
+
 def main():
     args = sys.argv[1:]
+
+    if args and args[0] in ("--help", "-h"):
+        sys.stdout.write(USAGE)
+        return 0
+
+    if args and args[0] == "--skill":
+        print_skill()
+        return 0
 
     if args and args[0] == "--version":
         print("oxseed %s" % VERSION)
@@ -107,7 +183,7 @@ def main():
         return 0
 
     if len(args) < 2:
-        sys.stderr.write("oxseed: usage: ./oxseed /path/to/repo file1 [file2 ...]\n")
+        sys.stderr.write(USAGE)
         return 64
 
     source = Path(args[0]).resolve()

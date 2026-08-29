@@ -56,11 +56,6 @@ VENUES = {
 DEFAULT_VENUE = "openrouter"
 DEFAULT_MODEL = VENUES[DEFAULT_VENUE]["default_model"]
 HERE = os.path.dirname(os.path.abspath(__file__))
-SKILL_NAME = "ox-review"
-# The path the runbook uses to name its own scripts. It is written for a
-# checkout, where the skill sits where Claude Code looks for it; --skill
-# rewrites it to wherever this ox actually found the skill.
-SKILL_PATH_IN_TEXT = ".claude/skills/" + SKILL_NAME
 # One VERSION per tool, all four equal — wiretest enforces the agreement, and
 # the release workflow checks the tag matches. Packaged installs make "which
 # oxbox do I have" a real question; --version is the answer.
@@ -206,14 +201,26 @@ def build_context(paths, force, task=""):
     return "\n\n".join(blocks), total, findings
 
 
+SKILL_NAME = "ox-review"
+# The path the runbook uses to name its own scripts. It is written for a
+# checkout, where the skill sits where Claude Code looks for it; --skill
+# rewrites it to wherever this tool actually found the skill.
+SKILL_PATH_IN_TEXT = ".claude/skills/" + SKILL_NAME
+
+
 def find_skill():
-    """The ox-review runbook, wherever this ox is installed.
+    """The ox-review runbook, wherever this tool is installed.
 
     Same two-location rule as oxbox's seatbelt profile: a source checkout
     carries it at .claude/skills/ox-review next to the script, where Claude
     Code finds it on its own; a package installs the script into <prefix>/bin
     and the skill into <prefix>/share/oxbox/ox-review. Code assets anchor at
     the script — only state anchors at the working directory.
+
+    All four tools carry this, the way all four carry VERSION: each is a
+    standalone script, so sharing it would mean shipping a module and a
+    sys.path to find it on. wiretest asserts the four print the same bytes,
+    which is what keeps four copies of one document from drifting.
     """
     candidates = [
         os.path.join(HERE, ".claude", "skills", SKILL_NAME),
@@ -231,17 +238,18 @@ def find_skill():
 def print_skill():
     """Print the runbook, with the paths this installation actually uses.
 
-    An agent finds this through `ox --help`, so the copy it reads has to be
+    An agent finds this through --help, so the copy it reads has to be
     runnable where it is standing. The text names its scripts by their
-    checkout path; an installed ox keeps them under a prefix instead, and a
+    checkout path; an installed tool keeps them under a prefix instead, and a
     runbook whose commands do not exist is worse than no runbook. Provenance
-    goes to stderr and the document to stdout, the same split ox uses
+    goes to stderr and the document to stdout, the same split these tools use
     everywhere else, so piping this into a file yields the document alone.
     """
     directory = find_skill()
     path = os.path.join(directory, "SKILL.md")
     try:
-        text = Path(path).read_text(encoding="utf-8")
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
     except OSError as error:
         sys.exit("ox: cannot read %s: %s" % (path, error))
     sys.stderr.write("ox: skill -> %s\n" % path)

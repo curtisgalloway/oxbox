@@ -271,6 +271,18 @@ def main():
            "ox --skill opens no run: no log directory, no status record",
            f"logs={skill_logs.exists()} status={skill_status.exists()}")
 
+    # oxseed's rule is that it validates everything before destroying
+    # anything, and --skill destroys nothing at all: it answers a question
+    # about the installation. The hazard is ordering again — put the handler
+    # after the --clean branch or the seeding path and asking for the runbook
+    # wipes the sandbox you were working in.
+    marker = WORK / "skill-canary.txt"
+    marker.write_text("still here\n", encoding="utf-8")
+    code = run(OXSEED + ["--skill"])
+    survived = marker.is_file()
+    report(code == 0 and survived, "oxseed --skill destroys nothing",
+           f"exit={code} sandbox_intact={survived}")
+
     shutil.rmtree(temp, ignore_errors=True)
 
     print()

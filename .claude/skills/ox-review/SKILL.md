@@ -43,8 +43,10 @@ Three things do the work:
 | `scripts/oxreview.py` | Runs one review batch. Serializes every batch machine-wide and backs off on a busy pool. |
 
 `ox --skill` prints this document with the script paths of whichever
-installation you are standing in, so an agent that has `ox` on `PATH` can find
-the runbook without being told where it lives — and `ox --help` lists the flag.
+installation you are standing in, so an agent that has these tools on `PATH` can
+find the runbook without being told where it lives. `oxbox`, `oxseed` and
+`oxapply` answer `--skill` with the same document, and all four list it in
+`--help`, so whichever one an agent reaches for first leads here.
 
 Run everything from the project root. oxbox anchors its state at the working
 directory: `logs/` and the queue live beside the code under review.
@@ -234,8 +236,9 @@ that flow deliberately.
 
 The scripts are self-contained (Python 3.9+, standard library only, no
 third-party packages — the same floor the rest of oxbox holds to). An agent that
-only has `ox` on `PATH` can work straight from `ox --skill`, whose printed
-commands already point at the installed scripts. To make Claude Code load this
+only has the tools on `PATH` can work straight from `ox --skill` — or
+`oxbox`/`oxseed`/`oxapply --skill`, which print the same thing — whose commands
+already point at the installed scripts. To make Claude Code load this
 as a skill in another project, copy `.claude/skills/ox-review/` into that
 project's `.claude/skills/`, or into `~/.claude/skills/` to have it everywhere,
 then make sure `ox` is reachable:

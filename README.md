@@ -238,6 +238,53 @@ manifest's `defaults`, which beat the built-ins. Each attempt's `meta.json`
 records the manifest's sha256 and the entry used, because an audit trail
 should say why the destination was chosen, not just what it was.
 
+## Driving a review from an agent
+
+`.claude/skills/ox-review/` is a Claude Code skill that hands the whole review
+loop to an agent: it picks the current manifest, batches the files, fans the
+work out across subagents, and merges what comes back. Copy the directory into
+another project's `.claude/skills/` to use it there; the scripts are stdlib-only
+Python 3.9+ like everything else here, and they find `ox` on `PATH`, via `OX`,
+or in the checkout named by `OXBOX_HOME`.
+
+Two things in it are worth knowing about even if you never run an agent.
+
+**The fan-out stops before the wire.** Subagents are useful for a review because
+verifying a finding means opening the file and checking the claim, and that is
+where the reading time goes. They are useless for *sending*, because the free
+cloaked listings share one upstream quota and refuse concurrent calls — measured
+above. So every batch goes through `oxreview.py`, which holds a lock while its
+request is in flight and backs off on the 120-second floor. Batches pipeline;
+requests do not overlap.
+
+```bash
+python3 .claude/skills/ox-review/scripts/preflight.py   # ox, manifest, gate
+python3 .claude/skills/ox-review/scripts/oxreview.py \
+    --manifest oxbox-manifest-2026-08-27.json \
+    --label auth --out .ox-review/auth --file src/auth.py \
+    --task "Review for correctness bugs and incorrect error handling."
+```
+
+**It asks before publishing your code.** The venues log prompts and share them
+with whoever owns the model, so sending a private repository publishes it, and
+no later deletion unpublishes it. `exposure.py` settles whether that has already
+happened by making a real unauthenticated request — the same `info/refs` call
+`git clone` starts with, carrying no credential of any kind — and reading the
+provider's API where there is one. A hostname is not evidence: the enterprise
+install at `github.example.com` looks exactly like the public one, and only the
+probe can tell them apart.
+
+```
+$ python3 .claude/skills/ox-review/scripts/exposure.py
+verdict: public
+curtisgalloway/oxbox on github.com is publicly readable: anyone can already clone this code
+```
+
+Anything other than `public` — a private repo, a host the probe could not reach,
+no remote at all — exits 10 and the skill stops to ask a human, with the
+destination and the file list in front of them. Uncommitted and unpushed work is
+reported but never blocks: reviewing code before you push it is the point.
+
 ## What to actually watch for
 
 The harness contains the model; it does not evaluate it. That part is yours.

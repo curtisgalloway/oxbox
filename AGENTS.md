@@ -123,6 +123,27 @@ executed inside it.
   even after `ox` stopped using it — it asserted a property of the test. Every
   assertion in `wiretest.py` has been mutation-checked: break the behaviour in
   `ox` and confirm the test goes red before trusting it.
+- **A review fan-out stops at the queue.** `.claude/skills/ox-review` lets
+  several subagents work one review, and every one of them sends through
+  `oxreview.py`'s lock, so exactly one request is on the wire at a time. That
+  is not caution, it is the measurement above: concurrent calls against a
+  shared free pool are refused immediately while a serial queue with a
+  120-second floor clears. Subagents are for reading and verifying findings;
+  they buy nothing at the venue. Do not add a "just this once" bypass, and do
+  not let a batch call `ox` directly.
+- **Ask before publishing someone's code.** The exposure gate in that skill is
+  not a formality: everything `ox` sends is logged and shared with whoever owns
+  the model, so a private repository is *published* by a review and nothing
+  unpublishes it. The verdict comes from a real unauthenticated fetch rather
+  than the shape of the hostname, because `github.example.com` is not
+  `github.com` and only a request can tell. Keep `unknown` on the same side of
+  the line as `not-public` — a probe that could not reach the host has not
+  cleared anything.
+- **A finding nobody checked is a rumor.** The skill's subagents verify each
+  finding against the real source before reporting it, in both directions: the
+  model invents defects in code that does not exist, and it describes real bugs
+  with the wrong mechanism. Refuted findings stay in the report — how often the
+  reviewer is wrong is half of what a survey is measuring.
 - Do not restore `(allow mach-lookup)` or `(allow ipc-posix-shm)`. Both were
   removed after verifying `python3` and a venv `pytest` run work without them.
   If some toolchain genuinely needs one, scope it to named services rather than

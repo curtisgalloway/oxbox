@@ -102,6 +102,40 @@ def main():
     expect_allowed("oxseed accepts a normal file",
                    OXSEED + [str(source), "mod.py"])
 
+    # os.walk does not descend into a symlinked directory, so one never shows
+    # up in its `files` list -- while copytree(symlinks=False) dereferences it
+    # and copies the target in. The link in an intermediate component is the
+    # same hole reached a different way: the named path is then neither a
+    # symlink nor a directory, so every per-path check passes and copy2 reads
+    # straight through. Both put outside content inside the work tree.
+    linked = temp / "linksrc"
+    (linked / "pkg").mkdir(parents=True)
+    # Deliberately a SIBLING of the source root, not a child: a link pointing
+    # somewhere still inside the tree is not an escape, and containment is
+    # right to allow it.
+    beyond = temp / "beyond"
+    beyond.mkdir()
+    (beyond / "key.txt").write_text("SECRET\n", encoding="utf-8")
+    (linked / "mod.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    try:
+        os.symlink(str(beyond), str(linked / "pkg" / "link"),
+                   target_is_directory=True)
+        os.symlink(str(beyond), str(linked / "gate"),
+                   target_is_directory=True)
+        symlinks_available = True
+    except (OSError, NotImplementedError, AttributeError):
+        # Windows needs Developer Mode or admin to create one at all.
+        symlinks_available = False
+    if symlinks_available:
+        expect_refused("oxseed refuses a symlinked directory inside a tree",
+                       OXSEED + [str(linked), "pkg"])
+        expect_refused("oxseed refuses a symlink in an intermediate component",
+                       OXSEED + [str(linked), "gate/key.txt"])
+        expect_allowed("oxseed still accepts a tree with no links in it",
+                       OXSEED + [str(linked), "mod.py"])
+    else:
+        skip("oxseed symlink containment", "cannot create symlinks here")
+
     print("\n=== jail argument guards ===")
     if jail_supported:
         expect_refused("oxbox refuses --work outside sandbox/",
@@ -208,6 +242,47 @@ def main():
     expect_refused("oxapply refuses drive-letter paths",
                    OXAPPLY + ["--diff", str(temp / "drive.patch")])
 
+    # oxapply promises in its docstring that it "Never touches a real
+    # repository", and for a long time nothing enforced it: any directory with
+    # a .git in it was accepted. unsafe_paths cannot cover this -- it
+    # constrains where a patch writes *relative to* the work dir and says
+    # nothing about where that is. Unlike the oxbox case above this needs no
+    # jail backend, so it is the one --work confinement check that also runs
+    # on Windows.
+    # A *real* repo holding a file the patch would cleanly apply to. An empty
+    # .git directory is not enough: git apply would fail on its own and the
+    # case would pass without the containment check existing at all.
+    real = temp / "realrepo"
+    real.mkdir()
+    (real / "mod.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    git_ready = True
+    for argv in (["git", "init", "-q", str(real)],
+                 ["git", "-C", str(real), "add", "-A"],
+                 ["git", "-C", str(real), "-c", "user.email=g@t.invalid",
+                  "-c", "user.name=guardtest", "commit", "-qm", "init"]):
+        if run(argv) != 0:
+            git_ready = False
+            break
+    (temp / "harmless.patch").write_text(
+        "--- a/mod.py\n"
+        "+++ b/mod.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        " def f():\n"
+        "-    return 1\n"
+        "+    return 2\n", encoding="utf-8")
+    if git_ready:
+        code = run(OXAPPLY + ["--diff", str(temp / "harmless.patch"),
+                              "--work", str(real)])
+        # Exit code alone would not prove much; what matters is that the real
+        # tree was left alone.
+        untouched = (real / "mod.py").read_text(encoding="utf-8") == \
+            "def f():\n    return 1\n"
+        report(code != 0 and untouched,
+               "oxapply refuses --work outside sandbox/",
+               f"exit={code} untouched={untouched}")
+    else:
+        skip("oxapply --work confinement", "git unavailable for the fixture")
+
     print("\n=== patch application (positive control) ===")
     # Refusal tests alone are not enough: a validator that rejects everything
     # passes all of them. This asserts a good patch still lands, and is written
@@ -243,6 +318,30 @@ def main():
     expect_refused("ox refuses a key in a --files body",
                    OX + ["--dry-run", "--mode", "ask", "--files", str(creds),
                          "explain this"])
+    # "_" is a word character, so the old \bsecret\b never matched inside
+    # client_secret -- and the value half demanded quotes that .env files and
+    # shell exports do not write. Both shapes reached the provider unflagged.
+    underscored = temp / "underscored.txt"
+    underscored.write_text('client_secret = "wJalrXUtnFEMIK7MDENGbPxRfiCY"\n',
+                           encoding="utf-8")
+    expect_refused("ox refuses an underscore-prefixed credential name",
+                   OX + ["--dry-run", "--mode", "ask", "--files",
+                         str(underscored), "explain this"])
+    unquoted = temp / "unquoted.env"
+    unquoted.write_text("DB_PASSWORD=supersecretvalue12345\n", encoding="utf-8")
+    expect_refused("ox refuses an unquoted credential value",
+                   OX + ["--dry-run", "--mode", "ask", "--files",
+                         str(unquoted), "explain this"])
+    # The counterweight: a scanner that refuses everything passes every case
+    # above. max_tokens contains "token" and must not trip it, or ox cannot
+    # read its own source.
+    tokens = temp / "tokens.py"
+    tokens.write_text("max_tokens = DEFAULT_MAX_TOKENS\n"
+                      "completion_tokens = usage.get(\"completion_tokens\")\n",
+                      encoding="utf-8")
+    expect_allowed("ox does not mistake max_tokens for a credential",
+                   OX + ["--dry-run", "--mode", "ask", "--files",
+                         str(tokens), "explain this"])
     expect_allowed("ox accepts an ordinary prompt",
                    OX + ["--dry-run", "--mode", "ask",
                          "explain what a unified diff is"])

@@ -130,27 +130,56 @@ class Queue:
                 return False
         return time.time() > record.get("expires_at", 0)
 
+    def _break_stale(self):
+        """Remove a dead holder's lock directory, debris and all.
+
+        Unlinking holder.json alone is not enough. _write_holder stages
+        holder.<pid>.tmp and renames it, so a run killed between those two
+        steps leaves the temp file behind, and rmdir refuses a directory that
+        still holds one. Raises OSError if the directory could not be cleared.
+        """
+        try:
+            entries = list(self.path.iterdir())
+        except OSError:
+            entries = []
+        for entry in entries:
+            try:
+                entry.unlink()
+            except OSError:
+                pass
+        self.path.rmdir()
+
     def acquire(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         started = time.time()
         announced = False
+        complained = False
         while True:
             try:
                 self.path.mkdir()
             except FileExistsError:
                 if self._expired():
-                    sys.stderr.write(
-                        "oxreview: breaking a stale queue lock at %s "
-                        "(its holder is past its expiry)\n" % self.path)
+                    if not complained:
+                        sys.stderr.write(
+                            "oxreview: breaking a stale queue lock at %s "
+                            "(its holder is past its expiry)\n" % self.path)
                     try:
-                        self.holder.unlink()
-                    except OSError:
-                        pass
-                    try:
-                        self.path.rmdir()
-                    except OSError:
-                        pass
-                    continue
+                        self._break_stale()
+                        continue
+                    except OSError as error:
+                        # Fall through to the ordinary wait instead of retrying
+                        # straight away. Neither a failed unlink nor a failed
+                        # rmdir moves the directory's mtime, so _expired stays
+                        # true, and an immediate `continue` here has no sleep
+                        # and never reaches the timeout check below: it spins at
+                        # full CPU forever. Measured before this was fixed --
+                        # 82MB of "breaking a stale queue lock" in 20 seconds,
+                        # against a 5-second --wait-timeout.
+                        if not complained:
+                            sys.stderr.write(
+                                "oxreview: could not clear %s (%s); waiting for "
+                                "it instead\n" % (self.path, error))
+                            complained = True
                 waited = time.time() - started
                 if waited > self.wait_timeout:
                     sys.exit("oxreview: waited %ds for the request queue and gave up; "
@@ -327,6 +356,14 @@ def main():
                     command, stdout=subprocess.DEVNULL if args.dry_run else None)
             except OSError as error:
                 record["diagnosis"] = "could not run ox (%s): %s" % (command[0], error)
+                # Record the try as an attempt. run.json's attempt list is the
+                # audit trail for what this batch actually did, and breaking out
+                # without appending leaves "attempts": [] -- which reads like the
+                # loop never ran rather than like ox could not be started.
+                record["attempts"].append(
+                    {"attempt": attempt, "exit_code": None,
+                     "seconds": round(time.time() - started, 1),
+                     "error": record["diagnosis"], "kind": "no-ox"})
                 sys.stderr.write("oxreview: [%s] %s\n" % (args.label, record["diagnosis"]))
                 break
             elapsed = round(time.time() - started, 1)

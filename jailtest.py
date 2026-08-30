@@ -71,11 +71,13 @@ def write_probe(path):
     return action
 
 
+# `with` rather than a trailing close(): inside the jail these calls are
+# *expected* to raise, so the close was the one line that never ran on the
+# path this file exists to exercise.
 def tcp_connect():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(5)
-    sock.connect(("1.1.1.1", 443))
-    sock.close()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(5)
+        sock.connect(("1.1.1.1", 443))
 
 
 def dns_lookup():
@@ -83,10 +85,9 @@ def dns_lookup():
 
 
 def udp_send():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.settimeout(5)
-    sock.sendto(b"\x00", ("1.1.1.1", 53))
-    sock.close()
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(5)
+        sock.sendto(b"\x00", ("1.1.1.1", 53))
 
 
 def stat_outside():

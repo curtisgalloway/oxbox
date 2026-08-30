@@ -19,7 +19,7 @@ import shutil
 import stat
 import sys
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 USAGE = """\
 usage: oxbox [--work DIR] [--allow-external-output] -- command args...

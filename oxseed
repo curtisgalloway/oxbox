@@ -17,7 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 USAGE = """\
 usage: oxseed /path/to/repo file1 [file2 ...]

@@ -268,14 +268,32 @@ leaves a watermark beside the runs it consumed:
 
 ```
 logs/.oxsurvey-scraped.json
-  { "scraped_through": "2026-08-30T16:05:13", ... }
+  { "scraped_through":     "2026-08-30T16-05-13Z",
+    "scraped_through_iso": "2026-08-30T16:05:13", ... }
 ```
 
-Any run directory whose stamp is newer than `scraped_through` has not been read
-yet, and age does not override that. If the file is absent, no survey has ever
-read this directory and age alone governs. The watermark sits inside `logs/` on
-purpose, so anything pruning inside a project finds it beside the runs it is
-about to delete instead of having to walk upwards to discover it exists.
+Any run directory whose name **sorts above** `scraped_through` has not been read
+yet, and age does not override that. The comparison is a plain string
+comparison, not a timestamp parse — which is why `scraped_through` is written in
+the same shape `ox` names directories, `%Y-%m-%dT%H-%M-%SZ`, with dashes in the
+time and no colons.
+
+That detail carries more weight than it looks. While the two forms disagreed,
+`-` (0x2D) sorted below `:` (0x3A), so every run in the same hour compared as
+older than the watermark: a run 54 minutes *newer* than the last scrape read as
+already-read, and the naive comparison would have swept exactly the evidence
+this rule exists to protect. `scraped_through_iso` is the readable form for
+humans and is not the field to compare against.
+
+Absent and unreadable are different answers. If the file is absent, no survey
+has ever read this directory and age alone governs. If it is present but will
+not parse, **prune nothing** — a truncated or hand-edited watermark says the
+survey's position is unknown, not that it is zero, and collapsing those two
+cases deletes the evidence the rule was written to keep.
+
+The watermark sits inside `logs/` on purpose, so anything pruning inside a
+project finds it beside the runs it is about to delete instead of having to walk
+upwards to discover it exists.
 
 Nothing prunes automatically today — this is a rule for whoever prunes by hand,
 and for any tool that later does it for them. `OXBOX_LOG_RETENTION_DAYS` is the

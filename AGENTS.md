@@ -158,6 +158,19 @@ executed inside it.
   denied, so the check reports "absent" for everything and the probe skips
   instead of testing. Existence is computed by `oxbox` and passed in via
   `OXBOX_EXISTING_PATHS`. This bit once already.
+- **Run the jail suite as an ordinary user.** At uid 0 the `/etc/shadow` probe
+  cannot tell a leaking jail from an account that bypasses file permissions, so
+  `jailtest` skips it and says why rather than answering vacuously — the same
+  rule as the existence checks above. Every other read probe stays meaningful at
+  any uid: the real home is never bound into the jail, so absence blocks those,
+  not permissions. Measured on Debian 13 — 14/14 as a normal user with the probe
+  running and passing, 9/9 with 1 skipped as root.
+- **Seed and run as the same user.** `bwrap` puts the run in a user namespace,
+  and a work dir owned by a uid that namespace does not map appears as `nobody`
+  (65534) — so not even root inside can write it, and `fs write: inside work
+  dir` fails for a reason that has nothing to do with containment. Seeding the
+  sandbox as yourself and then running `sudo ./oxbox` is exactly how to produce
+  that confusing result; don't mix the two.
 - The secret scanner covers `--files` bodies, the task argument, and `--stdin`.
   Anything new that reaches the payload must be scanned too — the scan lives in
   `build_context`, so route new content through it rather than around it.

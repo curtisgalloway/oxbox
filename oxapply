@@ -188,6 +188,22 @@ def main():
     work = Path(args.work).resolve()
     if not work.is_dir():
         sys.exit(f"oxapply: work dir does not exist: {work}")
+
+    # oxbox refuses a --work outside its sandbox because whatever --work names
+    # is what gets written to. This file's own docstring makes the same promise
+    # -- "Never touches a real repository" -- but nothing enforced it, so a
+    # pasted or mistyped path would apply a model-produced patch straight into
+    # a real checkout. unsafe_paths below cannot stand in for this: it
+    # constrains where a patch may write *relative to* the work dir, and says
+    # nothing about where the work dir itself is.
+    sandbox_root = (Path.cwd() / "sandbox").resolve()
+    if work != sandbox_root and sandbox_root not in work.parents:
+        sys.stderr.write(f"oxapply: REFUSING --work {work}\n")
+        sys.stderr.write(f"oxapply: it lies outside {sandbox_root}, so applying a\n")
+        sys.stderr.write("oxapply: model-produced patch there would touch a real tree.\n")
+        sys.stderr.write("oxapply: run ./oxseed first, or name a --work inside the sandbox.\n")
+        sys.exit(2)
+
     if not (work / ".git").exists():
         sys.exit(f"oxapply: {work} is not a git repo (run ./oxseed first)")
 
@@ -212,60 +228,72 @@ def main():
         stream.write(patch)
     patch_path = Path(temp_name)
 
-    targets = sorted(set(candidate_paths(patch)) - {"/dev/null"})
-    sys.stderr.write(f"oxapply: patch -> {patch_path}\n")
-    sys.stderr.write(f"oxapply: targets ({len(targets)}): {', '.join(targets)}\n")
+    try:
+        targets = sorted(set(candidate_paths(patch)) - {"/dev/null"})
+        sys.stderr.write(f"oxapply: patch -> {patch_path}\n")
+        sys.stderr.write(f"oxapply: targets ({len(targets)}): {', '.join(targets)}\n")
 
-    strategies = [
-        ("strict", []),
-        ("recount", ["--recount"]),
-        ("recount+C1", ["--recount", "-C1"]),
-    ]
+        strategies = [
+            ("strict", []),
+            ("recount", ["--recount"]),
+            ("recount+C1", ["--recount", "-C1"]),
+        ]
 
-    chosen = None
-    last_error = ""
-    for name, flags in strategies:
-        check = subprocess.run(
-            ["git", "-C", str(work), "apply", "--check", *flags, str(patch_path)],
+        chosen = None
+        last_error = ""
+        for name, flags in strategies:
+            check = subprocess.run(
+                ["git", "-C", str(work), "apply", "--check", *flags, str(patch_path)],
+                capture_output=True, text=True,
+            )
+            if check.returncode == 0:
+                chosen = (name, flags)
+                break
+            last_error = check.stderr
+
+        if chosen is None:
+            sys.stderr.write("oxapply: patch does not apply at any strictness level:\n")
+            sys.stderr.write(last_error)
+            sys.exit(3)
+
+        name, flags = chosen
+        if name != "strict":
+            sys.stderr.write(
+                f"oxapply: WARNING - patch only applied with '{name}'. The model emitted a\n"
+                f"oxapply: malformed hunk (usually wrong line counts or missing trailing\n"
+                f"oxapply: context). Re-read the resulting diff carefully.\n"
+            )
+
+        applied = subprocess.run(
+            ["git", "-C", str(work), "apply", "--stat", "--apply", *flags, str(patch_path)],
             capture_output=True, text=True,
         )
-        if check.returncode == 0:
-            chosen = (name, flags)
-            break
-        last_error = check.stderr
+        sys.stdout.write(applied.stdout)
+        if applied.returncode != 0:
+            sys.stderr.write(applied.stderr)
+            sys.exit(3)
 
-    if chosen is None:
-        sys.stderr.write("oxapply: patch does not apply at any strictness level:\n")
-        sys.stderr.write(last_error)
-        sys.exit(3)
+        if args.commit:
+            subprocess.run(["git", "-C", str(work), "add", "-A"], check=True)
+            subprocess.run(
+                ["git", "-C", str(work), "-c", "user.email=ox@sandbox.invalid",
+                 "-c", "user.name=ox-alpha", "commit", "-q", "-m", "ox patch"],
+                check=True,
+            )
 
-    name, flags = chosen
-    if name != "strict":
-        sys.stderr.write(
-            f"oxapply: WARNING - patch only applied with '{name}'. The model emitted a\n"
-            f"oxapply: malformed hunk (usually wrong line counts or missing trailing\n"
-            f"oxapply: context). Re-read the resulting diff carefully.\n"
-        )
+        sys.stderr.write("oxapply: applied inside sandbox only\n")
+        sys.stderr.write(f"oxapply: review with: git -C {work} diff HEAD\n")
+    finally:
+        # mkstemp leaves the file behind on every exit path -- success, a
+        # refused patch, a patch that would not apply. They accumulated in
+        # sandbox/ until the next --clean; the live repo had 15 of them when
+        # this was found. They hold the model's raw output, so they are worth
+        # removing rather than leaving for an archive to pick up.
+        try:
+            patch_path.unlink()
+        except OSError as error:
+            sys.stderr.write(f"oxapply: could not remove {patch_path}: {error}\n")
 
-    applied = subprocess.run(
-        ["git", "-C", str(work), "apply", "--stat", "--apply", *flags, str(patch_path)],
-        capture_output=True, text=True,
-    )
-    sys.stdout.write(applied.stdout)
-    if applied.returncode != 0:
-        sys.stderr.write(applied.stderr)
-        sys.exit(3)
-
-    if args.commit:
-        subprocess.run(["git", "-C", str(work), "add", "-A"], check=True)
-        subprocess.run(
-            ["git", "-C", str(work), "-c", "user.email=ox@sandbox.invalid",
-             "-c", "user.name=ox-alpha", "commit", "-q", "-m", "ox patch"],
-            check=True,
-        )
-
-    sys.stderr.write("oxapply: applied inside sandbox only\n")
-    sys.stderr.write(f"oxapply: review with: git -C {work} diff HEAD\n")
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -74,8 +75,21 @@ SECRET_PATTERNS = [
     (r"AKIA[0-9A-Z]{16}", "AWS access key id"),
     (r"xox[baprs]-[A-Za-z0-9\-]{10,}", "Slack token"),
     (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "private key block"),
-    (r"(?i)\b(api[_\-]?key|secret|password|token)\b\s*[:=]\s*[\"'][^\"'\s]{16,}[\"']",
+    # \b does not do what it looks like it does here. "_" is a word character,
+    # so \bsecret\b never matches inside client_secret or aws_secret_access_key
+    # -- the two commonest spellings in real code -- and the old pattern also
+    # required the value to be quoted, which .env files and shell exports never
+    # are. The identifier run on either side fixes the first; the unquoted
+    # alternative fixes the second. token(?!s) keeps max_tokens and
+    # completion_tokens from matching every request this tool builds.
+    (r"(?i)[A-Za-z0-9_\-]*(?:api[_\-]?key|secret|password|passwd|token(?!s)|credential)"
+     r"[A-Za-z0-9_\-]*\s*[:=]\s*"
+     r"(?:[\"'][^\"'\s]{12,}[\"']|[^\s\"'()\[\]{}#,;]{16,})",
      "hardcoded credential assignment"),
+    # AKIA... above is only the access key id, which is not itself a secret.
+    # The 40-character secret that pairs with it had no pattern at all.
+    (r"(?i)aws[_\-]?secret[_\-]?access[_\-]?key[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9/+=]{40}",
+     "AWS secret access key"),
 ]
 
 SYSTEM_PROMPTS = {
@@ -293,7 +307,16 @@ def load_manifest(path, allow_paid):
         sys.exit("ox: manifest version %r is newer than this ox understands "
                  "(%d); update ox, or use an older manifest" % (version, MANIFEST_VERSION))
 
-    defaults = data.get("defaults") or {}
+    # A manifest is an outside document, so nothing here may assume a shape.
+    # A non-object defaults or params used to reach .get() and raise
+    # AttributeError from inside the send loop, which left --status-file
+    # holding its "in progress" placeholder: a script reading that record got
+    # no diagnosis at all, which is the one thing the status file exists for.
+    defaults = data.get("defaults")
+    if defaults is not None and not isinstance(defaults, dict):
+        sys.stderr.write("ox: manifest defaults is not an object; ignoring it\n")
+        defaults = None
+    defaults = defaults or {}
     unknown = sorted(set(defaults) - {"max_tokens"})
     if unknown:
         sys.stderr.write("ox: ignoring unrecognized manifest defaults: %s\n"
@@ -305,6 +328,9 @@ def load_manifest(path, allow_paid):
 
     entries = []
     for index, rec in enumerate(recs):
+        if not isinstance(rec, dict):
+            sys.exit("ox: manifest %s recommendation %d is not an object"
+                     % (path, index + 1))
         entry = {
             "position": index + 1,
             "venue": rec.get("venue"),
@@ -314,7 +340,7 @@ def load_manifest(path, allow_paid):
             # never spends on the strength of an absence.
             "cost": rec.get("cost") or "unknown",
             "why": rec.get("why") or "",
-            "params": rec.get("params") or {},
+            "params": rec.get("params") if isinstance(rec.get("params"), dict) else {},
             "skip": None,
             "url": None,
             "key_env": None,
@@ -438,11 +464,28 @@ def send_and_parse(api_url, api_key, payload, log_dir):
                 "ox: provider returned a non-JSON body (%s); raw bytes in %s"
                 % (error, log_dir / "error.txt"))
     except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", "replace")
-        write_lf(log_dir / "error.txt", f"{error.code}\n{detail}")
+        # error.read() can itself raise: a provider that announces a
+        # Content-Length and then closes short leaves IncompleteRead here.
+        # Uncaught, it escaped this handler entirely, and main() catches only
+        # SystemExit -- so the run ended with no error.txt and a status file
+        # still holding its placeholder. Every outcome must leave evidence.
+        try:
+            detail = error.read().decode("utf-8", "replace")
+        except Exception as read_error:
+            detail = "<response body unreadable: %r>" % (read_error,)
+        try:
+            write_lf(log_dir / "error.txt", f"{error.code}\n{detail}")
+        except OSError as write_error:
+            sys.stderr.write("ox: could not write error.txt: %s\n" % write_error)
         raise AttemptFailed(f"ox: HTTP {error.code}: {detail[:500]}")
     except urllib.error.URLError as error:
         raise AttemptFailed(f"ox: network error: {error.reason}")
+    except (TimeoutError, socket.timeout) as error:
+        # A timeout while reading the body is not a URLError, so nothing above
+        # caught it. socket.timeout is a distinct class before 3.10 and an
+        # alias for TimeoutError after; naming both covers the supported range.
+        raise AttemptFailed("ox: timed out after %ds reading the response (%s)"
+                            % (TIMEOUT_SECONDS, error))
 
     write_lf(log_dir / "response.json", json.dumps(body, indent=2))
 
@@ -810,7 +853,12 @@ def run(status):
         status["completion_tokens"] = usage.get("completion_tokens")
         status["reasoning_tokens"] = details.get("reasoning_tokens")
         status["reasoning_chars"] = len(reasoning)
-        status["truncated"] = choice.get("finish_reason") == "length"
+        # A provider that reports no finish reason has said nothing about
+        # whether the answer was cut off, and recording False there claims
+        # evidence we do not have. None means unknown -- which is exactly what
+        # a free pool aborting mid-sentence leaves behind.
+        finish = choice.get("finish_reason")
+        status["truncated"] = None if finish is None else finish == "length"
         if attempts is not None:
             record["finish_reason"] = choice.get("finish_reason")
             attempts.append(record)
@@ -841,6 +889,12 @@ def run(status):
         sys.stderr.write(
             "ox: WARNING: output truncated at the max_tokens cap "
             "(finish=length); raise --max-tokens\n"
+        )
+    elif status["truncated"] is None:
+        sys.stderr.write(
+            "ox: WARNING: the provider reported no finish reason, so whether "
+            "this answer is complete is unknown; check the tail before "
+            "trusting it\n"
         )
 
     if args.output:

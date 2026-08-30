@@ -174,6 +174,16 @@ Review one batch of files with oxbox and verify what comes back.
    --failover unless you were told the operator agreed to the full destination
    list.
 
+   Give the call a long timeout — 600000 ms if your tool takes one. A batch
+   routinely runs 4-12 minutes on the wire and can sit far longer in the
+   queue, while most agent shells cut a command off after 120 seconds. The
+   command surviving that cutoff is the danger: the process keeps running and
+   keeps its place in the queue, so an agent that reads the timeout as failure
+   and re-runs fires a second request into the same pool and collides with its
+   own first one. If you are cut off, wait for the file instead of re-running:
+
+       until [ -f .ox-review/<BATCH-LABEL>/review.md ]; do sleep 10; done
+
 2. If it exits non-zero, read .ox-review/<BATCH-LABEL>/run.json, report the
    `diagnosis` field, and stop. Do not retry by hand; the retry policy is
    already in the script.

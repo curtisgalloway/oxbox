@@ -24,6 +24,17 @@ REPO_ROOT = os.environ.get("REPO_ROOT", "")
 PLATFORM = os.environ.get("OXBOX_PLATFORM", sys.platform)
 EXISTING = [line for line in os.environ.get("OXBOX_EXISTING_PATHS", "").splitlines() if line]
 
+# Reading a root-owned file proves nothing about the jail when you ARE root.
+# What keeps /etc/shadow unreadable is file permissions, and uid 0 bypasses
+# them, so the probe reports a leak when what leaked is the account you ran as.
+# It cannot tell the two apart, and a probe that cannot test should skip rather
+# than answer vacuously -- the same rule that moved existence checks out to
+# oxbox. Everything else in EXISTING lives under the real home, which the jail
+# never binds in at all: absence blocks those, not permissions, so they stay
+# meaningful at any uid.
+IS_ROOT = getattr(os, "geteuid", lambda: -1)() == 0
+DAC_DEPENDENT = ("/etc/shadow",)
+
 results = []
 skipped = []
 
@@ -113,6 +124,11 @@ probe("network: outbound UDP", udp_send)
 
 if EXISTING:
     for path in EXISTING:
+        if IS_ROOT and path in DAC_DEPENDENT:
+            skipped.append(
+                f"fs read: {label_for(path)} (uid 0 bypasses the file "
+                "permissions this probe tests; rerun as an ordinary user)")
+            continue
         probe(f"fs read: {label_for(path)}", read_probe(path))
     probe(f"fs metadata: stat {label_for(EXISTING[0])} (oracle)", stat_outside)
 else:

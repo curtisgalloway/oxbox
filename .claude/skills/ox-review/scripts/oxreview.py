@@ -106,16 +106,29 @@ class Queue:
         try:
             temporary.write_text(json.dumps(record), encoding="utf-8")
             os.replace(str(temporary), str(self.holder))
-        except OSError:
+            return True
+        except OSError as error:
             try:
                 temporary.unlink()
             except OSError:
                 pass
+            # Swallowing this silently was the bug. The record still said the
+            # old expiry, so a refresh that never landed was indistinguishable
+            # from one that did -- and the margin is exactly zero:
+            # OX_REQUEST_TIMEOUT (900) + RETRY_FLOOR (120) is the whole 1020s
+            # window, so one lost refresh on the retry path is enough for a
+            # waiter to break a lock whose holder is mid-request.
+            sys.stderr.write(
+                "oxreview: WARNING: could not refresh the queue lock at %s (%s); "
+                "another batch may break it while this request is still "
+                "running\n" % (self.path, error))
+            return False
 
     def refresh(self, seconds_from_now):
         """Extend the expiry — call before anything that will take a while."""
-        if self.held:
-            self._write_holder(seconds_from_now)
+        if not self.held:
+            return False
+        return self._write_holder(seconds_from_now)
 
     def _expired(self):
         try:
@@ -138,8 +151,39 @@ class Queue:
         steps leaves the temp file behind, and rmdir refuses a directory that
         still holds one. Raises OSError if the directory could not be cleared.
         """
+        # Two waiters that both saw the same dead lock used to both proceed:
+        # the first cleared it, mkdir'd and wrote its holder, and the second
+        # then unlinked that brand-new record and took the lock as well -- two
+        # live requests, the exact collision the queue exists to prevent.
+        #
+        # Three things together close that. Re-read the record now, because the
+        # caller's _expired() was evaluated a sleep ago and the lock may have
+        # been broken and retaken since. Claim by renaming, because os.rename
+        # is atomic and so exactly one of several waiters can win it. Then
+        # check once more inside the directory we now solely own, and put it
+        # back untouched if it turned out to be alive after all.
+        if not self._expired():
+            raise OSError("the lock is no longer stale")
+        doomed = self.path.parent / ("queue.lock.dead.%d.%d"
+                                     % (os.getpid(), int(time.time() * 1000)))
+        os.rename(str(self.path), str(doomed))
         try:
-            entries = list(self.path.iterdir())
+            record = json.loads((doomed / "holder.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            record = None
+        if record is not None and time.time() <= record.get("expires_at", 0):
+            try:
+                os.rename(str(doomed), str(self.path))
+            except OSError:
+                # Putting it back is the only safe move, so if even that fails,
+                # say so loudly: a live holder's lock is now sitting under a
+                # name nobody is looking for.
+                sys.stderr.write(
+                    "oxreview: WARNING: a live queue lock could not be restored "
+                    "and is stranded at %s\n" % doomed)
+            raise OSError("the lock was retaken while it was being broken")
+        try:
+            entries = list(doomed.iterdir())
         except OSError:
             entries = []
         for entry in entries:
@@ -147,7 +191,12 @@ class Queue:
                 entry.unlink()
             except OSError:
                 pass
-        self.path.rmdir()
+        try:
+            doomed.rmdir()
+        except OSError as error:
+            # The lock path itself is already free, which is what callers care
+            # about. Say so rather than raising and sending them back to wait.
+            sys.stderr.write("oxreview: left %s behind (%s)\n" % (doomed, error))
 
     def acquire(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -204,6 +253,20 @@ class Queue:
         if not self.held:
             return
         self.held = False
+        # Only tear down a lock this process still owns. If anything broke it
+        # out from under us -- a lost refresh, clock skew, a request that
+        # outran its window -- the directory now belongs to a different batch,
+        # and unlinking it would hand a third waiter a lock that is still in
+        # use, while leaving the real holder invisible to everyone.
+        try:
+            record = json.loads(self.holder.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            record = None
+        if record is not None and record.get("pid") != os.getpid():
+            sys.stderr.write(
+                "oxreview: not releasing %s; it now belongs to pid %s (%s)\n"
+                % (self.path, record.get("pid"), record.get("label")))
+            return
         try:
             self.holder.unlink()
         except OSError:
@@ -291,8 +354,23 @@ def main():
                         help="build and log the request without sending it")
     args = parser.parse_args()
 
+    # ox rejects these together, in microseconds, and used to do it *after*
+    # this script had already spent its turn in the machine-wide queue: one
+    # batch waited 1262s to be told its flags conflicted. Destination
+    # arguments are knowable before anything queues, so check them here.
+    if args.manifest and (args.venue or args.model):
+        sys.exit("oxreview: --venue/--model conflict with --manifest; the manifest "
+                 "chooses the destination. Drop --manifest to name a venue "
+                 "directly, or drop --venue/--model to use the manifest ranking.")
+
     if args.task_file:
-        task = Path(args.task_file).read_text(encoding="utf-8")
+        try:
+            task = Path(args.task_file).read_text(encoding="utf-8")
+        except OSError as error:
+            # Every other input error here exits with one line; this one used
+            # to raise five frames of pathlib at the operator.
+            sys.exit("oxreview: cannot read --task-file %s: %s"
+                     % (args.task_file, error))
     elif args.task:
         task = args.task
     else:
@@ -313,34 +391,46 @@ def main():
     review_path = out / "review.md"
     status_path = out / "status.json"
 
-    command = find_ox(args.ox) + [
-        "--mode", "review",
-        "--files", ",".join(args.files),
-        "--output", str(review_path),
-        "--status-file", str(status_path),
-    ]
-    if args.manifest:
-        command += ["--manifest", args.manifest]
-    if args.failover:
-        command.append("--failover")
-    if args.venue:
-        command += ["--venue", args.venue]
-    if args.model:
-        command += ["--model", args.model]
-    if args.effort:
-        command += ["--effort", args.effort]
-    if args.max_tokens:
-        command += ["--max-tokens", str(args.max_tokens)]
-    if args.dry_run:
-        command.append("--dry-run")
-    command.append(task)
-
     record = {"label": args.label, "files": args.files, "out": str(out),
               "ok": False, "attempts": [], "queue_wait_seconds": None,
               "review": None, "diagnosis": None}
 
-    queue = Queue(args.state_dir, args.wait_timeout, args.label)
-    queue.acquire()
+    def write_record():
+        (out / "run.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+
+    # The runbook tells the caller: "if it exits non-zero, read run.json and
+    # report the diagnosis". A queue-wait timeout, or a missing ox, used to
+    # sys.exit long before run.json was written, so that instruction had
+    # nothing to read and the failure looked like a crash.
+    try:
+        command = find_ox(args.ox) + [
+            "--mode", "review",
+            "--files", ",".join(args.files),
+            "--output", str(review_path),
+            "--status-file", str(status_path),
+        ]
+        if args.manifest:
+            command += ["--manifest", args.manifest]
+        if args.failover:
+            command.append("--failover")
+        if args.venue:
+            command += ["--venue", args.venue]
+        if args.model:
+            command += ["--model", args.model]
+        if args.effort:
+            command += ["--effort", args.effort]
+        if args.max_tokens:
+            command += ["--max-tokens", str(args.max_tokens)]
+        if args.dry_run:
+            command.append("--dry-run")
+        command.append(task)
+
+        queue = Queue(args.state_dir, args.wait_timeout, args.label)
+        queue.acquire()
+    except SystemExit as error:
+        record["diagnosis"] = str(error) or "exited before the request was sent"
+        write_record()
+        raise
     record["queue_wait_seconds"] = round(queue.waited, 1)
     try:
         for attempt in range(1, args.attempts + 1):
@@ -401,7 +491,7 @@ def main():
     finally:
         queue.release()
 
-    (out / "run.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+    write_record()
     if record["ok"]:
         sys.stderr.write("oxreview: [%s] %s\n" % (
             args.label,

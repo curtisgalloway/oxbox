@@ -346,6 +346,114 @@ def main():
                    OX + ["--dry-run", "--mode", "ask",
                          "explain what a unified diff is"])
 
+    print("\n=== exposure gate (the check that decides if code may leave) ===")
+    # The gate is a containment check like the rest of this file, just one
+    # layer earlier: it decides whether anything is sent at all. Its worst
+    # failure is a false "public", and unchecked redirects were a route to
+    # one -- a host answering /info/refs with a 302 to any public repo's ref
+    # advertisement made a private repo read as world-clonable, while the
+    # report still named the original host.
+    gate = HERE / ".claude" / "skills" / "ox-review" / "scripts" / "exposure.py"
+    if not gate.is_file():
+        skip("exposure gate redirect containment", "skill scripts not in this tree")
+    else:
+        import http.server
+        import importlib.util
+        import threading
+
+        spec = importlib.util.spec_from_file_location("exposure_under_test", gate)
+        exposure = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(exposure)
+
+        advert = b"001e# service=git-upload-pack\n0000"
+
+        def send_advert(handler):
+            handler.send_response(200)
+            handler.send_header(
+                "Content-Type", "application/x-git-upload-pack-advertisement")
+            handler.send_header("Content-Length", str(len(advert)))
+            handler.end_headers()
+            handler.wfile.write(advert)
+
+        def serve(handler_class):
+            server = http.server.HTTPServer(("127.0.0.1", 0), handler_class)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            servers.append(server)
+            return server.server_address[1]
+
+        servers = []
+
+        class Advertiser(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                send_advert(self)
+
+            def log_message(self, *args):
+                pass
+
+        class Renamed(http.server.BaseHTTPRequestHandler):
+            """A same-host redirect, the ordinary case that must keep working."""
+
+            def do_GET(self):
+                if self.path.startswith("/old"):
+                    self.send_response(301)
+                    self.send_header("Location", "/new")
+                    self.end_headers()
+                    return
+                send_advert(self)
+
+            def log_message(self, *args):
+                pass
+
+        try:
+            elsewhere = serve(Advertiser)
+
+            class Offsite(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    self.send_response(302)
+                    self.send_header(
+                        "Location", "http://127.0.0.1:%d/elsewhere" % elsewhere)
+                    self.end_headers()
+
+                def log_message(self, *args):
+                    pass
+
+            offsite = serve(Offsite)
+            renamed = serve(Renamed)
+
+            status, detail, _body, _final = exposure.fetch(
+                "http://127.0.0.1:%d/acme/secret/info/refs" % offsite, accept="*/*")
+            report(status is None and "another host" in (detail or ""),
+                   "exposure refuses a redirect to another host",
+                   "status=%r detail=%r" % (status, detail))
+
+            status, _ct, body, final = exposure.fetch(
+                "http://127.0.0.1:%d/old" % renamed, accept="*/*")
+            report(status == 200 and body == advert and final.endswith("/new"),
+                   "exposure still follows a same-host redirect",
+                   "status=%r final=%r" % (status, final))
+        finally:
+            for server in servers:
+                server.shutdown()
+
+        # The note asserts "the code is publicly readable". Emitting it before
+        # the verdict was consulted meant a private repo got a report saying it
+        # was not publicly readable and, two lines later, that it was.
+        saved = (exposure.probe_provider_api, exposure.probe_anonymous_clone)
+        try:
+            exposure.probe_provider_api = lambda h, o, n: {
+                "reachable": True, "private": True, "license": None,
+                "archived": False}
+            exposure.probe_anonymous_clone = lambda h, o, n: {
+                "ok": False, "detail": "HTTP 404", "url": "x"}
+            verdict = exposure.assess_remote(
+                "origin", "https://github.com/acme/private.git")
+            contradictory = [n for n in verdict["notes"] if "publicly readable" in n]
+            report(verdict["verdict"] == "not-public" and not contradictory,
+                   "exposure does not call a private repo publicly readable",
+                   "verdict=%s notes=%r" % (verdict["verdict"], verdict["notes"]))
+        finally:
+            exposure.probe_provider_api, exposure.probe_anonymous_clone = saved
+
     print("\n=== --skill ===")
     # --skill answers a question about the installation, not about a run, so
     # it must not open one. The hazard is ordering: move the handler below

@@ -43,6 +43,11 @@ USER_AGENT = "oxbox ox-review exposure probe (+https://github.com/curtisgalloway
 # — a self-hosted Forgejo, an enterprise GitHub, a bare git over https — still
 # gets the anonymous-clone probe below, which is the check that actually
 # decides. This table only buys better reporting, never a laxer verdict.
+# Of the APIs above, only these two return anything about licensing. The
+# Forgejo/Gitea and Bitbucket repo endpoints have no license field at all, so
+# an empty result from them means "not reported", not "no license".
+LICENSE_REPORTING_HOSTS = {"github.com", "gitlab.com"}
+
 PROVIDER_APIS = {
     "github.com": "https://api.github.com/repos/{owner}/{name}",
     "gitlab.com": "https://gitlab.com/api/v4/projects/{owner_name_encoded}?license=true",
@@ -95,8 +100,43 @@ def parse_remote(url):
     return host.lower(), owner, name
 
 
+class RedirectedAway(urllib.error.HTTPError):
+    """A redirect tried to leave the host we asked about."""
+
+
+class SameHostOnly(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only while it stays on the host that was asked.
+
+    `ox` installs a NoRedirects handler so a credential cannot be re-aimed.
+    This probe carries no credential, so that half does not apply -- but the
+    other half applies harder here, because the entire output of this file is
+    a claim about one specific host. A 302 elsewhere means a different server
+    answered, and a well-formed ref advertisement from that server says
+    nothing about the repository we asked about.
+
+    That is not hypothetical. Before this handler existed, a host redirecting
+    /info/refs to a public repository's advertisement produced verdict
+    `public` for a private repo that did not exist on it at all -- and the
+    report still named the original host, so nothing revealed the swap.
+
+    Same-host redirects stay allowed: a renamed repository, a trailing-slash
+    normalisation, http upgraded to https. Refusing those would turn public
+    repositories into `unknown` and train people to wave the gate through.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        was = urllib.parse.urlsplit(req.full_url).netloc.lower()
+        goes = urllib.parse.urlsplit(newurl).netloc.lower()
+        if goes and goes != was:
+            raise RedirectedAway(
+                req.full_url, code,
+                "redirect to another host refused: %s -> %s" % (was, goes),
+                headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def fetch(url, accept="application/json"):
-    """Unauthenticated GET. Returns (status, content_type, body_bytes).
+    """Unauthenticated GET. Returns (status, content_type, body, final_url).
 
     No Authorization header, no netrc, no token from the environment: the
     point of the probe is to learn what a stranger sees, and a request that
@@ -107,13 +147,22 @@ def fetch(url, accept="application/json"):
         "Accept": accept,
         "User-Agent": USER_AGENT,
     })
+    opener = urllib.request.build_opener(SameHostOnly)
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
-            return response.status, response.headers.get("Content-Type", ""), response.read(200000)
+        with opener.open(request, timeout=TIMEOUT) as response:
+            return (response.status,
+                    response.headers.get("Content-Type", ""),
+                    response.read(200000),
+                    response.geturl())
+    except RedirectedAway as error:
+        # Deliberately not a status: an answer from elsewhere is no answer.
+        return None, str(error.reason), b"", None
     except urllib.error.HTTPError as error:
-        return error.code, error.headers.get("Content-Type", "") if error.headers else "", b""
+        return (error.code,
+                error.headers.get("Content-Type", "") if error.headers else "",
+                b"", url)
     except Exception as error:  # network down, TLS failure, proxy refusal, DNS
-        return None, str(error), b""
+        return None, str(error), b"", None
 
 
 def probe_anonymous_clone(host, owner, name):
@@ -125,13 +174,20 @@ def probe_anonymous_clone(host, owner, name):
     the code; a 401/403/404 means it cannot.
     """
     url = "https://%s/%s/%s/info/refs?service=git-upload-pack" % (host, owner, name)
-    status, content_type, body = fetch(url, accept="*/*")
+    status, content_type, body, final = fetch(url, accept="*/*")
     if status is None:
         return {"ok": None, "detail": "probe failed: %s" % content_type, "url": url}
     advertised = ("git-upload-pack-advertisement" in (content_type or "")
                   or body.startswith(b"001e# service=git-upload-pack"))
     if status == 200 and advertised:
-        return {"ok": True, "detail": "anonymous clone allowed (HTTP 200)", "url": url}
+        result = {"ok": True, "detail": "anonymous clone allowed (HTTP 200)",
+                  "url": url}
+        if final and final != url:
+            # Same host by construction, but say where the answer came from
+            # rather than leaving the report naming only what was asked.
+            result["final_url"] = final
+            result["detail"] += " (after a same-host redirect to %s)" % final
+        return result
     if status == 200:
         # A login page or an html error rendered with a 200. Not proof of
         # anything, so it must not read as proof of publicity.
@@ -151,7 +207,7 @@ def probe_provider_api(host, owner, name):
         name=urllib.parse.quote(name, safe=""),
         owner_name_encoded=urllib.parse.quote("%s/%s" % (owner, name), safe=""),
     )
-    status, _, body = fetch(url)
+    status, _, body, _final = fetch(url)
     if status is None or status != 200 or not body:
         return {"reachable": False, "status": status, "url": url}
     try:
@@ -202,14 +258,28 @@ def assess_remote(name, url):
 
     if api and api.get("reachable") and api.get("private") is not None:
         result["verdict"] = "not-public" if api["private"] else "public"
-        if api.get("license") in (None, "", "NOASSERTION"):
-            # Public and open source are not the same claim. All-rights-reserved
-            # source on a public host is still readable by the world, so the
-            # disclosure question is settled — but the operator may care, and
-            # a gate that silently conflates the two is lying by omission.
-            result["notes"].append(
-                "no license detected: the code is publicly readable but not "
-                "necessarily open source")
+        # Only when the repo IS public. The note asserts "the code is publicly
+        # readable", and it used to be emitted before the verdict was consulted
+        # — so a private repository got a report saying it was not publicly
+        # readable and, two lines later, that it was.
+        if not api["private"] and api.get("license") in (None, "", "NOASSERTION"):
+            if host in LICENSE_REPORTING_HOSTS:
+                # Public and open source are not the same claim.
+                # All-rights-reserved source on a public host is still readable
+                # by the world, so the disclosure question is settled — but the
+                # operator may care, and a gate that silently conflates the two
+                # is lying by omission.
+                result["notes"].append(
+                    "no license detected: the code is publicly readable but not "
+                    "necessarily open source")
+            else:
+                # Forgejo/Gitea and Bitbucket simply have no license field, so
+                # silence there is absence of evidence. Saying "no license
+                # detected" would report the API's shape as a fact about the
+                # repository.
+                result["notes"].append(
+                    "%s's API does not report licensing, so whether this is "
+                    "open source was not checked" % host)
         if api.get("archived"):
             result["notes"].append("repository is archived")
     elif clone["ok"] is True:

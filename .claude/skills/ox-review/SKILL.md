@@ -242,6 +242,49 @@ that flow deliberately.
 - **Truncated answer.** `ox` warns and `status.json` records it. Re-run that
   batch with fewer files rather than accepting a partial review as complete.
 
+## Keeping the logs
+
+Every run writes a directory under `logs/` holding the request, the raw
+response, `status.json`, and — when the model spent its budget thinking — the
+reasoning. That is the audit trail of what left the machine. It is also
+evidence: the Oxbox Survey reads these directories to establish which manifest
+entry actually served a piece of work, and a recommendation the survey cannot
+point at a run for is a recommendation resting on a model card rather than on
+measurement. Deleting a log costs more than the disk it frees.
+
+**Keep runs for at least 14 days.** The survey's cycle is weekly, so a
+seven-day horizon means one missed cycle silently destroys the input to the
+next. Two cycles of slack is the floor, and volume is not the constraint —
+sixty runs is a few megabytes.
+
+The stronger reason is what lives in the failures. A batch that fails leaves
+evidence that exists nowhere else: a run on 2026-08-30 came back with empty
+content and 22 KB of genuine review stranded in `reasoning.txt`, cut off
+mid-word, with `finish_reason` null. Nothing but that log records the failure
+mode. Successful runs are replaceable by running again; the rare ones are not.
+
+**Never delete a run the survey has not read, whatever its age.** A survey pass
+leaves a watermark beside the runs it consumed:
+
+```
+logs/.oxsurvey-scraped.json
+  { "scraped_through": "2026-08-30T16:05:13", ... }
+```
+
+Any run directory whose stamp is newer than `scraped_through` has not been read
+yet, and age does not override that. If the file is absent, no survey has ever
+read this directory and age alone governs. The watermark sits inside `logs/` on
+purpose, so anything pruning inside a project finds it beside the runs it is
+about to delete instead of having to walk upwards to discover it exists.
+
+Nothing prunes automatically today — this is a rule for whoever prunes by hand,
+and for any tool that later does it for them. `OXBOX_LOG_RETENTION_DAYS` is the
+name reserved for that knob, in days, with `0` meaning keep everything; it is an
+environment variable rather than a config file because `ox` has no config file
+and one setting does not justify inventing one. Deletion is the only operation
+in this toolset with no undo, which is why it is documented here before it is
+automated.
+
 ## Installing this in another project
 
 The scripts are self-contained (Python 3.9+, standard library only, no
@@ -257,4 +300,5 @@ installed on `PATH`, named by `OX`, or an oxbox checkout pointed at by
 
 Add `logs/` and `.ox-review/` to that project's `.gitignore`. Both hold the
 audit trail of what was sent and what came back; keep them, but keep them out of
-the history.
+the history. Ignored is not the same as disposable — see **Keeping the logs**
+above before anything sweeps them.

@@ -95,10 +95,31 @@ def validate(source, rel):
     # outside inside the work tree, for anything that touches it outside the jail.
     if full.is_symlink():
         refuse(f"REFUSING symlink: {rel} -> {os.readlink(full)}")
+
+    # The named path is not the only place a link can hide. An intermediate
+    # component does the same job: seeding "gate/creds.txt" where gate is a
+    # link to /elsewhere passes every check above, because `full` is itself
+    # neither a symlink nor a directory, and copy2 reads straight through it.
+    # Resolving the whole chain and requiring it to stay under the source root
+    # is the check that closes that, and every variant like it.
+    try:
+        root = source.resolve(strict=True)
+        resolved = full.resolve(strict=True)
+    except OSError as error:
+        refuse(f"REFUSING unresolvable path: {rel} ({error})")
+    if resolved != root and root not in resolved.parents:
+        refuse(f"REFUSING path resolving outside the source: {rel} -> {resolved}")
+
     if full.is_dir():
-        for root, _dirs, files in os.walk(full):
-            for name in files:
-                if Path(root, name).is_symlink():
+        for walk_root, dirs, files in os.walk(full):
+            # dirs matters as much as files, and leaving it out was the bug.
+            # os.walk does not descend into a symlinked directory, so one never
+            # appears in `files` and the old check could not see it -- while
+            # copytree(symlinks=False) below dereferences it happily and copies
+            # the target's contents into the sandbox. Checked with a fixture:
+            # pkg/link -> ../secret put secret/key.txt inside sandbox/work.
+            for name in dirs + files:
+                if Path(walk_root, name).is_symlink():
                     refuse(f"REFUSING {rel}: contains symlink {name}")
 
 

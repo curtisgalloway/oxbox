@@ -266,6 +266,16 @@ executed inside it.
   with `newline=""` and `ox` uses `write_lf`. Without that, git compares a CRLF
   patch to an LF tree and rejects every patch with an error that reads like a
   malformed diff. Cost real time to find; only reproduces on Windows.
+- **Never redirect a native command's stderr in a `pwsh` CI step.** GitHub's
+  `pwsh` shell runs with `$ErrorActionPreference = 'stop'`, and `2>$null` or
+  `2>&1` on a native command turns each stderr line into an ErrorRecord — the
+  first of which terminates the script. The message is discarded by the same
+  redirect that created it, so the step dies with a bare `Process completed
+  with exit code 1`, no error text, and nothing to grep for. Every tool here
+  writes its provenance line to stderr, so `ox --skill 2>$null` was a
+  guaranteed silent failure. Redirect stdout only (`> $null`, `| Out-Null`)
+  and let stderr through. Found in the Windows release job, where it looked
+  for a while like an MSI problem.
 - **A document printed to stdout needs the same care as one written to a file.**
   `--skill` prints SKILL.md, and Windows' text-mode `sys.stdout` re-encodes it
   in the locale codepage — cp1252 renders the runbook's em dashes as `0x97` —

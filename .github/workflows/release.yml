@@ -379,6 +379,15 @@ jobs:
             throw "the run logged nothing into the working directory"
           }
 
+          # Note what is NOT here: any redirection of a native command's
+          # stderr. GitHub's pwsh shell runs with $ErrorActionPreference =
+          # 'stop', and `2>$null` / `2>&1` turns each stderr line into an
+          # ErrorRecord, the first of which terminates the script -- with its
+          # message discarded by the same redirect that created it, so the
+          # step dies with a bare "exit code 1" and no clue. Every tool here
+          # writes its provenance line to stderr, so leave stderr alone and
+          # send only stdout somewhere.
+          #
           # All four tools answer --skill, agree byte for byte, and name the
           # directory this installation actually put the runbook in. guardtest
           # asserts on the directory rather than a full script path because
@@ -386,7 +395,7 @@ jobs:
           # prefix followed by the document's own forward slashes.
           $first = $null
           foreach ($tool in 'ox', 'oxbox', 'oxseed', 'oxapply') {
-            $text = (& "$prefix\bin\$tool.cmd" --skill 2>$null) -join "`n"
+            $text = (& "$prefix\bin\$tool.cmd" --skill) -join "`n"
             if ($text -notmatch '(?m)^name: ox-review') {
               throw "$tool --skill did not print the runbook"
             }
@@ -400,7 +409,7 @@ jobs:
           # The Windows-only assertion, and the one that also proves the shim
           # propagates an exit code: there is no jail here, and oxbox says so
           # with EX_CONFIG rather than pretending to sandbox anything.
-          & "$prefix\bin\oxbox.cmd" -- python -c "print(1)" > $null 2>&1
+          & "$prefix\bin\oxbox.cmd" -- python -c "print(1)" | Out-Null
           if ($LASTEXITCODE -ne 78) {
             throw "oxbox should refuse on native Windows with exit 78, got $LASTEXITCODE"
           }

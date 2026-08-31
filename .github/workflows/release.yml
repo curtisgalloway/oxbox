@@ -1,16 +1,25 @@
 # SPDX-FileCopyrightText: 2026 Curtis Galloway
 # SPDX-License-Identifier: Apache-2.0
 
-# Build the Linux .deb and attach it to a GitHub Release when a v* tag is
-# pushed, then ask the Homebrew tap to re-pin its formula. workflow_dispatch
-# builds the package as an artifact only (no Release, no tap bump), for
-# testing the pipeline.
+# Build the release packages and attach them to a GitHub Release when a v*
+# tag is pushed, then ask the Homebrew tap to re-pin its formula.
+# workflow_dispatch builds the packages as workflow artifacts only (no
+# Release, no tap bump), for testing the pipeline.
 #
-# Pure Python, arch-independent: one build on the stock runner, no container
-# needed. The smoke test is the part that earns trust — it installs the .deb
-# for real and runs the full in-jail probe suite against the INSTALLED tools
-# from a scratch directory, which exercises exactly what a package must get
-# right: PATH installs, working-directory anchoring, and a jail that holds.
+# Two packages, one per platform that has a jail: the Linux .deb and the macOS
+# tarball. Both are pure Python and arch-independent, so each is one build on
+# the stock runner with no container and no cross-compilation.
+#
+# Homebrew is the maintained macOS channel and is not built here -- the tap
+# installs from the tag's source tarball, which is why the last job only has
+# to tell it that a new tag exists. The macOS tarball ships the same prefix
+# layout the formula installs, for people who do not use brew.
+#
+# The smoke tests are the part that earns trust -- each one installs its
+# package for real and runs the full in-jail probe suite against the INSTALLED
+# tools from a scratch directory, which exercises exactly what a package must
+# get right: executables on PATH, working-directory anchoring, script-relative
+# assets found under the prefix, and a jail that holds.
 
 name: Release package
 
@@ -26,12 +35,15 @@ env:
   NFPM_VERSION: 2.46.3
 
 jobs:
-  package:
-    name: package and smoke-test
+  # One place decides what version is being built, so the two package jobs
+  # cannot disagree about it, and the tag check runs once rather than per
+  # platform.
+  version:
+    name: resolve version
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: write
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -59,6 +71,16 @@ jobs:
             exit 1
           fi
 
+  deb:
+    name: Debian package and smoke test
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Install nfpm
         run: |
           curl -fsSL -o /tmp/nfpm.deb \
@@ -67,7 +89,7 @@ jobs:
 
       - name: Build .deb
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           mkdir -p dist
           nfpm package -f packaging/nfpm.yaml -p deb \
@@ -75,7 +97,7 @@ jobs:
 
       - name: Install the .deb and its dependencies
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           sudo apt-get update
           sudo apt-get install -y "./dist/oxbox_${VERSION}_all.deb"
@@ -87,7 +109,7 @@ jobs:
 
       - name: Smoke-test the installed tools from a scratch directory
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           test -x /usr/bin/ox
           test -x /usr/bin/oxbox
@@ -122,17 +144,149 @@ jobs:
           cp "$GITHUB_WORKSPACE/jailtest.py" sandbox/work/jailtest.py
           /usr/bin/oxbox -- /usr/bin/python3 jailtest.py
 
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v7.0.1
+        with:
+          name: deb
+          path: dist/*.deb
+          if-no-files-found: error
+
+  macos:
+    name: macOS tarball and smoke test
+    needs: version
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No nfpm and no installer: the tarball IS the package. macOS ships
+      # sandbox-exec and a python3, and the tools are stdlib-only, so there is
+      # nothing to declare a dependency on and nothing to compile.
+      - name: Build the tarball
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          packaging/macos-tarball.sh "$VERSION" dist
+
+      # Unpacked to a prefix under RUNNER_TEMP rather than over /usr/local, so
+      # the smoke test proves what the artifact actually promises: extract it
+      # anywhere and it works from there. find_profile and find_skill resolve
+      # ../share/oxbox from the script, which is exactly the assumption that
+      # breaks if the tarball's layout drifts.
+      - name: Smoke-test the unpacked tools from a scratch directory
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          prefix="$RUNNER_TEMP/prefix"
+          mkdir -p "$prefix"
+          tar xzf "dist/oxbox-${VERSION}-macos.tar.gz" -C "$prefix" \
+            --strip-components 1
+          test -x "$prefix/bin/ox"
+          test -x "$prefix/bin/oxbox"
+          test -x "$prefix/bin/oxapply"
+          test -x "$prefix/bin/oxseed"
+          test -f "$prefix/share/doc/oxbox/LICENSE"
+          # The seatbelt profile, which the .deb has no reason to ship and a
+          # macOS package has every reason to: without it oxbox refuses.
+          test -f "$prefix/share/oxbox/jail.sb"
+          scratch="$RUNNER_TEMP/smoke"
+          mkdir -p "$scratch/srcrepo"
+          echo 'print("hi")' > "$scratch/srcrepo/thing.py"
+          cd "$scratch"
+          [ "$("$prefix/bin/ox" --version)" = "ox ${VERSION}" ]
+          "$prefix/bin/oxseed" "$scratch/srcrepo" thing.py
+          "$prefix/bin/ox" --mode ask --dry-run "hello" > /dev/null
+          test -f "$scratch"/logs/*/meta.json
+          for tool in ox oxbox oxseed oxapply; do
+            "$prefix/bin/$tool" --skill 2>/dev/null > "skill-$tool.md"
+            grep -q '^name: ox-review' "skill-$tool.md"
+            grep -q "$prefix/share/oxbox/ox-review/scripts/preflight.py" \
+              "skill-$tool.md"
+            cmp -s skill-ox.md "skill-$tool.md"
+          done
+          test -f "$prefix/share/oxbox/ox-review/scripts/exposure.py"
+          # The full in-jail probe suite, under seatbelt, against the
+          # unpacked oxbox and the profile it found beside itself.
+          cp "$GITHUB_WORKSPACE/jailtest.py" sandbox/work/jailtest.py
+          "$prefix/bin/oxbox" -- /usr/bin/python3 jailtest.py
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v7.0.1
+        with:
+          name: macos-tarball
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: publish the GitHub Release
+    if: github.ref_type == 'tag'
+    needs: [version, deb, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # Both packages into one directory, so the release step can take the
+      # whole thing and neither platform can be quietly left off the page.
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v8.0.1
+        with:
+          name: deb
+          path: dist
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v8.0.1
+        with:
+          name: macos-tarball
+          path: dist
+
+      # generate_release_notes appends the auto-generated changelog after this
+      # body. The install section is written by hand because the generated
+      # notes only ever list merged PRs, and someone arriving at the release
+      # page needs to be told that Homebrew exists — the tap is re-pinned by
+      # the job below, so brew is the channel that keeps itself current and
+      # these files are for people who do not use it.
       - name: Attach to the GitHub Release
-        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           files: dist/*
           generate_release_notes: true
+          body: |
+            ## Install
+
+            **Homebrew** — macOS and Linux, and the channel that upgrades
+            itself. The tap is re-pinned automatically by this release:
+
+            ```
+            brew install curtisgalloway/tap/oxbox
+            brew upgrade curtisgalloway/tap/oxbox
+            ```
+
+            **macOS without Homebrew** — `oxbox-${{ needs.version.outputs.version }}-macos.tar.gz`
+            below. `bin/` beside `share/`, so it runs from wherever you
+            unpack it, or copy the contents over a prefix on `PATH`:
+
+            ```
+            tar xzf oxbox-${{ needs.version.outputs.version }}-macos.tar.gz
+            sudo cp -R oxbox-${{ needs.version.outputs.version }}-macos/ /usr/local/
+            ```
+
+            **Debian/Ubuntu** — `oxbox_${{ needs.version.outputs.version }}_all.deb` below.
+            `bubblewrap` is a hard dependency: without it there is no jail and
+            `oxbox` refuses to run.
+
+            ```
+            sudo apt install ./oxbox_${{ needs.version.outputs.version }}_all.deb
+            ```
+
+            Every package here was installed and smoke-tested by the workflow
+            that built it, including the full in-jail probe suite against the
+            installed tools. The suites themselves are not packaged — they
+            assert against a checkout's layout, so verifying the jail on your
+            own machine stays a `git clone` away.
 
   bump-tap:
     name: bump Homebrew tap
     if: github.ref_type == 'tag'
-    needs: package
+    needs: release
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

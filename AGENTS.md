@@ -273,9 +273,13 @@ executed inside it.
   redirect that created it, so the step dies with a bare `Process completed
   with exit code 1`, no error text, and nothing to grep for. Every tool here
   writes its provenance line to stderr, so `ox --skill 2>$null` was a
-  guaranteed silent failure. Redirect stdout only (`> $null`, `| Out-Null`)
-  and let stderr through. Found in the Windows release job, where it looked
-  for a while like an MSI problem.
+  guaranteed silent failure. Redirect stdout only (`> $null`) and let stderr
+  through. The same shell turns a native command's **non-zero exit** into a
+  terminating error too, which matters here more than in most projects: these
+  tools exit non-zero on purpose — `oxbox` answers 78 on native Windows — so
+  the step that asserts a refusal has to wrap the call in `try`/`catch` and
+  read `$LASTEXITCODE` in both arms. Both halves cost a CI round trip each in
+  the Windows release job, and both looked like an MSI problem.
 - **A document printed to stdout needs the same care as one written to a file.**
   `--skill` prints SKILL.md, and Windows' text-mode `sys.stdout` re-encodes it
   in the locale codepage — cp1252 renders the runbook's em dashes as `0x97` —

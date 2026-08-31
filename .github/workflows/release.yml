@@ -409,9 +409,22 @@ jobs:
           # The Windows-only assertion, and the one that also proves the shim
           # propagates an exit code: there is no jail here, and oxbox says so
           # with EX_CONFIG rather than pretending to sandbox anything.
-          & "$prefix\bin\oxbox.cmd" -- python -c "print(1)" | Out-Null
-          if ($LASTEXITCODE -ne 78) {
-            throw "oxbox should refuse on native Windows with exit 78, got $LASTEXITCODE"
+          #
+          # The try/catch is the other half of the stderr lesson above. This
+          # shell also turns a native command's NON-ZERO EXIT into a
+          # terminating error, and the whole point of this call is that oxbox
+          # exits 78 -- so the assertion was killing the step, with the
+          # message swallowed by the pipe it was written into. Read
+          # $LASTEXITCODE in both arms: it is set before the error is raised.
+          $refusal = 0
+          try {
+            & "$prefix\bin\oxbox.cmd" -- python -c "print(1)" > $null
+            $refusal = $LASTEXITCODE
+          } catch {
+            $refusal = $LASTEXITCODE
+          }
+          if ($refusal -ne 78) {
+            throw "oxbox should refuse on native Windows with exit 78, got $refusal"
           }
 
           $p = Start-Process msiexec -Wait -PassThru -ArgumentList '/x', "`"$env:MSI_PATH`"", '/qn'

@@ -556,10 +556,22 @@ jobs:
 
   winget:
     name: publish to winget
-    # Tag-only, so a workflow_dispatch dry run never touches winget, and no
-    # prereleases: a tag with a hyphen in it (v0.4.0-rc.1) is not something
-    # to push at everyone running `winget upgrade`.
-    if: ${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
+    # Gated on a repo VARIABLE, not just on the tag and the token, because a
+    # job is set up -- and its actions resolved -- before any step-level `if`
+    # can skip it. That setup FAILS here: winget-releaser calls
+    # cargo-bins/cargo-binstall@main internally, and this repo's Actions policy
+    # requires every action pinned to a full-length SHA, which a transitive
+    # @main reference is not. v0.4.0 shipped correctly with a red run for
+    # exactly this: the release published, the tap re-pinned, and this job died
+    # in "Set up job" having done nothing.
+    #
+    # So the job does not exist until someone sets WINGET_PUBLISH=true, and
+    # whoever does has to first resolve that conflict -- either allow-list the
+    # transitive action in the repo's Actions settings, or drop winget-releaser
+    # for komac invoked directly from a pinned step. Tag-only and no
+    # prereleases still apply: a hyphenated tag is not something to push at
+    # everyone running `winget upgrade`.
+    if: ${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') && vars.WINGET_PUBLISH == 'true' }}
     needs: release
     runs-on: ubuntu-latest
     timeout-minutes: 10

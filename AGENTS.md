@@ -225,6 +225,15 @@ executed inside it.
   `oxbox` exits 78 on native Windows by design and a shim that swallowed that
   would turn a refusal into an apparent success. The smoke test asserts the
   78. `jail.sb` is not packaged there: there is no seatbelt to find.
+- **A job's actions resolve before any step `if` runs.** Gating a step on a
+  missing secret does not stop the job from being set up, and setup can fail
+  on its own: the winget job died in "Set up job" on v0.4.0 because
+  `winget-releaser` calls `cargo-bins/cargo-binstall@main` internally and this
+  repo's Actions policy requires a full-length SHA on every action, transitive
+  ones included. The release itself was fine — published, tap re-pinned — and
+  the run was still red. A job that must not run yet has to be gated at the
+  **job** level, and on a `vars.` value, since the `secrets` context is not
+  available in a job `if`.
 - **The MSI is signed, or it silently is not.** Every signing step is gated on
   `vars.AZURE_SIGNING_ACCOUNT`, so an unconfigured repo (or a fork) ships an
   unsigned MSI rather than failing — which means "not set up" and "working"

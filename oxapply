@@ -15,7 +15,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 FENCE = re.compile(r"```(?:diff|patch)\s*\n(.*?)```", re.DOTALL)
 PATH_LINE = re.compile(r"^(?:---|\+\+\+)\s+(?:[ab]/)?(\S+)", re.MULTILINE)

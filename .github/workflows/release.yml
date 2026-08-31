@@ -416,20 +416,31 @@ jobs:
           # exits 78 -- so the assertion was killing the step, with the
           # message swallowed by the pipe it was written into. Read
           # $LASTEXITCODE in both arms: it is set before the error is raised.
+          Write-Host "== asserting the refusal"
           $refusal = 0
           try {
             & "$prefix\bin\oxbox.cmd" -- python -c "print(1)" > $null
             $refusal = $LASTEXITCODE
+            Write-Host "== oxbox returned $refusal"
           } catch {
             $refusal = $LASTEXITCODE
+            Write-Host "== oxbox threw ($refusal): $($_.Exception.Message)"
           }
           if ($refusal -ne 78) {
             throw "oxbox should refuse on native Windows with exit 78, got $refusal"
           }
 
+          Write-Host "== uninstalling"
           $p = Start-Process msiexec -Wait -PassThru -ArgumentList '/x', "`"$env:MSI_PATH`"", '/qn'
           if ($p.ExitCode -ne 0) { throw "msiexec uninstall failed: $($p.ExitCode)" }
           if (Test-Path "$prefix\bin\ox") { throw "uninstall left the tools behind" }
+
+          # Explicitly, because this shell appends `exit $LASTEXITCODE` to the
+          # script: the refusal above deliberately left 78 in there, and every
+          # assertion in this step is a throw, so the only correct ending is a
+          # zero of our own.
+          Write-Host "== ok"
+          exit 0
 
       - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v7.0.1
         with:

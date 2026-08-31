@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+SPDX-FileCopyrightText: 2026 Curtis Galloway
+SPDX-License-Identifier: Apache-2.0
+
+The oxbox per-user MSI (WiX v7), built by packaging\windows\build.ps1.
+
+Preprocessor variables, both passed by build.ps1:
+  Version   three-field MSI ProductVersion
+  StageDir  the staged payload — bin\, share\, doc\ — that build.ps1 lays
+            out, which is the same prefix the .deb and the macOS tarball
+            install. bin\ holds each tool twice: the extensionless Python
+            script, and the .cmd shim that runs it, because Windows cannot
+            execute a shebang.
+
+Design notes:
+  - Scope="perUser": installs under %LOCALAPPDATA%\Programs\oxbox with no
+    UAC prompt, and puts bin\ on the user's PATH (HKCU, System="no"). A CLI
+    that needs elevation to install is a CLI people do not install.
+  - Every component keypaths on an HKCU registry value, which per-user file
+    components require (ICE38). Those components therefore cannot
+    auto-generate their guids (WIX0230), so the five guids below are
+    permanent identity — like the UpgradeCode, never regenerate them.
+  - Files are grouped one component per directory rather than one per file.
+    A component's files must share a directory, and this package has no
+    servicing story that would benefit from finer granularity.
+  - MajorUpgrade: a newer MSI replaces the old install in place, and
+    Add/Remove Programs shows exactly one "oxbox" entry. This is also what
+    makes `winget upgrade` clean.
+  - No jail.sb here, unlike the macOS tarball. There is no jail on native
+    Windows; oxbox ships anyway and refuses, which the release smoke test
+    asserts.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="oxbox"
+           Manufacturer="Curtis Galloway"
+           Version="$(var.Version)"
+           UpgradeCode="A865F929-BB81-4F09-87E8-D0B871625865"
+           Scope="perUser"
+           Language="1033"
+           Codepage="1252"
+           Compressed="yes">
+
+    <SummaryInformation Description="oxbox - supervised harness for pointing an untrusted LLM at your code" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of oxbox is already installed. Uninstall it first to install this older version." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/curtisgalloway/oxbox" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsDir" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="oxbox">
+          <Directory Id="BINFOLDER" Name="bin" />
+          <Directory Id="ShareDir" Name="share">
+            <Directory Id="ShareOxboxDir" Name="oxbox">
+              <Directory Id="SkillDir" Name="ox-review">
+                <Directory Id="SkillScriptsDir" Name="scripts" />
+              </Directory>
+            </Directory>
+          </Directory>
+          <Directory Id="DocDir" Name="doc" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <ComponentGroup Id="OxboxComponents">
+      <!-- The tools, and the PATH entry that makes them typeable. Both the
+           script and its shim live here: find_skill resolves
+           ..\share\oxbox\ox-review from the script's own directory, which is
+           what makes this layout the same one the .deb and the tarball use. -->
+      <Component Id="cmpBin" Directory="BINFOLDER" Guid="3CDF51ED-AB68-4987-84E7-0691E0A5E3D8">
+        <File Id="filOx" Name="ox" Source="$(var.StageDir)\bin\ox" />
+        <File Id="filOxCmd" Name="ox.cmd" Source="$(var.StageDir)\bin\ox.cmd" />
+        <File Id="filOxbox" Name="oxbox" Source="$(var.StageDir)\bin\oxbox" />
+        <File Id="filOxboxCmd" Name="oxbox.cmd" Source="$(var.StageDir)\bin\oxbox.cmd" />
+        <File Id="filOxseed" Name="oxseed" Source="$(var.StageDir)\bin\oxseed" />
+        <File Id="filOxseedCmd" Name="oxseed.cmd" Source="$(var.StageDir)\bin\oxseed.cmd" />
+        <File Id="filOxapply" Name="oxapply" Source="$(var.StageDir)\bin\oxapply" />
+        <File Id="filOxapplyCmd" Name="oxapply.cmd" Source="$(var.StageDir)\bin\oxapply.cmd" />
+        <Environment Id="envPath" Name="PATH" Value="[BINFOLDER]" Action="set"
+                     Part="last" System="no" Permanent="no" />
+        <RegistryValue Root="HKCU" Key="Software\oxbox\msi" Name="bin"
+                       Value="[INSTALLFOLDER]" Type="string" KeyPath="yes" />
+        <RemoveFolder Id="rmBinFolder" Directory="BINFOLDER" On="uninstall" />
+        <RemoveFolder Id="rmInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+        <!-- Only removed if empty; %LOCALAPPDATA%\Programs usually preexists
+             and stays. Keeps ICE64 quiet. -->
+        <RemoveFolder Id="rmProgramsDir" Directory="ProgramsDir" On="uninstall" />
+      </Component>
+
+      <!-- The ox-review runbook. Without it all four tools refuse the skill
+           flag, which is the failure a package is most likely to ship
+           silently. -->
+      <Component Id="cmpSkill" Directory="SkillDir" Guid="E6A8C3CB-A381-4094-9B79-639A88C2A264">
+        <File Id="filSkillMd" Name="SKILL.md" Source="$(var.StageDir)\share\oxbox\ox-review\SKILL.md" />
+        <RegistryValue Root="HKCU" Key="Software\oxbox\msi" Name="skill"
+                       Value="1" Type="integer" KeyPath="yes" />
+        <RemoveFolder Id="rmSkillDir" Directory="SkillDir" On="uninstall" />
+        <RemoveFolder Id="rmShareOxboxDir" Directory="ShareOxboxDir" On="uninstall" />
+        <RemoveFolder Id="rmShareDir" Directory="ShareDir" On="uninstall" />
+      </Component>
+
+      <Component Id="cmpSkillScripts" Directory="SkillScriptsDir" Guid="6DAD7A38-683E-4E02-A71E-79D398742801">
+        <File Id="filPreflight" Name="preflight.py" Source="$(var.StageDir)\share\oxbox\ox-review\scripts\preflight.py" />
+        <File Id="filExposure" Name="exposure.py" Source="$(var.StageDir)\share\oxbox\ox-review\scripts\exposure.py" />
+        <File Id="filOxreview" Name="oxreview.py" Source="$(var.StageDir)\share\oxbox\ox-review\scripts\oxreview.py" />
+        <RegistryValue Root="HKCU" Key="Software\oxbox\msi" Name="skill-scripts"
+                       Value="1" Type="integer" KeyPath="yes" />
+        <RemoveFolder Id="rmSkillScriptsDir" Directory="SkillScriptsDir" On="uninstall" />
+      </Component>
+
+      <Component Id="cmpDoc" Directory="DocDir" Guid="B2DAA392-B8C9-453B-B35F-B0624B61FBAE">
+        <File Id="filLicense" Name="LICENSE" Source="$(var.StageDir)\doc\LICENSE" />
+        <File Id="filReadme" Name="README.md" Source="$(var.StageDir)\doc\README.md" />
+        <RegistryValue Root="HKCU" Key="Software\oxbox\msi" Name="doc"
+                       Value="1" Type="integer" KeyPath="yes" />
+        <RemoveFolder Id="rmDocDir" Directory="DocDir" On="uninstall" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="oxbox" Level="1" AllowAbsent="no">
+      <ComponentGroupRef Id="OxboxComponents" />
+    </Feature>
+  </Package>
+</Wix>

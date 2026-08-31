@@ -379,14 +379,11 @@ jobs:
             throw "the run logged nothing into the working directory"
           }
 
-          # Note what is NOT here: any redirection of a native command's
-          # stderr. GitHub's pwsh shell runs with $ErrorActionPreference =
-          # 'stop', and `2>$null` / `2>&1` turns each stderr line into an
-          # ErrorRecord, the first of which terminates the script -- with its
-          # message discarded by the same redirect that created it, so the
-          # step dies with a bare "exit code 1" and no clue. Every tool here
-          # writes its provenance line to stderr, so leave stderr alone and
-          # send only stdout somewhere.
+          # stdout is captured and stderr is left alone, so each tool's
+          # provenance line lands in the run log where it can be read. That
+          # matters more than it looks: this step failed three times with a
+          # bare "exit code 1" and no message, and the log was the only
+          # instrument available.
           #
           # All four tools answer --skill, agree byte for byte, and name the
           # directory this installation actually put the runbook in. guardtest
@@ -410,22 +407,11 @@ jobs:
           # propagates an exit code: there is no jail here, and oxbox says so
           # with EX_CONFIG rather than pretending to sandbox anything.
           #
-          # The try/catch is the other half of the stderr lesson above. This
-          # shell also turns a native command's NON-ZERO EXIT into a
-          # terminating error, and the whole point of this call is that oxbox
-          # exits 78 -- so the assertion was killing the step, with the
-          # message swallowed by the pipe it was written into. Read
-          # $LASTEXITCODE in both arms: it is set before the error is raised.
+          # This call is why the step ends with an explicit `exit 0` below.
           Write-Host "== asserting the refusal"
-          $refusal = 0
-          try {
-            & "$prefix\bin\oxbox.cmd" -- python -c "print(1)" > $null
-            $refusal = $LASTEXITCODE
-            Write-Host "== oxbox returned $refusal"
-          } catch {
-            $refusal = $LASTEXITCODE
-            Write-Host "== oxbox threw ($refusal): $($_.Exception.Message)"
-          }
+          & "$prefix\bin\oxbox.cmd" -- python -c "print(1)" > $null
+          $refusal = $LASTEXITCODE
+          Write-Host "== oxbox returned $refusal"
           if ($refusal -ne 78) {
             throw "oxbox should refuse on native Windows with exit 78, got $refusal"
           }
@@ -435,10 +421,14 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "msiexec uninstall failed: $($p.ExitCode)" }
           if (Test-Path "$prefix\bin\ox") { throw "uninstall left the tools behind" }
 
-          # Explicitly, because this shell appends `exit $LASTEXITCODE` to the
-          # script: the refusal above deliberately left 78 in there, and every
-          # assertion in this step is a throw, so the only correct ending is a
-          # zero of our own.
+          # Explicitly, and this is the whole reason the step took four
+          # attempts. GitHub's pwsh shell appends `exit $LASTEXITCODE` to
+          # every script, and the refusal assertion above deliberately leaves
+          # 78 in there -- so the step failed AFTER every assertion had
+          # passed, with no error text, because nothing had errored. Every
+          # assertion here is a throw, so the only correct ending is a zero of
+          # our own. Any step that runs a tool expected to exit non-zero needs
+          # this line.
           Write-Host "== ok"
           exit 0
 

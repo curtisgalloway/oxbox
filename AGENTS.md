@@ -266,20 +266,17 @@ executed inside it.
   with `newline=""` and `ox` uses `write_lf`. Without that, git compares a CRLF
   patch to an LF tree and rejects every patch with an error that reads like a
   malformed diff. Cost real time to find; only reproduces on Windows.
-- **Never redirect a native command's stderr in a `pwsh` CI step.** GitHub's
-  `pwsh` shell runs with `$ErrorActionPreference = 'stop'`, and `2>$null` or
-  `2>&1` on a native command turns each stderr line into an ErrorRecord — the
-  first of which terminates the script. The message is discarded by the same
-  redirect that created it, so the step dies with a bare `Process completed
-  with exit code 1`, no error text, and nothing to grep for. Every tool here
-  writes its provenance line to stderr, so `ox --skill 2>$null` was a
-  guaranteed silent failure. Redirect stdout only (`> $null`) and let stderr
-  through. The same shell turns a native command's **non-zero exit** into a
-  terminating error too, which matters here more than in most projects: these
-  tools exit non-zero on purpose — `oxbox` answers 78 on native Windows — so
-  the step that asserts a refusal has to wrap the call in `try`/`catch` and
-  read `$LASTEXITCODE` in both arms. Both halves cost a CI round trip each in
-  the Windows release job, and both looked like an MSI problem.
+- **End a `pwsh` CI step that asserts a non-zero exit with an explicit
+  `exit 0`.** GitHub's `pwsh` shell appends `exit $LASTEXITCODE` to every
+  script it runs. These tools exit non-zero on purpose — `oxbox` answers 78 on
+  native Windows — so a step that asserts that refusal leaves 78 in
+  `$LASTEXITCODE`, and the step then fails *after every assertion has passed*,
+  with no error text at all, because nothing errored. `Process completed with
+  exit code 1` and an empty log is the whole symptom. It cost the Windows
+  release job three round trips and read like an MSI problem the entire time;
+  two plausible theories about PowerShell error handling were wrong before
+  breadcrumbs found it. Print progress markers in a CI step whose failure mode
+  is silence — they are what turned this from guesswork into one line.
 - **A document printed to stdout needs the same care as one written to a file.**
   `--skill` prints SKILL.md, and Windows' text-mode `sys.stdout` re-encodes it
   in the locale codepage — cp1252 renders the runbook's em dashes as `0x97` —

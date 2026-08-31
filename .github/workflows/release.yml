@@ -6,9 +6,15 @@
 # workflow_dispatch builds the packages as workflow artifacts only (no
 # Release, no tap bump), for testing the pipeline.
 #
-# Two packages, one per platform that has a jail: the Linux .deb and the macOS
-# tarball. Both are pure Python and arch-independent, so each is one build on
-# the stock runner with no container and no cross-compilation.
+# Three packages, one per platform: the Linux .deb, the macOS tarball, and the
+# Windows MSI. All three are pure Python and arch-independent, so each is one
+# build on the stock runner with no container and no cross-compilation.
+#
+# The Windows MSI is Authenticode-signed by Azure Artifact Signing when the
+# repo is configured for it, and ships unsigned when it is not -- every
+# signing step is gated on vars.AZURE_SIGNING_ACCOUNT. The account is shared
+# across projects; onboarding this one is configuration, not a purchase, and
+# the runbook is in ~/src/iac/mac-common/code-signing/README.md.
 #
 # Homebrew is the maintained macOS channel and is not built here -- the tap
 # installs from the tag's source tarball, which is why the last job only has
@@ -120,7 +126,14 @@ jobs:
           mkdir -p "$scratch/srcrepo"
           echo 'print("hi")' > "$scratch/srcrepo/thing.py"
           cd "$scratch"
-          [ "$(/usr/bin/ox --version)" = "ox ${VERSION}" ]
+          # Against the checkout's own ox, not against ${VERSION}: on a
+          # workflow_dispatch build the package version is 0.0.0~dev.<sha>
+          # while the tools still report their baked-in VERSION, and the
+          # version job has already refused any tag that disagrees with it.
+          # What is being asserted here is that the tool on PATH is this
+          # checkout's tool.
+          expected="$(python3 "$GITHUB_WORKSPACE/ox" --version)"
+          [ "$(/usr/bin/ox --version)" = "$expected" ]
           /usr/bin/oxseed "$scratch/srcrepo" thing.py
           # A dry run needs no key and proves logs land in the working
           # directory, not somewhere script-relative under /usr.
@@ -195,7 +208,8 @@ jobs:
           mkdir -p "$scratch/srcrepo"
           echo 'print("hi")' > "$scratch/srcrepo/thing.py"
           cd "$scratch"
-          [ "$("$prefix/bin/ox" --version)" = "ox ${VERSION}" ]
+          expected="$(python3 "$GITHUB_WORKSPACE/ox" --version)"
+          [ "$("$prefix/bin/ox" --version)" = "$expected" ]
           "$prefix/bin/oxseed" "$scratch/srcrepo" thing.py
           "$prefix/bin/ox" --mode ask --dry-run "hello" > /dev/null
           test -f "$scratch"/logs/*/meta.json
@@ -218,17 +232,202 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  windows:
+    name: Windows MSI and smoke test
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # The signing identity federates on this environment's NAME, not on the
+    # tag. Entra federated credentials take no wildcards, so a `refs/tags/*`
+    # subject is impossible and a fixed string is the only thing that works;
+    # `release` is that string, and it also means a signed release waits on
+    # the environment's reviewer approval. Full runbook, including the traps
+    # that fail silently, in ~/src/iac/mac-common/code-signing/README.md.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the WiX v7 CLI
+        run: dotnet tool install --global wix
+
+      # WiX v7 refuses to build anything until its Open Source Maintenance
+      # Fee EULA is accepted (error WIX7015). The fee applies to consumers
+      # generating revenue; this one does not.
+      - name: Accept the WiX OSMF EULA
+        run: wix eula accept wix7
+
+      - name: Build the MSI
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: packaging\windows\build.ps1 -Version $env:VERSION -OutDir dist
+
+      # The signing action wants an absolute path and the MSI name carries the
+      # version, so resolve it once here rather than re-globbing per step.
+      - name: Locate the MSI
+        id: msi
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem dist/*.msi | Select-Object -First 1
+          "path=$($msi.FullName)" >> $env:GITHUB_OUTPUT
+
+      # ---- Signing. Every step skips while AZURE_SIGNING_ACCOUNT is unset,
+      # so an un-onboarded repo (or a fork) ships an unsigned MSI instead of
+      # failing. That is the right default and a trap for this repo: unset is
+      # indistinguishable from working unless something checks the artifact,
+      # which is what the verify step below is for.
+      #
+      # allow-no-subscriptions, and no subscription-id, on purpose: the
+      # signing identity holds only Artifact Signing Certificate Profile
+      # Signer, scoped to the profile, so an ordinary login enumerates zero
+      # subscriptions and dies with "No subscriptions found" AFTER the OIDC
+      # exchange succeeded -- which reads like an auth failure and is not one.
+      - name: Azure login (OIDC)
+        if: ${{ vars.AZURE_SIGNING_ACCOUNT != '' }}
+        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      # timestamp-rfc3161 has a default in v2.0.0 and is set anyway: these
+      # certificates live 72 hours, so an untimestamped signature verifies on
+      # release day and is invalid three days later on every copy already
+      # downloaded. That must not rest on a third-party default staying put.
+      - name: Sign the MSI
+        if: ${{ vars.AZURE_SIGNING_ACCOUNT != '' }}
+        uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
+          files: ${{ steps.msi.outputs.path }}
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify the MSI is signed and timestamped
+        if: ${{ vars.AZURE_SIGNING_ACCOUNT != '' }}
+        shell: pwsh
+        env:
+          MSI_PATH: ${{ steps.msi.outputs.path }}
+        run: |
+          $sig = Get-AuthenticodeSignature $env:MSI_PATH
+          Write-Host "$($sig.Status) - $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') {
+            Write-Host "::error::the MSI is not validly signed (status: $($sig.Status))"
+            exit 1
+          }
+          if (-not $sig.TimeStamperCertificate) {
+            Write-Host "::error::the MSI has no RFC3161 timestamp; its signature dies with the 72-hour certificate"
+            exit 1
+          }
+          Write-Host "timestamped by: $($sig.TimeStamperCertificate.Subject)"
+
+      # Installed for real, from the same file that will be uploaded, and
+      # exercised from a scratch directory -- the same shape as the .deb and
+      # tarball smoke tests, plus the two things only Windows can show: that
+      # the .cmd shims find their scripts, and that oxbox refuses.
+      - name: Smoke-test the installed tools from a scratch directory
+        shell: pwsh
+        env:
+          MSI_PATH: ${{ steps.msi.outputs.path }}
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP "install.log"
+          $p = Start-Process msiexec -Wait -PassThru -ArgumentList `
+            '/i', "`"$env:MSI_PATH`"", '/qn', '/l*v', "`"$log`""
+          if ($p.ExitCode -ne 0) {
+            Get-Content $log -Tail 40
+            throw "msiexec install failed: $($p.ExitCode)"
+          }
+          $prefix = Join-Path $env:LOCALAPPDATA "Programs\oxbox"
+          foreach ($tool in 'ox', 'oxbox', 'oxseed', 'oxapply') {
+            if (-not (Test-Path "$prefix\bin\$tool")) { throw "no $tool in the install" }
+            if (-not (Test-Path "$prefix\bin\$tool.cmd")) { throw "no $tool.cmd shim in the install" }
+          }
+          if (-not (Test-Path "$prefix\doc\LICENSE")) { throw "the package shipped no LICENSE" }
+          if (-not (Test-Path "$prefix\share\oxbox\ox-review\scripts\exposure.py")) {
+            throw "the package shipped an incomplete ox-review skill"
+          }
+
+          # Against the checkout's own ox for the same reason the other two
+          # jobs do it: a workflow_dispatch build's package version is not the
+          # tools' VERSION, and the version job already refused a tag that
+          # disagreed.
+          $expected = & python "$env:GITHUB_WORKSPACE\ox" --version
+          $actual = & "$prefix\bin\ox.cmd" --version
+          if ($actual -ne $expected) {
+            throw "installed ox reports '$actual', this checkout says '$expected'"
+          }
+
+          $scratch = Join-Path $env:RUNNER_TEMP "smoke"
+          New-Item -ItemType Directory -Force "$scratch\srcrepo" | Out-Null
+          Set-Content "$scratch\srcrepo\thing.py" 'print("hi")'
+          Set-Location $scratch
+          & "$prefix\bin\oxseed.cmd" "$scratch\srcrepo" thing.py
+          if ($LASTEXITCODE -ne 0) { throw "oxseed failed: $LASTEXITCODE" }
+          # No key needed, and it proves the log lands in the working
+          # directory rather than beside the scripts under LocalAppData.
+          & "$prefix\bin\ox.cmd" --mode ask --dry-run hello > $null
+          if ($LASTEXITCODE -ne 0) { throw "ox dry run failed: $LASTEXITCODE" }
+          if (-not (Get-ChildItem "$scratch\logs\*\meta.json")) {
+            throw "the run logged nothing into the working directory"
+          }
+
+          # All four tools answer --skill, agree byte for byte, and name the
+          # directory this installation actually put the runbook in. guardtest
+          # asserts on the directory rather than a full script path because
+          # the substitution leaves mixed separators on Windows: a backslash
+          # prefix followed by the document's own forward slashes.
+          $first = $null
+          foreach ($tool in 'ox', 'oxbox', 'oxseed', 'oxapply') {
+            $text = (& "$prefix\bin\$tool.cmd" --skill 2>$null) -join "`n"
+            if ($text -notmatch '(?m)^name: ox-review') {
+              throw "$tool --skill did not print the runbook"
+            }
+            if (-not $text.Contains("$prefix\share\oxbox\ox-review")) {
+              throw "$tool --skill did not rewrite the paths to this installation"
+            }
+            if ($null -eq $first) { $first = $text }
+            elseif ($text -ne $first) { throw "$tool --skill disagrees with ox" }
+          }
+
+          # The Windows-only assertion, and the one that also proves the shim
+          # propagates an exit code: there is no jail here, and oxbox says so
+          # with EX_CONFIG rather than pretending to sandbox anything.
+          & "$prefix\bin\oxbox.cmd" -- python -c "print(1)" > $null 2>&1
+          if ($LASTEXITCODE -ne 78) {
+            throw "oxbox should refuse on native Windows with exit 78, got $LASTEXITCODE"
+          }
+
+          $p = Start-Process msiexec -Wait -PassThru -ArgumentList '/x', "`"$env:MSI_PATH`"", '/qn'
+          if ($p.ExitCode -ne 0) { throw "msiexec uninstall failed: $($p.ExitCode)" }
+          if (Test-Path "$prefix\bin\ox") { throw "uninstall left the tools behind" }
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v7.0.1
+        with:
+          name: msi
+          path: dist/*.msi
+          if-no-files-found: error
+
   release:
     name: publish the GitHub Release
     if: github.ref_type == 'tag'
-    needs: [version, deb, macos]
+    needs: [version, deb, macos, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      # Both packages into one directory, so the release step can take the
-      # whole thing and neither platform can be quietly left off the page.
+      # All three packages into one directory, so the release step can take
+      # the whole thing and no platform can be quietly left off the page.
+      # One job owns the release notes for the same reason: two workflows
+      # generating notes on one tag append two copies of "What's Changed".
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v8.0.1
         with:
           name: deb
@@ -236,6 +435,10 @@ jobs:
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v8.0.1
         with:
           name: macos-tarball
+          path: dist
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v8.0.1
+        with:
+          name: msi
           path: dist
 
       # generate_release_notes appends the auto-generated changelog after this
@@ -268,6 +471,20 @@ jobs:
             tar xzf oxbox-${{ needs.version.outputs.version }}-macos.tar.gz
             sudo cp -R oxbox-${{ needs.version.outputs.version }}-macos/ /usr/local/
             ```
+
+            **Windows** — `oxbox-${{ needs.version.outputs.version }}.msi` below.
+            A per-user install: no elevation, and it puts the tools on your
+            PATH. Python 3.9+ has to be present, which winget will handle:
+
+            ```
+            winget install Python.Python.3.13
+            msiexec /i oxbox-${{ needs.version.outputs.version }}.msi /qn
+            ```
+
+            There is no jail on native Windows and `oxbox` refuses rather
+            than pretending to sandbox anything, so `ox`, `oxseed` and
+            `oxapply` are fully usable and *running* model output means WSL2,
+            where the Linux backend works unchanged.
 
             **Debian/Ubuntu** — `oxbox_${{ needs.version.outputs.version }}_all.deb` below.
             `bubblewrap` is a hard dependency: without it there is no jail and
@@ -313,3 +530,38 @@ jobs:
             https://api.github.com/repos/curtisgalloway/homebrew-tap/dispatches \
             -d "{\"event_type\":\"oxbox-release\",\"client_payload\":{\"tag\":\"${TAG}\"}}"
           echo "Dispatched oxbox-release (${TAG}) to homebrew-tap."
+
+  winget:
+    name: publish to winget
+    # Tag-only, so a workflow_dispatch dry run never touches winget, and no
+    # prereleases: a tag with a hyphen in it (v0.4.0-rc.1) is not something
+    # to push at everyone running `winget upgrade`.
+    if: ${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # The secrets context is not allowed in a step `if` — it is a parse
+      # error that invalidates the whole workflow — so the token is tested
+      # through env instead.
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+    steps:
+      # The action opens a PR against microsoft/winget-pkgs. It can only
+      # UPDATE a package that already exists: the first version has to be
+      # submitted by hand with `wingetcreate new` against the release's MSI
+      # URL, authored with `Scope: user` so winget's upgrade detection agrees
+      # with a per-user MSI (winget-cli#3011). WINGET_TOKEN is a classic PAT
+      # with public_repo, which the action uses to fork and open the PR.
+      - name: Publish to winget (update PR)
+        if: ${{ env.WINGET_TOKEN != '' }}
+        uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
+        with:
+          identifier: CurtisGalloway.Oxbox
+          installers-regex: '\.msi$'
+          token: ${{ secrets.WINGET_TOKEN }}
+
+      - name: Skipped (no WINGET_TOKEN)
+        if: ${{ env.WINGET_TOKEN == '' }}
+        run: |
+          echo "::warning::WINGET_TOKEN not set — skipping the winget update PR." \
+               "Submit the first manifest by hand with wingetcreate, then set the token."

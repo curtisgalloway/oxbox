@@ -119,6 +119,14 @@ The rest of the toolkit is fully native on Windows — `ox`, `oxseed` and
 `oxapply` are pure Python. You can talk to the model, scan for secrets, and
 quarantine its patches. Only *executing* its output needs the jail.
 
+That much ships as a signed per-user MSI on the
+[latest release](https://github.com/curtisgalloway/oxbox/releases): no
+elevation, `%LOCALAPPDATA%\Programs\oxbox\bin` added to your PATH, and a
+`.cmd` shim beside each tool because Windows cannot execute a shebang. It
+carries `oxbox` too, refusal and all, so `oxbox --skill` answers and the four
+tools stay one set. Python 3.9+ has to be on PATH; the shims say so plainly
+if it is not.
+
 **With WSL2 you get the full thing**, and the Linux backend runs unchanged:
 
 ```bash
@@ -152,6 +160,13 @@ sudo cp -R oxbox-<version>-macos/ /usr/local/
 
 # Debian/Ubuntu: the .deb from the latest GitHub Release
 sudo apt install ./oxbox_<version>_all.deb
+```
+
+```powershell
+# Windows: the signed per-user MSI from the latest GitHub Release.
+# No elevation, and it puts the tools on PATH. Needs Python 3.9+.
+winget install Python.Python.3.13
+msiexec /i oxbox-<version>.msi /qn
 ```
 
 **Or run from a checkout:**

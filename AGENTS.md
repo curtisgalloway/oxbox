@@ -204,16 +204,36 @@ executed inside it.
   `curtisgalloway/homebrew-tap` and needs the same `share/oxbox/ox-review`
   layout; a tap that installs only the four executables leaves `--skill`
   refusing on brew installs.
-- **Three packages, one layout.** The release ships a `.deb` (Linux, a `/usr`
-  prefix, `packaging/nfpm.yaml`) and a macOS tarball (a relocatable `bin/`
-  beside `share/`, `packaging/macos-tarball.sh`); the Homebrew formula
-  installs that same prefix into the Cellar. All three are the same shape
-  because `find_profile` and `find_skill` know exactly one rule —
+- **Four channels, one layout.** The release ships a `.deb` (Linux, a `/usr`
+  prefix, `packaging/nfpm.yaml`), a macOS tarball (a relocatable `bin/` beside
+  `share/`, `packaging/macos-tarball.sh`) and a Windows MSI (per-user under
+  `%LOCALAPPDATA%\Programs\oxbox`, `packaging/windows/`); the Homebrew
+  formula installs that same prefix into the Cellar. All four are the same
+  shape because `find_profile` and `find_skill` know exactly one rule —
   `../share/oxbox` from the script — so a change to that resolution breaks
-  three packages at once, and a new asset has to be added in all three
-  places. The macOS tarball is smoke-tested unpacked into a scratch prefix
-  rather than copied over `/usr/local`, because running from wherever you
-  put it is the thing that artifact promises.
+  four packages at once, and a new asset has to be added in four places. Each
+  is smoke-tested by the job that builds it, installed for real; the macOS
+  tarball is unpacked into a scratch prefix rather than copied over
+  `/usr/local`, because running from wherever you put it is what that
+  artifact promises.
+- **Windows ships each tool twice, and one of the four is a refusal.** `bin\`
+  in the MSI holds the extensionless script and a `.cmd` shim beside it,
+  because Windows cannot execute a shebang; the shim is what the PATH entry
+  makes typeable. Write those shims with labels and never with parenthesised
+  blocks — `%errorlevel%` inside a block expands when the block is parsed
+  rather than when it runs — and treat the exit code as load-bearing, because
+  `oxbox` exits 78 on native Windows by design and a shim that swallowed that
+  would turn a refusal into an apparent success. The smoke test asserts the
+  78. `jail.sb` is not packaged there: there is no seatbelt to find.
+- **The MSI is signed, or it silently is not.** Every signing step is gated on
+  `vars.AZURE_SIGNING_ACCOUNT`, so an unconfigured repo (or a fork) ships an
+  unsigned MSI rather than failing — which means "not set up" and "working"
+  look identical unless something inspects the finished artifact. That is what
+  the verify step is for, and why it asserts an RFC 3161 timestamp as well as
+  a valid signature: the certificates live 72 hours, so an untimestamped
+  signature is valid on release day and dead three days later on every copy
+  already downloaded. The signing account is shared across projects; the
+  onboarding runbook is `~/src/iac/mac-common/code-signing/README.md`.
 - **All three tools must agree on where the sandbox is.** `oxseed` creates
   it, `oxapply` writes into it, `oxbox` jails into it; they all derive it
   from the working directory. Changing the anchor in one without the others

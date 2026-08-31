@@ -197,13 +197,23 @@ executed inside it.
   actually ran. Edit one copy, edit all four, and let that case prove it.
 - **A packaged asset needs a smoke-test line, or it will be forgotten.**
   `ox --skill` reads a file the package has to ship, and the failure mode is
-  silent until someone installs the .deb and asks for it. The release
+  silent until someone installs a package and asks for it. The release
   workflow runs `--skill` against the installed ox and greps for the
   rewritten script path, which fails both when the file is missing and when
   the path rewriting stops working. The Homebrew formula lives in
   `curtisgalloway/homebrew-tap` and needs the same `share/oxbox/ox-review`
   layout; a tap that installs only the four executables leaves `--skill`
   refusing on brew installs.
+- **Three packages, one layout.** The release ships a `.deb` (Linux, a `/usr`
+  prefix, `packaging/nfpm.yaml`) and a macOS tarball (a relocatable `bin/`
+  beside `share/`, `packaging/macos-tarball.sh`); the Homebrew formula
+  installs that same prefix into the Cellar. All three are the same shape
+  because `find_profile` and `find_skill` know exactly one rule —
+  `../share/oxbox` from the script — so a change to that resolution breaks
+  three packages at once, and a new asset has to be added in all three
+  places. The macOS tarball is smoke-tested unpacked into a scratch prefix
+  rather than copied over `/usr/local`, because running from wherever you
+  put it is the thing that artifact promises.
 - **All three tools must agree on where the sandbox is.** `oxseed` creates
   it, `oxapply` writes into it, `oxbox` jails into it; they all derive it
   from the working directory. Changing the anchor in one without the others

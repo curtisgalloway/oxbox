@@ -142,11 +142,16 @@ Python packages — deliberately.
 **Install from a package:**
 
 ```bash
+# macOS or Linux, via Homebrew — the channel that upgrades itself
+brew install curtisgalloway/tap/oxbox
+
+# macOS without Homebrew: the tarball from the latest GitHub Release.
+# bin/ beside share/, so it runs from wherever you unpack it.
+tar xzf oxbox-<version>-macos.tar.gz
+sudo cp -R oxbox-<version>-macos/ /usr/local/
+
 # Debian/Ubuntu: the .deb from the latest GitHub Release
 sudo apt install ./oxbox_<version>_all.deb
-
-# macOS (or Linux) via Homebrew
-brew install curtisgalloway/tap/oxbox
 ```
 
 **Or run from a checkout:**

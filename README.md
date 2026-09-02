@@ -186,7 +186,9 @@ operation even when the tools came from a package.
 
 If you use 1Password, copy `.env.example` to `.env`, point it at your item, and
 prefix commands with `op run --env-file .env --`. Any method that puts
-`OPENROUTER_API_KEY` in the environment works.
+`OPENROUTER_API_KEY` in the environment works. The ox-review skill's scripts
+do the prefixing themselves when `OXBOX_ENV_FILE` names that file, so an
+agent driving a review never holds the key in its own environment.
 
 ## Workflow
 
@@ -226,8 +228,18 @@ ordered list of that week's recommended models. `--manifest` points ox at the
 file instead of transcribing venue and model by hand:
 
 ```bash
-./ox --manifest oxbox-manifest-2026-08-27.json --files x.py --mode review "..."
+./ox --manifest oxbox-manifest-2026-09-01.json --files x.py --mode review "..."
+./ox --manifest https://oxbox.ai/manifests/latest.json --files x.py --mode review "..."
 ```
+
+A manifest is a file or an `https://` URL. The survey serves each issue's
+manifest at a dated URL and the current one as `latest.json`, so the second
+form is "this week's pick" with no download step. The fetch follows the same
+rules as the venue request: https only, no redirects, and no credential — the
+request carries no Authorization header and reads no key variable. The bytes
+ox used are written into the run's log directory as `manifest.json`, because
+`latest.json` will say something else next issue and the audit trail has to
+keep saying what this run used.
 
 ox takes the first *permitted* entry: cost confirmed `free` unless you pass
 `--allow-paid` (an entry of unknown cost counts as paid), a venue this ox
@@ -272,7 +284,10 @@ loop to an agent: it picks the current manifest, batches the files, fans the
 work out across subagents, and merges what comes back. Copy the directory into
 another project's `.claude/skills/` to use it there; the scripts are stdlib-only
 Python 3.9+ like everything else here, and they find `ox` on `PATH`, via `OX`,
-or in the checkout named by `OXBOX_HOME`.
+or in the checkout named by `OXBOX_HOME`. `OXBOX_MANIFEST` names the current
+manifest — a file or the survey's https URL — and `OXBOX_ENV_FILE` the
+1Password `.env` holding the venue keys, so one environment serves every
+project.
 
 An agent that has never seen this README finds it a different way: `--skill` is
 in every tool's `--help`, and printing it substitutes the script paths of the

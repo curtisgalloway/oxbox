@@ -17,6 +17,7 @@ in-process import rather than relaxing the https guard in the shipped file.
 Python 3.9 floor, same as the rest of the repo.
 """
 
+import hashlib
 import json
 import os
 import subprocess
@@ -512,7 +513,116 @@ def main():
            and "no manifest entry produced an answer" in result.stderr
            and "--allow-paid" in result.stderr,
            "an all-skipped manifest exits with each entry's reason")
-    for server in (flaky_server, solid_server):
+    print("\n=== a manifest may be fetched by URL, carrying nothing ===")
+
+    # The survey publishes latest.json at a stable URL. Fetching it must behave
+    # like reading a file, except for what a download can add: a cleartext
+    # path, a redirect, a body that is not a manifest, and a credential riding
+    # along. Each is refused or absent, and each is tested.
+    served = {}
+    manifest_bytes = json.dumps({
+        "manifest_version": 0,
+        "issue_date": "2026-09-01",
+        "recommendations": [{"rank": 1, "venue": "opencode",
+                             "model": "solid-free", "cost": "free"}],
+    }).encode("utf-8")
+    manifest_server = serve(capture_handler(
+        served, body=manifest_bytes, headers={"Content-Type": "application/json"}))
+    manifest_url = ("http://127.0.0.1:%d/manifests/latest.json"
+                    % manifest_server.server_address[1])
+
+    result = subprocess.run(
+        [sys.executable, str(patched), "--manifest", manifest_url,
+         "--mode", "ask", "--log-dir", str(tmp / "ulogs"), "hello"],
+        capture_output=True, text=True, timeout=60, env=menv)
+    report(result.returncode != 0 and "https://" in result.stderr and not served,
+           "a plaintext manifest URL is refused before anything is fetched",
+           "exit=%s served=%r stderr=%r" % (result.returncode, bool(served),
+                                             result.stderr[-160:]))
+
+    # As with send_to_local: relax only the scheme guard, in a copy, so the
+    # loopback listener can stand in for the survey's https host.
+    guard = 'if not url.startswith("https://"):'
+    report(source.count(guard) == 1, "the manifest scheme guard is one line, patchable")
+    url_patched = tmp / "ox_manifest_url"
+    url_patched.write_text(source.replace(guard, "if False:"), encoding="utf-8")
+
+    solid.clear()
+    ufile = tmp / "url-status.json"
+    result = subprocess.run(
+        [sys.executable, str(url_patched), "--manifest", manifest_url,
+         "--mode", "ask", "--status-file", str(ufile),
+         "--log-dir", str(tmp / "ulogs"), "hello"],
+        capture_output=True, text=True, timeout=60, env=menv)
+    stat = json.loads(ufile.read_text()) if ufile.exists() else {}
+    report(result.returncode == 0 and result.stdout.strip() == "ok"
+           and stat.get("model") == "solid-free",
+           "a manifest fetched by URL picks the destination like a file",
+           "exit=%s stderr=%r" % (result.returncode, result.stderr[-160:]))
+    fetch_headers = {k.lower(): v for k, v in (served.get("headers") or {}).items()}
+    report(served.get("path") == "/manifests/latest.json"
+           and "authorization" not in fetch_headers
+           and fetch_headers.get("user-agent", "").startswith("oxbox"),
+           "the manifest fetch carries no credential and names its client",
+           repr(fetch_headers))
+    log_dir = Path(stat.get("log_dir") or tmp / "nowhere")
+    meta_path = log_dir / "meta.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    copy = log_dir / "manifest.json"
+    recorded = meta.get("manifest") or {}
+    report(copy.exists() and copy.read_bytes() == manifest_bytes
+           and recorded.get("path") == manifest_url
+           and recorded.get("fetched") is True
+           and recorded.get("sha256") == hashlib.sha256(manifest_bytes).hexdigest(),
+           "the fetched bytes are kept beside the request, named by URL and digest",
+           "copy=%s recorded=%r" % (copy.exists(), recorded))
+
+    class Bouncer(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", manifest_url)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    bouncer = serve(Bouncer)
+    result = subprocess.run(
+        [sys.executable, str(url_patched), "--manifest",
+         "http://127.0.0.1:%d/moved.json" % bouncer.server_address[1],
+         "--mode", "ask", "--log-dir", str(tmp / "ulogs"), "hello"],
+        capture_output=True, text=True, timeout=60, env=menv)
+    report(result.returncode != 0 and "redirected" in result.stderr
+           and "Traceback" not in result.stderr,
+           "a redirecting manifest URL is refused, not followed",
+           "exit=%s stderr=%r" % (result.returncode, result.stderr[-160:]))
+
+    missing = serve(capture_handler({}, status=404, body=b"not here",
+                                    headers={"Content-Type": "text/plain"}))
+    result = subprocess.run(
+        [sys.executable, str(url_patched), "--manifest",
+         "http://127.0.0.1:%d/manifests/gone.json" % missing.server_address[1],
+         "--mode", "ask", "--log-dir", str(tmp / "ulogs"), "hello"],
+        capture_output=True, text=True, timeout=60, env=menv)
+    report(result.returncode != 0 and "HTTP 404" in result.stderr
+           and "Traceback" not in result.stderr,
+           "a missing manifest URL fails in one line, not a traceback",
+           "exit=%s stderr=%r" % (result.returncode, result.stderr[-160:]))
+
+    cap = "MANIFEST_MAX_BYTES = 1_048_576"
+    report(source.count(cap) == 1, "the manifest size cap is one line, patchable")
+    small_patched = tmp / "ox_manifest_small"
+    small_patched.write_text(
+        source.replace(guard, "if False:").replace(cap, "MANIFEST_MAX_BYTES = 32"),
+        encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(small_patched), "--manifest", manifest_url,
+         "--mode", "ask", "--log-dir", str(tmp / "ulogs"), "hello"],
+        capture_output=True, text=True, timeout=60, env=menv)
+    report(result.returncode != 0 and "larger than" in result.stderr,
+           "a manifest body past the size cap is refused",
+           "exit=%s stderr=%r" % (result.returncode, result.stderr[-160:]))
+    for server in (manifest_server, bouncer, missing, flaky_server, solid_server):
         server.shutdown()
 
     print("\n=== the audit log survives collisions ===")

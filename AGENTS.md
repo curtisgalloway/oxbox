@@ -108,6 +108,15 @@ executed inside it.
   tampered manifest cannot re-aim a key. Keep it that way — a downloaded
   file with the power to aim a Bearer token is the exact hole the venue
   table exists to close.
+- **A manifest named by URL is fetched under the venue request's rules.**
+  https only, no redirects, and no credential — the fetch carries no
+  Authorization header and reads no key variable. The bytes ox used are
+  written to `manifest.json` in every attempt's log directory: `latest.json`
+  moves with each issue and the survey reads runs back by manifest, so a
+  digest alone would leave the audit trail pointing at a document that no
+  longer says what it said. wiretest covers all four properties; the
+  ox-review scripts mirror the fetch rules for their listing and leave the
+  destination to ox.
 - **Failover is opt-in and belongs to `--manifest` only.** The default is
   probe mode: one request, one destination, because a survey measurement
   that silently switched targets would be corrupt data. `--failover` is one

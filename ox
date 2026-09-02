@@ -60,12 +60,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # One VERSION per tool, all four equal — wiretest enforces the agreement, and
 # the release workflow checks the tag matches. Packaged installs make "which
 # oxbox do I have" a real question; --version is the answer.
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 USER_AGENT = "oxbox (+https://github.com/curtisgalloway/oxbox)"
 MAX_PAYLOAD_BYTES = 400_000
 TIMEOUT_SECONDS = 900
 DEFAULT_MAX_TOKENS = 100000
 MANIFEST_VERSION = 0
+# A manifest fetched by URL is a few kilobytes of JSON; anything past this cap
+# is not one. The fetch gets its own short timeout because it happens before
+# the run, not during it.
+MANIFEST_MAX_BYTES = 1_048_576
+MANIFEST_TIMEOUT_SECONDS = 30
 
 SECRET_PATTERNS = [
     (r"sk-[A-Za-z0-9_\-]{20,}", "OpenAI-style API key"),
@@ -278,8 +283,57 @@ def print_skill():
     sys.stdout.buffer.flush()
 
 
+def fetch_manifest(url):
+    """Download a survey manifest, carrying nothing and following nothing.
+
+    The survey serves its current manifest at a URL that moves with each
+    issue, so pointing --manifest at it is "this week's pick" with no
+    download step. Three rules keep that convenience from becoming a hole:
+
+    - https only, like --base-url. A manifest steers the payload, so a
+      plaintext fetch lets anyone on the path pick the model that sees the
+      code.
+    - No redirects, like the venue request. A 3xx to somewhere else is a
+      different document from the one that was named.
+    - No credential. The request carries no Authorization header and reads
+      no key variable; fetching a manifest never spends one.
+
+    The bytes come back exactly as served, and the caller writes them into
+    the run's log directory, because the URL will not say the same thing
+    next week and the audit trail has to.
+    """
+    if not url.startswith("https://"):
+        sys.exit("ox: --manifest URL must be https:// (got %r); a manifest "
+                 "chooses where the payload goes, so it must not arrive in "
+                 "cleartext" % url)
+    request = urllib.request.Request(url, headers={
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+    })
+    try:
+        opener = urllib.request.build_opener(NoRedirects)
+        with opener.open(request, timeout=MANIFEST_TIMEOUT_SECONDS) as response:
+            raw = response.read(MANIFEST_MAX_BYTES + 1)
+    except urllib.error.HTTPError as error:
+        if 300 <= error.code < 400:
+            target = error.headers.get("Location") if error.headers else None
+            sys.exit("ox: manifest %s redirected (HTTP %d to %s); a manifest is "
+                     "read from where it was named or not at all"
+                     % (url, error.code, target or "an unnamed location"))
+        sys.exit("ox: manifest %s: HTTP %d" % (url, error.code))
+    except (OSError, ValueError) as error:
+        sys.exit("ox: cannot fetch manifest %s: %s"
+                 % (url, getattr(error, "reason", None) or error))
+    if len(raw) > MANIFEST_MAX_BYTES:
+        sys.exit("ox: manifest %s is larger than %d bytes, which no manifest is"
+                 % (url, MANIFEST_MAX_BYTES))
+    sys.stderr.write("ox: fetched manifest %s (%d bytes)\n" % (url, len(raw)))
+    return raw
+
+
 def load_manifest(path, allow_paid):
-    """Read a survey manifest and decide which entries this run may use.
+    """Read a survey manifest -- a file or an https URL -- and decide which
+    entries this run may use.
 
     The manifest chooses provider and model; it never chooses where a
     credential goes. `venue` must name an entry in ox's own VENUES table —
@@ -292,10 +346,14 @@ def load_manifest(path, allow_paid):
     dropped: the skip list is part of the answer to "why did my code go
     where it went", so it belongs in the status record and on stderr.
     """
-    try:
-        raw = Path(path).read_bytes()
-    except OSError as error:
-        sys.exit("ox: cannot read manifest %s: %s" % (path, error))
+    fetched = "://" in str(path)
+    if fetched:
+        raw = fetch_manifest(str(path))
+    else:
+        try:
+            raw = Path(path).read_bytes()
+        except OSError as error:
+            sys.exit("ox: cannot read manifest %s: %s" % (path, error))
     digest = hashlib.sha256(raw).hexdigest()
     try:
         data = json.loads(raw.decode("utf-8"))
@@ -370,7 +428,7 @@ def load_manifest(path, allow_paid):
                     % (rec.get("base_url"), entry["venue"], entry["url"]))
         entries.append(entry)
 
-    info = {"path": str(path), "sha256": digest,
+    info = {"path": str(path), "sha256": digest, "fetched": fetched, "raw": raw,
             "issue_date": data.get("issue_date"), "defaults": defaults}
     return entries, info
 
@@ -609,10 +667,13 @@ def run(status):
                         help="where to send the request; each venue uses its own "
                              "API key variable (default: %s)" % DEFAULT_VENUE)
     parser.add_argument("--manifest", default=None,
-                        help="pick venue and model from a survey manifest file "
-                             "(first permitted entry). The manifest chooses "
-                             "provider and model only; credentials always come "
-                             "from the venue's own environment variable.")
+                        help="pick venue and model from a survey manifest -- a "
+                             "file, or an https:// URL such as the survey's "
+                             "latest.json (first permitted entry). The manifest "
+                             "chooses provider and model only; credentials "
+                             "always come from the venue's own environment "
+                             "variable. The bytes used are kept as manifest.json "
+                             "in the run's log directory.")
     parser.add_argument("--allow-paid", action="store_true",
                         help="let --manifest use entries whose cost is not "
                              "confirmed free (paid or unknown)")
@@ -810,10 +871,15 @@ def run(status):
         if manifest_info:
             # An audit trail that says where the code went but not why the
             # destination was chosen is incomplete: record which manifest,
-            # byte-exactly, and which entry.
+            # byte-exactly, and which entry. The bytes themselves go beside
+            # it: a manifest named by URL says something else next issue, a
+            # file gets edited, and the survey reads runs back by manifest.
             meta["manifest"] = {"path": manifest_info["path"],
                                 "sha256": manifest_info["sha256"],
-                                "entry_position": entry["position"]}
+                                "entry_position": entry["position"],
+                                "fetched": manifest_info["fetched"],
+                                "saved_as": "manifest.json"}
+            (log_dir / "manifest.json").write_bytes(manifest_info["raw"])
         write_lf(log_dir / "request.json", json.dumps(payload, indent=2))
         write_lf(log_dir / "meta.json", json.dumps(meta, indent=2))
 

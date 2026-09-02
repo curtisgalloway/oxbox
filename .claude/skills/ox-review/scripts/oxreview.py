@@ -73,6 +73,27 @@ def find_ox(explicit):
              "from a checkout that contains ./ox")
 
 
+def with_env_file(command, env_file):
+    """Run ox under `op run --env-file <file> --` when the keys live in 1Password.
+
+    The venue key variables then exist only inside ox's own process: not in
+    the agent's environment, not in this script's, nothing a subagent could
+    print. `op run` passes the child's exit status and streams through, so
+    ox's status file, output file and stderr diagnosis reach this script
+    unchanged. Named by --env-file or $OXBOX_ENV_FILE; preflight.py reports
+    the same file, so the two never disagree about where the keys are.
+    """
+    if not env_file:
+        return list(command)
+    if not Path(env_file).is_file():
+        sys.exit("oxreview: env file %s does not exist" % env_file)
+    if not shutil.which("op"):
+        sys.exit("oxreview: an env file is named (%s) but the 1Password CLI `op` "
+                 "is not on PATH; install it, or export the venue keys another "
+                 "way and unset OXBOX_ENV_FILE" % env_file)
+    return ["op", "run", "--env-file", str(env_file), "--"] + list(command)
+
+
 class Queue:
     """A machine-wide mutex for "one ox request at a time".
 
@@ -326,7 +347,8 @@ def main():
                         help="directory for this batch's review.md, status.json and run.json")
     parser.add_argument("--file", action="append", default=[], dest="files",
                         required=True, help="a file to review (repeat per file)")
-    parser.add_argument("--manifest", help="survey manifest choosing venue and model")
+    parser.add_argument("--manifest", help="survey manifest choosing venue and model "
+                                           "(a file, or an https:// URL)")
     parser.add_argument("--task", help="the review task text")
     parser.add_argument("--task-file", help="read the review task from this file")
     parser.add_argument("--label", default="batch", help="name for this batch in logs")
@@ -350,6 +372,10 @@ def main():
                              "collide at the venue has to name the same directory "
                              "(default: .ox-review, beside the batch outputs)")
     parser.add_argument("--ox", help="path to the ox executable")
+    parser.add_argument("--env-file", default=os.environ.get("OXBOX_ENV_FILE"),
+                        help="a .env of 1Password op:// references holding the "
+                             "venue keys; ox then runs under `op run --env-file` "
+                             "(default: $OXBOX_ENV_FILE)")
     parser.add_argument("--dry-run", action="store_true",
                         help="build and log the request without sending it")
     args = parser.parse_args()
@@ -392,6 +418,7 @@ def main():
     status_path = out / "status.json"
 
     record = {"label": args.label, "files": args.files, "out": str(out),
+              "manifest": args.manifest, "env_file": args.env_file,
               "ok": False, "attempts": [], "queue_wait_seconds": None,
               "review": None, "diagnosis": None}
 
@@ -403,7 +430,7 @@ def main():
     # sys.exit long before run.json was written, so that instruction had
     # nothing to read and the failure looked like a crash.
     try:
-        command = find_ox(args.ox) + [
+        command = with_env_file(find_ox(args.ox), args.env_file) + [
             "--mode", "review",
             "--files", ",".join(args.files),
             "--output", str(review_path),

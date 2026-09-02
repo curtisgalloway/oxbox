@@ -28,6 +28,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -45,6 +47,75 @@ SEARCH_DIRS = [
     Path.home() / ".config" / "oxbox" / "manifests",
     Path.home() / ".local" / "share" / "oxbox" / "manifests",
 ]
+# A manifest may also be named by URL; the survey serves its current one at
+# https://oxbox.ai/manifests/latest.json. The fetch here only renders the
+# listing. The destination is still decided by ox, which fetches the same
+# URL under its own rules: https only, no redirects, no credential, and the
+# bytes kept as manifest.json in the run's log directory. Those rules are
+# mirrored rather than shared -- ox is a script with no module to import --
+# so a mismatch surfaces as a listing ox then refuses, never as a
+# destination preflight approved on its own.
+MANIFEST_MAX_BYTES = 1_048_576
+MANIFEST_TIMEOUT = 30
+USER_AGENT = "oxbox ox-review preflight (+https://github.com/curtisgalloway/oxbox)"
+# Where the venue keys live when they live in 1Password: a .env of op://
+# references. Set, it wraps every ox call in `op run --env-file <file> --`.
+ENV_FILE_VAR = "OXBOX_ENV_FILE"
+
+
+def is_url(source):
+    return "://" in str(source)
+
+
+class NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def fetch_manifest(url):
+    """Return (bytes, None) for a manifest URL, or (None, why not).
+
+    A GET carrying nothing: no Authorization header, no key variable read.
+    """
+    if not url.startswith("https://"):
+        return None, "manifest URL must be https:// (ox refuses cleartext)"
+    request = urllib.request.Request(url, headers={"Accept": "application/json",
+                                                   "User-Agent": USER_AGENT})
+    try:
+        opener = urllib.request.build_opener(NoRedirects)
+        with opener.open(request, timeout=MANIFEST_TIMEOUT) as response:
+            raw = response.read(MANIFEST_MAX_BYTES + 1)
+    except urllib.error.HTTPError as error:
+        if 300 <= error.code < 400:
+            return None, ("redirected (HTTP %d); ox reads a manifest from where "
+                          "it was named or not at all" % error.code)
+        return None, "HTTP %d" % error.code
+    except (OSError, ValueError) as error:
+        return None, str(getattr(error, "reason", None) or error)
+    if len(raw) > MANIFEST_MAX_BYTES:
+        return None, "body larger than %d bytes" % MANIFEST_MAX_BYTES
+    return raw, None
+
+
+def with_env_file(command, env_file):
+    """Run ox under `op run --env-file <file> --` when the keys live in 1Password.
+
+    The venue key variables then exist only inside ox's own process: not in
+    the agent's environment, not in this script's, nothing a subagent could
+    print. `op run` passes the child's exit status and streams through, so
+    ox's status file, output file and stderr diagnosis are unchanged.
+
+    Returns (command, None), or (None, why not).
+    """
+    if not env_file:
+        return list(command), None
+    if not Path(env_file).is_file():
+        return None, "env file %s does not exist" % env_file
+    if not shutil.which("op"):
+        return None, ("an env file is named (%s) but the 1Password CLI `op` is "
+                      "not on PATH; install it, or export the venue keys another "
+                      "way and unset it" % env_file)
+    return ["op", "run", "--env-file", str(env_file), "--"] + list(command), None
 
 
 def as_command(path):
@@ -77,10 +148,10 @@ def manifest_candidates(explicit):
     the tiebreaker for files that never say.
     """
     if explicit:
-        return [describe_manifest(Path(explicit))]
+        return [describe_manifest(explicit)]
     named = os.environ.get("OXBOX_MANIFEST")
     if named:
-        return [describe_manifest(Path(named))]
+        return [describe_manifest(named)]
     found = {}
     for directory in SEARCH_DIRS:
         try:
@@ -93,15 +164,24 @@ def manifest_candidates(explicit):
                   reverse=True)
 
 
-def describe_manifest(path):
-    record = {"path": str(path), "readable": False, "issue_date": None,
-              "sha256": None, "entries": [], "mtime": None, "error": None}
-    try:
-        raw = path.read_bytes()
-        record["mtime"] = path.stat().st_mtime
-    except OSError as error:
-        record["error"] = str(error)
-        return record
+def describe_manifest(source):
+    """Describe a manifest named by path or by https URL."""
+    record = {"path": str(source), "readable": False, "issue_date": None,
+              "sha256": None, "entries": [], "mtime": None, "error": None,
+              "fetched": is_url(source)}
+    if record["fetched"]:
+        raw, error = fetch_manifest(str(source))
+        if raw is None:
+            record["error"] = error
+            return record
+    else:
+        path = Path(source)
+        try:
+            raw = path.read_bytes()
+            record["mtime"] = path.stat().st_mtime
+        except OSError as error:
+            record["error"] = str(error)
+            return record
     record["sha256"] = hashlib.sha256(raw).hexdigest()
     try:
         data = json.loads(raw.decode("utf-8"))
@@ -172,6 +252,10 @@ def main():
     parser.add_argument("--allow-paid", action="store_true",
                         help="let the manifest use entries not confirmed free")
     parser.add_argument("--ox", help="path to the ox executable")
+    parser.add_argument("--env-file", default=os.environ.get(ENV_FILE_VAR),
+                        help="a .env of 1Password op:// references holding the "
+                             "venue keys; ox then runs under `op run --env-file` "
+                             "(default: $%s)" % ENV_FILE_VAR)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -184,18 +268,29 @@ def main():
             "ox not found: install the package, set OX=/path/to/ox, or run from a "
             "checkout containing ./ox")
     else:
+        # --version needs no key, so it runs unwrapped; everything that
+        # resolves a destination goes through the env file from here on.
         version = subprocess.run(ox_command + ["--version"], stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT)
         report["ox"] = {"path": ox_path,
-                        "version": version.stdout.decode("utf-8", "replace").strip()}
+                        "version": version.stdout.decode("utf-8", "replace").strip(),
+                        "env_file": args.env_file}
+        ox_command, problem = with_env_file(ox_command, args.env_file)
+        if problem:
+            report["blockers"].append(problem)
 
     manifests = manifest_candidates(args.manifest)
     usable = [m for m in manifests if m["readable"]]
     if not usable:
+        detail = "; ".join("%s: %s" % (m["path"], m["error"])
+                           for m in manifests if m.get("error"))
         report["blockers"].append(
-            "no readable survey manifest found. Point --manifest or OXBOX_MANIFEST at "
-            "the issue's file, or drop it beside the project as %s. Searched: %s"
-            % (MANIFEST_GLOB, ", ".join(str(d) for d in SEARCH_DIRS)))
+            "no readable survey manifest found%s. Point --manifest or OXBOX_MANIFEST "
+            "at the issue's file or its https URL (the survey serves the current one "
+            "at https://oxbox.ai/manifests/latest.json), or drop the file beside the "
+            "project as %s. Searched: %s"
+            % (" (%s)" % detail if detail else "", MANIFEST_GLOB,
+               ", ".join(str(d) for d in SEARCH_DIRS)))
     else:
         report["manifest"] = usable[0]
         report["other_manifests"] = usable[1:]
@@ -237,6 +332,8 @@ def render(report):
     print("== ox ==")
     if report["ox"]:
         print("%s  (%s)" % (report["ox"]["version"], report["ox"]["path"]))
+        if report["ox"].get("env_file"):
+            print("keys: op run --env-file %s" % report["ox"]["env_file"])
     else:
         print("not found")
 
@@ -247,6 +344,9 @@ def render(report):
     else:
         print("current: %s" % manifest["path"])
         print("issue_date=%s  sha256=%s" % (manifest["issue_date"], manifest["sha256"]))
+        if manifest.get("fetched"):
+            print("fetched by URL; ox keeps the bytes it uses as manifest.json in "
+                  "each run's log directory")
         for entry in manifest["entries"]:
             print("  [%d] %-11s %-28s cost=%-7s %s"
                   % (entry["position"], entry["venue"], entry["model"],

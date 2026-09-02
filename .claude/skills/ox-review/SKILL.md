@@ -69,7 +69,17 @@ If no manifest is found, ask the user for the current one rather than falling
 back to a bare `--venue`/`--model`. The manifest is the record of *why* a
 destination was chosen, and `ox` writes its sha256 into every run's `meta.json`
 for exactly that reason. Point `--manifest` or `OXBOX_MANIFEST` at the issue's
-file.
+file, or at its https URL: the survey serves the current issue's manifest at
+<https://oxbox.ai/manifests/latest.json>, and `ox` (0.5.0 or later) fetches it
+itself — https only, no redirects, no credential sent — and keeps the bytes it
+used as `manifest.json` in every run's log directory, so the audit trail
+survives the URL moving on to the next issue.
+
+If the venue keys live in 1Password, set `OXBOX_ENV_FILE` to the `.env` file
+holding the `op://` references (or pass `--env-file`). Both scripts then run
+`ox` under `op run --env-file <file> --`, so the keys exist only inside `ox`'s
+own process and never in the agent's environment. Preflight names the file it
+will use under `== ox ==`.
 
 ## 2. The exposure gate
 
@@ -314,7 +324,9 @@ as a skill in another project, copy `.claude/skills/ox-review/` into that
 project's `.claude/skills/`, or into `~/.claude/skills/` to have it everywhere,
 then make sure `ox` is reachable:
 installed on `PATH`, named by `OX`, or an oxbox checkout pointed at by
-`OXBOX_HOME`.
+`OXBOX_HOME`. Two more variables make it work from any project with no
+per-project setup: `OXBOX_MANIFEST`, the current manifest as a file or https
+URL, and `OXBOX_ENV_FILE`, the 1Password `.env` holding the venue keys.
 
 Add `logs/` and `.ox-review/` to that project's `.gitignore`. Both hold the
 audit trail of what was sent and what came back; keep them, but keep them out of

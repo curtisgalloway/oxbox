@@ -529,6 +529,26 @@ def main():
     report(result.returncode != 0 and "newer than this ox understands" in result.stderr,
            "a manifest from the future is refused, not misread")
 
+    # The survey has more than one manifest-shaped document, and the one
+    # ox does not read (corpus_version, projects) used to be refused as
+    # though it were from the future -- advice that sends the operator
+    # looking for an older copy of a file that was never a manifest.
+    not_a_manifest = tmp / "corpus-shaped.json"
+    not_a_manifest.write_text(json.dumps({
+        "corpus_version": 1,
+        "defaults": {"mode": "review", "effort": "high"},
+        "projects": [{"id": "oxbox", "tasks": [{"id": "t1"}]}],
+    }), encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(patched), "--manifest", str(not_a_manifest),
+         "--mode", "ask", "--log-dir", str(tmp / "mlogs"), "hello"],
+        capture_output=True, text=True, timeout=60, env=menv)
+    report(result.returncode != 0
+           and "is not a recommendations manifest" in result.stderr
+           and "newer than this ox understands" not in result.stderr,
+           "a document that is not a manifest is refused for that reason",
+           repr(result.stderr.strip()[-120:]))
+
     paid_only = tmp / "manifest-paid.json"
     paid_only.write_text(json.dumps({
         "manifest_version": 0,

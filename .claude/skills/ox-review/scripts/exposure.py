@@ -120,7 +120,7 @@ class SameHostOnly(urllib.request.HTTPRedirectHandler):
     report still named the original host, so nothing revealed the swap.
 
     Same-host redirects stay allowed: a renamed repository, a trailing-slash
-    normalisation, http upgraded to https. Refusing those would turn public
+    normalization, http upgraded to https. Refusing those would turn public
     repositories into `unknown` and train people to wave the gate through.
     """
 
@@ -219,18 +219,18 @@ def probe_provider_api(host, owner, name):
         private = data.get("is_private")
     if private is None and data.get("visibility") is not None:
         private = data.get("visibility") != "public"
-    licence = data.get("license")
-    if isinstance(licence, dict):
-        licence = (licence.get("spdx_id") or licence.get("nickname")
-                   or licence.get("name") or licence.get("key"))
-    if licence is None:
-        licence = data.get("license_url") or data.get("spdx_id")
+    license_id = data.get("license")
+    if isinstance(license_id, dict):
+        license_id = (license_id.get("spdx_id") or license_id.get("nickname")
+                      or license_id.get("name") or license_id.get("key"))
+    if license_id is None:
+        license_id = data.get("license_url") or data.get("spdx_id")
     return {
         "reachable": True,
         "url": url,
         "private": private,
         "visibility": data.get("visibility"),
-        "license": licence,
+        "license": license_id,
         "fork": data.get("fork") or data.get("forked_from_project") is not None
                 or bool(data.get("parent")),
         "archived": data.get("archived"),

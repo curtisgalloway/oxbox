@@ -514,7 +514,7 @@ def main():
                 break
             # Hold the lock across the backoff. Releasing it would let the next
             # waiter fire immediately into a pool that just said it was busy,
-            # which is the exact behaviour the floor exists to prevent.
+            # which is the exact behavior the floor exists to prevent.
             delay = args.retry_floor + random.uniform(0, 15)
             sys.stderr.write("oxreview: [%s] %s; waiting %ds before retrying\n"
                              % (args.label, explanation, int(delay)))

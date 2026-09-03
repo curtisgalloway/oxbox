@@ -105,7 +105,7 @@ def run_ox(argv, env=None, timeout=60):
 def send_to_local(store, tmp, extra_argv=None, **kwargs):
     """Drive ox at a local listener, bypassing only the https scheme guard.
 
-    The guard is a separate, directly tested behaviour; relaxing it here is what
+    The guard is a separate, directly tested behavior; relaxing it here is what
     lets every other wire assertion run without a real provider.
     """
     server = serve(capture_handler(store, **kwargs))

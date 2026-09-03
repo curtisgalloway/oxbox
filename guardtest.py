@@ -23,7 +23,7 @@ HERE = Path(__file__).resolve().parent
 SANDBOX = HERE / "sandbox"
 WORK = SANDBOX / "work"
 
-# Invoke via the interpreter rather than the shebang: Windows does not honour
+# Invoke via the interpreter rather than the shebang: Windows does not honor
 # shebang lines, and these tools must be testable there too.
 OX = [sys.executable, str(HERE / "ox")]
 OXBOX = [sys.executable, str(HERE / "oxbox")]
@@ -162,7 +162,7 @@ def main():
         with open(temp / "optin.txt", "w") as handle:
             code = run(OXBOX + ["--allow-external-output", "--",
                                 sys.executable, "-c", "pass"], stdout=handle)
-        report(code == 0, "oxbox honours --allow-external-output")
+        report(code == 0, "oxbox honors --allow-external-output")
     else:
         skip("inherited descriptor guard", f"no jail backend on {sys.platform}")
 

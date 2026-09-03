@@ -130,7 +130,7 @@ executed inside it.
 - **A wire test must drive `ox`, never rebuild its logic.** The first version of
   the redirect check constructed an opener with `NoRedirects` itself, so it passed
   even after `ox` stopped using it — it asserted a property of the test. Every
-  assertion in `wiretest.py` has been mutation-checked: break the behaviour in
+  assertion in `wiretest.py` has been mutation-checked: break the behavior in
   `ox` and confirm the test goes red before trusting it.
 - **A review fan-out stops at the queue.** `.claude/skills/ox-review` lets
   several subagents work one review, and every one of them sends through

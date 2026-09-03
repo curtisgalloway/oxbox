@@ -393,9 +393,22 @@ def load_manifest(path, allow_paid):
         sys.exit("ox: manifest %s is not valid JSON: %s" % (path, error))
 
     version = data.get("manifest_version")
-    if not isinstance(version, int) or version > MANIFEST_VERSION:
-        sys.exit("ox: manifest version %r is newer than this ox understands "
-                 "(%d); update ox, or use an older manifest" % (version, MANIFEST_VERSION))
+    # Two unrelated failures used to share one message, and the one that
+    # actually happens got the wrong half: a JSON document that is not a
+    # recommendations manifest at all was told it came from the future and
+    # to go find an older copy. The survey ships more than one
+    # manifest-shaped file -- its corpus manifest carries corpus_version
+    # and a projects list, and ox has never read it -- so pointing at the
+    # field that is missing beats sending the operator after a version
+    # skew that does not exist. bool is checked first because it is an int
+    # in Python and a manifest_version of true would otherwise pass.
+    if isinstance(version, bool) or not isinstance(version, int):
+        sys.exit("ox: %s is not a recommendations manifest: manifest_version "
+                 "must be an integer, found %r" % (path, version))
+    if version > MANIFEST_VERSION:
+        sys.exit("ox: manifest version %d is newer than this ox understands "
+                 "(%d); update ox, or use an older manifest"
+                 % (version, MANIFEST_VERSION))
 
     # A manifest is an outside document, so nothing here may assume a shape.
     # A non-object defaults or params used to reach .get() and raise

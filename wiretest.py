@@ -175,6 +175,23 @@ def main():
     report(all(prefixes.values()),
            "each tool names itself on the provenance line", repr(prefixes))
 
+    # Third copy of the same hazard: the ox-review batch script re-declares
+    # ox's effort ladder because it is standalone, and a run that passes
+    # --effort through a level ox no longer accepts dies at argparse after
+    # the queue lock is taken. Compare what each program advertises, not
+    # the two source lines: --help is what a caller reads.
+    oxreview = HERE / ".claude" / "skills" / "ox-review" / "scripts" / "oxreview.py"
+    ladders = {}
+    for name, argv in (("ox", OX), ("oxreview", [sys.executable, str(oxreview)])):
+        done = subprocess.run(argv + ["--help"], capture_output=True,
+                              text=True, timeout=30)
+        found = _re.search(r"--effort \{([^}]*)\}", done.stdout)
+        ladders[name] = found.group(1) if found else None
+    report(ladders["ox"] == ",".join(ox["EFFORTS"])
+           and ladders["oxreview"] == ladders["ox"],
+           "ox and the review batcher offer the same effort ladder",
+           repr(ladders))
+
     # Installed tools anchor state at the working directory, not the script's:
     # /usr/bin/logs is not a thing. A dry run from a scratch directory must
     # leave its log there and nothing in the repo.
@@ -416,15 +433,15 @@ def main():
     manifest.write_text(json.dumps({
         "manifest_version": 0,
         "issue_date": "2026-08-27",
-        "defaults": {"max_tokens": 55555},
+        "defaults": {"max_tokens": 55555, "effort": "low"},
         "recommendations": [
             {"rank": 1, "venue": "openrouter", "model": "top-paid",
              "cost": "paid", "why": "best, but costs money"},
             {"rank": 2, "venue": "acme", "model": "x", "cost": "free"},
             {"rank": 3, "venue": "openrouter", "model": "flaky-free",
-             "cost": "free", "params": {"max_tokens": 4242}},
+             "cost": "free", "params": {"max_tokens": 4242, "effort": "xhigh"}},
             {"rank": 4, "venue": "opencode", "model": "solid-free",
-             "cost": "free"},
+             "cost": "free", "params": {"effort": "turbo"}},
         ],
     }), encoding="utf-8")
     menv = dict(os.environ,
@@ -453,6 +470,19 @@ def main():
            "entry params beat manifest defaults, which beat built-ins",
            "%s / %s" % (flaky_payload.get("max_tokens"),
                         solid_payload.get("max_tokens")))
+    efforts = ((flaky_payload.get("reasoning") or {}).get("effort"),
+               (solid_payload.get("reasoning") or {}).get("effort"))
+    report(efforts == ("xhigh", "low"),
+           "effort resolves by the same three rungs as max_tokens",
+           repr(efforts))
+    # Entry 4 asks for "turbo", which no venue serves. A manifest is an
+    # outside document: the level is dropped with a warning naming it, and
+    # the run falls back through the rungs rather than sending it.
+    report("turbo" in result.stderr and "unrecognized effort" in result.stderr
+           and efforts[1] == "low",
+           "an effort no venue serves is named and dropped, not forwarded",
+           repr([line for line in result.stderr.splitlines()
+                 if "effort" in line]))
     kinds = [(a.get("skipped") and "skip") or (a.get("error") and "error")
              or a.get("finish_reason") for a in stat.get("attempts") or []]
     report(kinds == ["skip", "skip", "error", "stop"],

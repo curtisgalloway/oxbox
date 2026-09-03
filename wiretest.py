@@ -362,6 +362,9 @@ def main():
     report(result.stdout.strip() == "",
            "--output leaves stdout quiet", repr(result.stdout[:80]))
     stat = json.loads(status_file.read_text()) if status_file.exists() else {}
+    report("venue_cost" in stat and stat.get("venue_cost") is None,
+           "a venue that reports no cost leaves venue_cost null, not zero",
+           repr(stat.get("venue_cost")))
     report(stat.get("ok") is True and stat.get("exit_code") == 0
            and stat.get("finish_reason") == "stop",
            "--status-file records a successful run",
@@ -369,6 +372,25 @@ def main():
     report(bool(stat.get("log_dir"))
            and (Path(stat["log_dir"]) / "status.json").exists(),
            "status.json also lands beside the audit log")
+
+    # OpenRouter sends usage.cost on every response although ox never
+    # asks for it, so a run's own price is available without pricing it
+    # from a catalog afterwards. It is the venue's claim and is passed
+    # through unconverted: assert the value survives, not that it is
+    # right, because ox is in no position to know that.
+    priced = json.dumps({
+        "choices": [{"finish_reason": "stop",
+                     "message": {"content": "ok", "role": "assistant"}}],
+        "usage": {"prompt_tokens": 11793, "completion_tokens": 3375,
+                  "cost": 0.021501},
+    }).encode()
+    cost_status = tmp / "cost-status.json"
+    send_to_local({}, tmp, body=priced, extra_argv=[
+        "--mode", "ask", "--status-file", str(cost_status), "hello"])
+    cstat = json.loads(cost_status.read_text()) if cost_status.exists() else {}
+    report(cstat.get("venue_cost") == 0.021501,
+           "the venue's own reported cost is recorded verbatim",
+           repr(cstat.get("venue_cost")))
 
     # Failure: pre-seed both files with a previous run's leftovers, then fail
     # with empty content. The stale answer must be gone — a script must never

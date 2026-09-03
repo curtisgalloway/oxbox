@@ -405,7 +405,8 @@ Reading the diff, the things worth flagging:
   (`./ox … | tail` reports `tail`'s status). If you must pipe, use
   `set -o pipefail`; better, skip the pipeline: `--output review.md` writes
   the answer to a file, and `--status-file status.json` writes a run summary
-  (`ok`, `error`, `finish_reason`, token counts, `truncated`) on every exit,
+  (`ok`, `error`, `finish_reason`, token counts, `truncated`, `venue_cost`)
+  on every exit,
   so a script checks a fact instead of shell plumbing.
 
 ## The self-audit

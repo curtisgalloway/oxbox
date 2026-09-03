@@ -363,7 +363,12 @@ def main():
                         help="minimum seconds between tries (default: %d, measured)" % RETRY_FLOOR)
     parser.add_argument("--wait-timeout", type=int, default=7200,
                         help="how long to wait for the request queue before giving up")
-    parser.add_argument("--effort", choices=["low", "high", "max"])
+    # ox's ladder, spelled again because this script is standalone and
+    # imports nothing from it; wiretest compares the two --help outputs so
+    # the copies cannot drift. Unset by default, which leaves ox to apply
+    # its own default or the manifest entry's level.
+    parser.add_argument("--effort",
+                        choices=["low", "medium", "high", "xhigh", "max"])
     parser.add_argument("--max-tokens", type=int)
     parser.add_argument("--venue")
     parser.add_argument("--model")

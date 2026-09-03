@@ -65,6 +65,23 @@ USER_AGENT = "oxbox (+https://github.com/curtisgalloway/oxbox)"
 MAX_PAYLOAD_BYTES = 400_000
 TIMEOUT_SECONDS = 900
 DEFAULT_MAX_TOKENS = 100000
+# The reasoning-effort ladder, weakest first. These are the levels venues
+# accept, not a scale ox invented: of the 419 models in the OpenRouter
+# catalog of 2026-09-01, 275 publish a supported_efforts list and every
+# value in one is among these five. "none" and "minimal" are the two the
+# catalog also carries and this list leaves out — a review tool whose
+# reviewer does not think is not the product.
+#
+# No model accepts all five, so the ladder is a vocabulary rather than a
+# promise. Gemini 3.x Flash stops at "high" and calls "medium" its own
+# default; the Gemini CLI offers low|medium|high and nothing above it.
+# "max" is real but narrow — 51 models, among them claude-sonnet-5 and
+# glm-5.3-flash, whose default effort it is. Which levels a given model
+# takes is therefore a per-model fact belonging in the manifest entry
+# beside max_tokens, next to the survey that measured it, and not in a
+# table here that would be stale by the next issue.
+EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+DEFAULT_EFFORT = "high"
 MANIFEST_VERSION = 0
 # A manifest fetched by URL is a few kilobytes of JSON; anything past this cap
 # is not one. The fetch gets its own short timeout because it happens before
@@ -331,6 +348,21 @@ def fetch_manifest(url):
     return raw
 
 
+def manifest_effort(value, where):
+    """Take an effort level from a manifest, or nothing if it is not one.
+
+    A manifest is an outside document, and an effort ox does not know is
+    an effort no venue knows either. Dropping it here costs a warning and
+    a run at the default; forwarding it costs a rejection that arrives
+    after the payload has already left the machine.
+    """
+    if value in EFFORTS:
+        return value
+    sys.stderr.write("ox: ignoring unrecognized effort %r in %s (known: %s)\n"
+                     % (value, where, ", ".join(EFFORTS)))
+    return None
+
+
 def load_manifest(path, allow_paid):
     """Read a survey manifest -- a file or an https URL -- and decide which
     entries this run may use.
@@ -375,10 +407,13 @@ def load_manifest(path, allow_paid):
         sys.stderr.write("ox: manifest defaults is not an object; ignoring it\n")
         defaults = None
     defaults = defaults or {}
-    unknown = sorted(set(defaults) - {"max_tokens"})
+    unknown = sorted(set(defaults) - {"max_tokens", "effort"})
     if unknown:
         sys.stderr.write("ox: ignoring unrecognized manifest defaults: %s\n"
                          % ", ".join(unknown))
+    if "effort" in defaults:
+        defaults = dict(defaults, effort=manifest_effort(defaults["effort"],
+                                                         "manifest defaults"))
 
     recs = data.get("recommendations")
     if not isinstance(recs, list) or not recs:
@@ -389,6 +424,10 @@ def load_manifest(path, allow_paid):
         if not isinstance(rec, dict):
             sys.exit("ox: manifest %s recommendation %d is not an object"
                      % (path, index + 1))
+        params = rec.get("params") if isinstance(rec.get("params"), dict) else {}
+        if "effort" in params:
+            params = dict(params, effort=manifest_effort(
+                params["effort"], "recommendation %d" % (index + 1)))
         entry = {
             "position": index + 1,
             "venue": rec.get("venue"),
@@ -398,7 +437,7 @@ def load_manifest(path, allow_paid):
             # never spends on the strength of an absence.
             "cost": rec.get("cost") or "unknown",
             "why": rec.get("why") or "",
-            "params": rec.get("params") if isinstance(rec.get("params"), dict) else {},
+            "params": params,
             "skip": None,
             "url": None,
             "key_env": None,
@@ -689,7 +728,14 @@ def run(status):
     parser.add_argument("--api-key-env", default=None,
                         help="environment variable holding the key for --base-url")
     parser.add_argument("--model", default=None)
-    parser.add_argument("--effort", choices=["low", "high", "max"], default="high")
+    # Defaulted to None for the reason --venue and --max-tokens are: a
+    # manifest entry may name the level its model actually accepts, and
+    # honoring that requires knowing whether the flag was typed or assumed.
+    parser.add_argument("--effort", choices=EFFORTS, default=None,
+                        help="reasoning effort (default: %s, or the manifest's "
+                             "value when --manifest is given). No model takes "
+                             "every level: Gemini Flash stops at high, and "
+                             "max is served by few models" % DEFAULT_EFFORT)
     # Reasoning tokens bill against max_tokens, and current reasoning models
     # spend most of the budget thinking before they answer. At the old 32,000
     # default two different models ran out mid-answer: one truncated a review
@@ -837,6 +883,18 @@ def run(status):
         else:
             max_tokens = DEFAULT_MAX_TOKENS
 
+        # Effort resolves the same way, because it is the same kind of
+        # fact: which levels a model serves is known to the survey that
+        # measured it, not to this script.
+        if args.effort is not None:
+            effort = args.effort
+        elif entry["params"].get("effort"):
+            effort = entry["params"]["effort"]
+        elif manifest_info and manifest_info["defaults"].get("effort"):
+            effort = manifest_info["defaults"]["effort"]
+        else:
+            effort = DEFAULT_EFFORT
+
         payload = {
             "model": entry["model"],
             "messages": [
@@ -845,7 +903,7 @@ def run(status):
             ],
             "max_tokens": max_tokens,
             "temperature": args.temperature,
-            "reasoning": {"effort": args.effort},
+            "reasoning": {"effort": effort},
             "include_reasoning": True,
         }
 
@@ -861,7 +919,7 @@ def run(status):
             "endpoint": entry["url"],
             "key_env": entry["key_env"],
             "mode": args.mode,
-            "effort": args.effort,
+            "effort": effort,
             "max_tokens": max_tokens,
             "files": paths,
             "context_bytes": total_bytes,
@@ -890,7 +948,7 @@ def run(status):
         sys.stderr.write("ox: venue=%s model=%s mode=%s effort=%s "
                          "context=%dB files=%d\n"
                          % (entry["venue"], entry["model"], args.mode,
-                            args.effort, total_bytes, len(paths)))
+                            effort, total_bytes, len(paths)))
 
         if args.dry_run:
             sys.stderr.write("ox: dry run, nothing sent\n")

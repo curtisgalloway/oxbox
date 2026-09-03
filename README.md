@@ -221,6 +221,15 @@ Modes: `--mode diff` (default, returns a patch), `--mode review` (findings, no
 patch), `--mode ask` (plain question). Add `--dry-run` to build and log a
 request without sending it.
 
+`--effort` is `low`, `medium`, `high` (the default), `xhigh` or `max`. Those
+are the levels venues serve, and **no model serves all of them**: Gemini 3.x
+Flash accepts `low`, `medium` and `high` and calls `medium` its own default,
+OpenAI's reasoning models add `xhigh`, and `max` is carried by around one
+model in eight — Claude Sonnet 5 and GLM 5.3 Flash among them. Asking a model
+for a level it does not serve is answered by the venue, not by ox, so the
+level a model actually takes belongs in the manifest entry beside its token
+cap (below) rather than in a table here that goes stale every issue.
+
 ## Survey manifests
 
 The Oxbox Survey publishes a machine-readable manifest with each issue — an
@@ -266,9 +275,14 @@ The manifest chooses provider and model — **never where a credential goes**.
 from there, and a `base_url` in the file is documentation that ox
 cross-checks and refuses to honor. A tampered manifest cannot re-aim a key.
 Precedence: explicit flags beat the entry's `params`, which beat the
-manifest's `defaults`, which beat the built-ins. Each attempt's `meta.json`
-records the manifest's sha256 and the entry used, because an audit trail
-should say why the destination was chosen, not just what it was.
+manifest's `defaults`, which beat the built-ins. `params` and `defaults`
+both carry `max_tokens` and `effort` — the two facts that are properties of
+the model rather than of the request, and that the survey has measured and
+ox has not. An `effort` ox does not recognize is reported and ignored
+rather than forwarded, because a manifest is an outside document.
+Each attempt's `meta.json` records the manifest's sha256 and the entry
+used, because an audit trail should say why the destination was chosen,
+not just what it was.
 
 ## Driving a review from an agent
 

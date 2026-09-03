@@ -23,6 +23,11 @@ REAL_HOME = os.environ.get("REAL_HOME", "")
 REPO_ROOT = os.environ.get("REPO_ROOT", "")
 PLATFORM = os.environ.get("OXBOX_PLATFORM", sys.platform)
 EXISTING = [line for line in os.environ.get("OXBOX_EXISTING_PATHS", "").splitlines() if line]
+# Also decided outside: whether the host has a route out at all. Inside the
+# jail a denied connect and an unreachable network raise the same errors, so
+# on an offline host the network probes would pass by not being able to fail.
+# oxbox says which it is; absent the variable, assume online and probe.
+HOST_HAS_ROUTE = os.environ.get("OXBOX_HOST_HAS_ROUTE", "1") != "0"
 
 # Reading a root-owned file proves nothing about the jail when you ARE root.
 # What keeps /etc/shadow unreadable is file permissions, and uid 0 bypasses
@@ -90,8 +95,10 @@ def udp_send():
         sock.sendto(b"\x00", ("1.1.1.1", 53))
 
 
-def stat_outside():
-    os.stat(EXISTING[0])
+def stat_outside(path):
+    def action():
+        os.stat(path)
+    return action
 
 
 def env_canary():
@@ -119,9 +126,14 @@ def read_inside():
         handle.read()
 
 
-probe("network: outbound TCP to 1.1.1.1:443", tcp_connect)
-probe("network: DNS resolution", dns_lookup)
-probe("network: outbound UDP", udp_send)
+if HOST_HAS_ROUTE:
+    probe("network: outbound TCP to 1.1.1.1:443", tcp_connect)
+    probe("network: DNS resolution", dns_lookup)
+    probe("network: outbound UDP", udp_send)
+else:
+    skipped.append("network probes (the host has no route out, so a blocked "
+                   "connect and an unreachable network are indistinguishable "
+                   "from in here; rerun online)")
 
 if EXISTING:
     for path in EXISTING:
@@ -131,7 +143,20 @@ if EXISTING:
                 "permissions this probe tests; rerun as an ordinary user)")
             continue
         probe(f"fs read: {label_for(path)}", read_probe(path))
-    probe(f"fs metadata: stat {label_for(EXISTING[0])} (oracle)", stat_outside)
+    # The oracle needs a path the jail hides by absence or denial, never one
+    # that file permissions protect. stat() on /etc/shadow needs only search
+    # permission on /etc, which every uid has, and /etc is inside the jail on
+    # both backends -- so on a host where nothing under the real home exists
+    # (a CI runner is one), the first entry is /etc/shadow, the stat succeeds,
+    # and a jail that holds is reported as leaking. Found by a baseline run on
+    # 2026-09-02; ubuntu-latest was one missing ~/.docker/config.json away.
+    oracle = next((p for p in EXISTING if p not in DAC_DEPENDENT), None)
+    if oracle:
+        probe(f"fs metadata: stat {label_for(oracle)} (oracle)", stat_outside(oracle))
+    else:
+        skipped.append("fs metadata oracle (every sensitive path present is "
+                       "permission-protected; stat() on those succeeds at any "
+                       "uid and proves nothing about the jail)")
 else:
     skipped.append("fs reads (oxbox reported no sensitive paths present)")
 

@@ -16,6 +16,7 @@ Usage: ./oxbox [--work DIR] [--allow-external-output] -- command args...
 
 import os
 import shutil
+import socket
 import stat
 import sys
 
@@ -105,6 +106,22 @@ def sensitive_paths(real_home):
     if sys.platform != "darwin":
         paths.append("/etc/shadow")
     return paths
+
+
+def host_has_route():
+    """Whether this host can route to the internet at all, decided outside the
+    jail like the sensitive-path list is. Inside the jail a blocked connect and
+    an offline host raise the same errors -- bubblewrap's --unshare-net gives
+    ENETUNREACH, exactly what a laptop with Wi-Fi off gives -- so on such a
+    host jailtest's network probes would pass without testing anything. A UDP
+    connect() sends no packet; it only asks the kernel whether a route exists.
+    Found by a baseline run on 2026-09-02."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("1.1.1.1", 53))
+        return True
+    except OSError:
+        return False
 
 
 def descriptor_target(fd):
@@ -350,6 +367,7 @@ def main():
         "REAL_HOME": real_home,
         "REPO_ROOT": PROJECT_ROOT,
         "OXBOX_EXISTING_PATHS": "\n".join(existing),
+        "OXBOX_HOST_HAS_ROUTE": "1" if host_has_route() else "0",
         "OXBOX_PLATFORM": sys.platform,
         "TMPDIR": tmpdir,
         "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",

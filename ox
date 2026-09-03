@@ -677,6 +677,7 @@ def main():
         "reasoning_tokens": None,
         "reasoning_chars": None,
         "truncated": None,
+        "venue_cost": None,
         "manifest": None,
         "attempts": None,
         "status_file": None,
@@ -990,6 +991,16 @@ def run(status):
         status["completion_tokens"] = usage.get("completion_tokens")
         status["reasoning_tokens"] = details.get("reasoning_tokens")
         status["reasoning_chars"] = len(reasoning)
+        # Whatever the venue reported in usage.cost, unconverted and
+        # unchecked: it is the venue's claim about its own charge, not a
+        # price this tool computed, and no unit is asserted for it. Worth
+        # recording because it turns out to be there -- OpenRouter sends it
+        # on every response although ox never asks (verified across eleven
+        # paid runs on 2026-09-03, where it agreed with the survey's
+        # catalog-derived price to the cent on ten of ten). None when the
+        # venue sends nothing, which stays distinguishable from a real zero:
+        # a failed attempt that billed nothing reports 0, not absence.
+        status["venue_cost"] = usage.get("cost")
         # A provider that reports no finish reason has said nothing about
         # whether the answer was cut off, and recording False there claims
         # evidence we do not have. None means unknown -- which is exactly what
@@ -998,6 +1009,7 @@ def run(status):
         status["truncated"] = None if finish is None else finish == "length"
         if attempts is not None:
             record["finish_reason"] = choice.get("finish_reason")
+            record["venue_cost"] = usage.get("cost")
             attempts.append(record)
         chosen = content
         break

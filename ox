@@ -222,6 +222,11 @@ def build_context(paths, force, task=""):
             body = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             sys.exit(f"ox: not a text file: {raw}")
+        except OSError as error:
+            # is_file() passing does not mean readable: a mode-000 file,
+            # a dangling mount, a device that went away. This used to be
+            # the shortest path to an uncaught traceback in the whole tool.
+            sys.exit(f"ox: cannot read {raw}: {error}")
         total += len(body.encode("utf-8"))
         findings.extend(scan_for_secrets(body, raw))
         suffix = path.suffix.lstrip(".") or "text"
@@ -518,6 +523,24 @@ def make_log_dir(base):
             log_dir = base / ("%s-%d" % (stamp, attempt))
 
 
+def write_log(path, text):
+    """Write one audit artifact, or say on stderr why it could not be.
+
+    A log write can fail for reasons that have nothing to do with the run:
+    a full disk, a directory whose permissions changed under it. That is
+    worth a loud line, but not the run -- a completed response that cannot
+    be filed is still a completed response, and aborting would discard an
+    answer the caller has already paid for. The HTTPError path has done
+    this since the IncompleteRead fix; this is that rule for the rest of
+    the artifacts, which were still raising OSError straight out of
+    send_and_parse and past every handler above it.
+    """
+    try:
+        write_lf(path, text)
+    except OSError as error:
+        sys.stderr.write("ox: could not write %s: %s\n" % (path.name, error))
+
+
 def write_status(status):
     """Write the run summary everywhere it belongs.
 
@@ -576,9 +599,9 @@ def send_and_parse(api_url, api_key, payload, log_dir):
             # it. Without this it surfaced as a raw JSONDecodeError traceback
             # with no error.txt, which is the one shape an audit trail must not
             # take. Keep the bytes; they are the evidence.
-            write_lf(log_dir / "error.txt",
-                     "non-JSON response body\n%s\n\n%s"
-                     % (error, raw[:2000].decode("utf-8", "replace")))
+            write_log(log_dir / "error.txt",
+                      "non-JSON response body\n%s\n\n%s"
+                      % (error, raw[:2000].decode("utf-8", "replace")))
             raise AttemptFailed(
                 "ox: provider returned a non-JSON body (%s); raw bytes in %s"
                 % (error, log_dir / "error.txt"))
@@ -592,10 +615,7 @@ def send_and_parse(api_url, api_key, payload, log_dir):
             detail = error.read().decode("utf-8", "replace")
         except Exception as read_error:
             detail = "<response body unreadable: %r>" % (read_error,)
-        try:
-            write_lf(log_dir / "error.txt", f"{error.code}\n{detail}")
-        except OSError as write_error:
-            sys.stderr.write("ox: could not write error.txt: %s\n" % write_error)
+        write_log(log_dir / "error.txt", f"{error.code}\n{detail}")
         raise AttemptFailed(f"ox: HTTP {error.code}: {detail[:500]}")
     except urllib.error.URLError as error:
         raise AttemptFailed(f"ox: network error: {error.reason}")
@@ -606,7 +626,7 @@ def send_and_parse(api_url, api_key, payload, log_dir):
         raise AttemptFailed("ox: timed out after %ds reading the response (%s)"
                             % (TIMEOUT_SECONDS, error))
 
-    write_lf(log_dir / "response.json", json.dumps(body, indent=2))
+    write_log(log_dir / "response.json", json.dumps(body, indent=2))
 
     if "error" in body and body["error"]:
         raise AttemptFailed(f"ox: api error: {json.dumps(body['error'])[:500]}")
@@ -623,8 +643,8 @@ def send_and_parse(api_url, api_key, payload, log_dir):
     content = message.get("content") or ""
 
     if reasoning:
-        write_lf(log_dir / "reasoning.txt", reasoning)
-    write_lf(log_dir / "content.md", content)
+        write_log(log_dir / "reasoning.txt", reasoning)
+    write_log(log_dir / "content.md", content)
 
     if message.get("tool_calls"):
         sys.stderr.write(
@@ -699,10 +719,28 @@ def main():
             status["exit_code"] = 0
         elif isinstance(exc.code, int):
             status["exit_code"] = exc.code
+            # A bare sys.exit(N) prints its own diagnosis to stderr and
+            # leaves nothing here. A script reading only this file got a
+            # code and no reason; say at least where the reason went.
+            status["error"] = ("exited %d; the diagnosis is on stderr"
+                               % exc.code)
         else:
             # sys.exit("message") — Python prints it to stderr and exits 1.
             status["error"] = str(exc.code)
             status["exit_code"] = 1
+        write_status(status)
+        raise
+    except Exception as exc:
+        # SystemExit was the only net, so anything else -- an OSError from
+        # a log write, an unreadable --files entry -- ended the run with a
+        # traceback and a status file still holding its in-progress
+        # placeholder, which is the one shape this record must never take:
+        # a caller checking a fact instead of a pipeline exit code learned
+        # nothing. The traceback still reaches stderr; the record is
+        # written first.
+        status["ok"] = False
+        status["exit_code"] = 1
+        status["error"] = "ox: unhandled %s: %s" % (type(exc).__name__, exc)
         write_status(status)
         raise
     status["ok"] = True
@@ -818,8 +856,12 @@ def run(status):
     if args.output and os.path.exists(args.output):
         # Same hazard, other file: a leftover answer from a previous run must
         # not read as this run's. Naming the path hands ox the file, like -o
-        # anywhere else.
-        os.remove(args.output)
+        # anywhere else. Refuse rather than crash when it cannot be cleared
+        # -- --output naming a directory reached os.remove and raised.
+        try:
+            os.remove(args.output)
+        except OSError as error:
+            sys.exit("ox: cannot clear --output %s: %s" % (args.output, error))
 
     task = sys.stdin.read() if args.stdin else args.task
     if not task or not task.strip():
@@ -953,6 +995,10 @@ def run(status):
         status["model"] = entry["model"]
         meta = {
             "timestamp": stamp,
+            # The directory carries a -N suffix when two runs start in the
+            # same second, so the stamp alone does not identify it. The
+            # survey reads these back by directory name; name it here.
+            "log_dir": log_dir.name,
             "ox_version": VERSION,
             "model": entry["model"],
             "venue": entry["venue"],

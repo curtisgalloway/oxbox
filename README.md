@@ -3,6 +3,14 @@ SPDX-FileCopyrightText: 2026 Curtis Galloway
 SPDX-License-Identifier: Apache-2.0
 -->
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="oxbox-logo-dark.png">
+    <img src="oxbox-logo.png" width="320"
+         alt="Line drawing of an ox looking out of an open cardboard box">
+  </picture>
+</p>
+
 # oxbox
 
 A small harness for pointing an **untrusted** LLM at your code without giving it

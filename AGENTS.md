@@ -7,11 +7,14 @@ SPDX-License-Identifier: Apache-2.0
 
 A supervised harness for running an **untrusted** model against real code.
 
-The model here is `stealth/ox-alpha` on OpenRouter — a cloaked, free, 1M-context
-model. "Cloaked" means the provider is anonymized and the listing is an
+There is no default model — the caller names one, or names a survey manifest.
+What the tool is *for* is the cloaked, free listings on OpenRouter, of which
+`stealth/ox-alpha` was the first (revealed as GLM 5.3 and delisted; see the
+README). "Cloaked" means the provider is anonymized and the listing is an
 evaluation deal: **prompts and completions are logged and shared with whoever
 owns the model.** `is_moderated` is false. Treat every byte sent as published to
-an unnamed third party.
+an unnamed third party. That is a property of the deal, not of any one listing,
+so it survives the model of the week changing.
 
 ## Threat model
 

@@ -197,9 +197,11 @@ def main():
     # leave its log there and nothing in the repo.
     scratch = tmp / "scratch-cwd"
     scratch.mkdir()
-    result = subprocess.run(OX + ["--mode", "ask", "--dry-run", "t"],
-                            capture_output=True, text=True, timeout=60,
-                            cwd=str(scratch))
+    # --model is explicit because no venue has a default any more; this case
+    # is about where the log lands, not about how the model is chosen.
+    result = subprocess.run(
+        OX + ["--mode", "ask", "--dry-run", "--model", "test-model", "t"],
+        capture_output=True, text=True, timeout=60, cwd=str(scratch))
     logged = sorted((scratch / "logs").glob("*/meta.json"))
     report(result.returncode == 0 and len(logged) == 1,
            "the default log dir is the working directory's logs/",
@@ -262,6 +264,26 @@ def main():
 
     report(all(spec["url"].startswith("https://") for spec in ox["VENUES"].values()),
            "every venue URL is https")
+
+    # No venue names a default model. The one that did carried
+    # stealth/ox-alpha long after the listing was revealed and delisted, so a
+    # bare `ox "question"` aimed at a model that had not existed for weeks.
+    # The refusal has to name where a current one comes from, or it just moves
+    # the dead end one step later.
+    defaulted = [name for name, spec in ox["VENUES"].items()
+                 if spec["default_model"]]
+    report(not defaulted,
+           "no venue ships a default model", repr(defaulted))
+    # --dry-run so the case cannot reach the network even when it fails: the
+    # no-model exit happens before the dry-run branch, so the assertion is
+    # unchanged, but a regression that restores a default sends nothing.
+    result = run_ox(["--mode", "ask", "--dry-run", "hello"],
+                    env={"OPENROUTER_API_KEY": "sk-should-not-be-used"})
+    report(result.returncode != 0
+           and "no model chosen" in result.stderr
+           and "oxbox.ai" in result.stderr,
+           "a run with no model refuses and says where to get one",
+           repr(result.stderr.strip()[:90]))
 
     # A key ox can send is a key the jail must not see. AGENTS.md says these two
     # lists move together; this is what makes that a check rather than a hope.

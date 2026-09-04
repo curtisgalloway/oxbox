@@ -33,9 +33,11 @@ free, suspiciously capable. Free is the tell: you are paying in data, and you
 don't know who the counterparty is. This repo exists so you can *try* one
 anyway, on real code, without extending it any trust it hasn't earned.
 
-The default target is `stealth/ox-alpha`, but nothing here is specific to it.
-Point `--model` at whatever you're suspicious of this week, and `--venue` at
-wherever it lives:
+**There is no default model.** The listings worth pointing this at change week
+to week, so `ox` names none of its own and asks you to choose: `--model` for a
+model you picked, or `--manifest` for the current issue of
+[the Oxbox Survey](https://oxbox.ai), which publishes what is worth trying and
+the runs behind each recommendation. Point `--venue` at wherever it lives:
 
 ```bash
 ./ox --venue zenmux   --model z-ai/glm-5.3-free   --mode review --files x.py "..."
@@ -216,8 +218,10 @@ agent driving a review never holds the key in its own environment.
 # 1. disposable copy of the files you're willing to expose
 ./oxseed /path/to/repo src/thing.py tests/test_thing.py
 
-# 2. ask the model (nothing is applied)
-./ox --files src/thing.py "fix the off-by-one in parse()"
+# 2. ask the model (nothing is applied). Name one, or take this week's
+#    pick from the survey with --manifest; there is no default.
+./ox --manifest https://oxbox.ai/manifests/latest.json \
+     --files src/thing.py "fix the off-by-one in parse()"
 
 # 3. READ logs/<timestamp>/content.md yourself. this is the point.
 
@@ -384,7 +388,13 @@ Reading the diff, the things worth flagging:
 - Code that looks right and is subtly wrong — the characteristic failure of a
   capable model, and the one a passing test suite will not catch
 
-## Notes on `stealth/ox-alpha`
+## Notes on `stealth/ox-alpha` (delisted)
+
+Kept because it is the measured record, not because you can run it: the model
+this harness was built against was revealed as GLM 5.3 and delisted, and is
+absent from every archived catalog from 2026-08-27 on. It was still this tool's
+hardcoded default for weeks after it stopped existing, which is why there is no
+hardcoded default any more.
 
 - **Malformed diffs.** It emitted a hunk with zero trailing context
   (`@@ -1,4 +1,7 @@` where a real diff has `@@ -1,7 +1,10 @@`), ignoring an

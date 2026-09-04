@@ -136,8 +136,11 @@ jobs:
           [ "$(/usr/bin/ox --version)" = "$expected" ]
           /usr/bin/oxseed "$scratch/srcrepo" thing.py
           # A dry run needs no key and proves logs land in the working
-          # directory, not somewhere script-relative under /usr.
-          /usr/bin/ox --mode ask --dry-run "hello" > /dev/null
+          # directory, not somewhere script-relative under /usr. --model is
+          # explicit because no venue carries a default: this asserts where
+          # the log lands, not how a model gets chosen, and a bare run is
+          # supposed to refuse.
+          /usr/bin/ox --model smoke-test --mode ask --dry-run "hello" > /dev/null
           test -f "$scratch"/logs/*/meta.json
           # --skill reads a packaged file, so it fails exactly when the
           # package forgets to ship one. It must also rewrite the runbook's

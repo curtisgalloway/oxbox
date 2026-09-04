@@ -395,6 +395,45 @@ def main():
            and (Path(stat["log_dir"]) / "status.json").exists(),
            "status.json also lands beside the audit log")
 
+    # The record has to survive an exit nobody planned for. SystemExit used
+    # to be the only net in main(), so an OSError -- a full disk, a log
+    # directory that cannot be created -- ended the run with a traceback and
+    # a status file still holding the in-progress placeholder written before
+    # the request. A caller checking a fact instead of a pipeline exit code
+    # learned nothing at all, which is the one shape this file must not take.
+    walled = tmp / "walled"
+    walled.mkdir()
+    walled.chmod(0o500)
+    crash_status = tmp / "crash-status.json"
+    result = run_ox(["--model", "m", "--mode", "ask", "--dry-run",
+                     "--log-dir", str(walled / "logs"),
+                     "--status-file", str(crash_status), "hello"],
+                    env={"OPENROUTER_API_KEY": "sk-unused"})
+    walled.chmod(0o700)
+    crashed = json.loads(crash_status.read_text()) if crash_status.exists() else {}
+    report(result.returncode != 0
+           and crashed.get("ok") is False
+           and crashed.get("exit_code") == 1
+           and "unhandled" in (crashed.get("error") or ""),
+           "an unplanned exception still writes the status record",
+           repr((crashed.get("exit_code"), (crashed.get("error") or "")[:44])))
+
+    # is_file() passing is not permission to read. The shortest path to an
+    # uncaught traceback in the whole tool was a mode-000 file in --files.
+    unreadable = tmp / "unreadable.py"
+    unreadable.write_text("x = 1\n", encoding="utf-8")
+    unreadable.chmod(0o000)
+    result = run_ox(["--model", "m", "--mode", "ask", "--dry-run",
+                     "--files", str(unreadable),
+                     "--log-dir", str(tmp / "ulogs"), "hello"],
+                    env={"OPENROUTER_API_KEY": "sk-unused"})
+    unreadable.chmod(0o600)
+    report(result.returncode != 0
+           and "cannot read" in result.stderr
+           and "Traceback" not in result.stderr,
+           "an unreadable --files entry is a diagnosis, not a traceback",
+           repr(result.stderr.strip()[-70:]))
+
     # OpenRouter sends usage.cost on every response although ox never
     # asks for it, so a run's own price is available without pricing it
     # from a catalog afterwards. It is the venue's claim and is passed

@@ -22,6 +22,21 @@ The model is assumed to be capable, opaque, and possibly wrong or adversarial.
 It is *not* assumed to be malicious — but nothing here depends on it being
 benign.
 
+**The ceiling is the host kernel.** seatbelt and bubblewrap sandbox a process
+that still calls the kernel directly, so a local privilege escalation escapes
+either one. Neither is a virtual machine. That is an acceptance, not an
+oversight — defending against an adversary carrying a kernel 0-day is a
+different tool at a different cost — but say it plainly and never imply the
+jail is a hypervisor boundary.
+
+The one asymmetry worth knowing: under WSL2 the whole jail runs *inside* a
+Hyper-V VM, so a bwrap escape owns a disposable Linux container while the same
+escape on a native Linux host owns the host. WSL is therefore the best-layered
+of the three configurations, not a compromise — provided the distro has
+`automount` and `interop` disabled, without which an escape reaches `/mnt/c`
+and can exec Windows binaries directly, short-circuiting the Hyper-V boundary
+entirely. The README carries the dedicated-distro setup; keep the two in step.
+
 ## Containment layers
 
 1. **No hands.** `ox` sends a plain chat completion with **no `tools` array**.
@@ -314,7 +329,7 @@ executed inside it.
   split traversal on both separators.
 - **Escape-write verification belongs in `guardtest.py`, not `jailtest.py`.**
   The backends disagree from inside: seatbelt denies the `open()`, while
-  bubblewrap materialises the work dir's parents as ephemeral tmpfs so the
+  bubblewrap materializes the work dir's parents as ephemeral tmpfs so the
   write *succeeds* into a layer the host never sees. Identical containment,
   opposite results. Only a check running outside can ask the question that
   matters — did the host change?
@@ -324,3 +339,53 @@ executed inside it.
   rejects everything passes every refusal test. `guardtest.py` applies a known
   good patch for exactly this reason — the CRLF bug above was invisible until
   that control existed.
+
+## Rejected alternatives
+
+Both of these look like the obvious answer to "no jail on native Windows", and
+both were evaluated properly rather than dismissed. Recorded so the reasoning
+is not re-derived from memory; each names the condition that would reopen it.
+
+- **Windows Sandbox (evaluated 2026-09-03, declined).** A real Hyper-V
+  boundary, and the `wsb` CLI in Windows 11 24H2 makes it scriptable —
+  `wsb start --config` returns a sandbox ID, `wsb exec -r System` returns the
+  command's exit code, and no desktop window appears unless you call
+  `wsb connect`. So the objection in earlier drafts of this file, that it
+  "boots a desktop VM per run", was only half right. Declined on three counts.
+  (1) **Reach.** It needs Pro/Enterprise/Education *and* 24H2, making it a
+  strict subset of WSL2, which runs on every edition including Home. It
+  rescues nobody who is otherwise stranded. (2) **Cost.** A VM boots per
+  invocation, roughly 30s against bubblewrap's instant, in a workflow whose
+  whole shape is patch → test → read → repeat. (3) **The decisive one.**
+  `oxbox` must map the work dir read-write — that is where the code under test
+  lives and the only channel results return through — so the configuration it
+  would ship is a VM *with a writable host share aimed at your project*.
+  Microsoft's own documentation warns that mapped folders "can be compromised
+  by apps in the sandbox" and that writes to a write-permitted mapping "persist
+  after a Sandbox is disposed". A hardened WSL distro with the checkout on ext4
+  has no Windows share at all, so it satisfies the "no host shares" bar that
+  Windows Sandbox cannot. Also untestable in CI: GitHub's `windows-latest`
+  runners have no nested virtualization, so only a real Pro host could ever
+  exercise it.
+  **Reopens if** jailing *Windows-native* code (.NET, MSVC, PowerShell, Win32)
+  becomes a use case. That is the one thing WSL genuinely cannot do, and the
+  only argument that would justify the backend.
+
+- **Sandboxie-Plus (evaluated 2026-09-03, declined).** Tempting: it runs on
+  Home, needs no Hyper-V, has kernel-enforced filesystem isolation via its own
+  driver, imposes no VM boot, and `Start.exe /box:name /wait` returns the
+  program's exit code. Declined on the network guarantee — the half of the
+  banner `oxbox` prints on every single run. (1) WFP filtering is **off by
+  default**: it needs `NetworkEnableWFP=y` in `[GlobalSettings]` plus a reboot
+  or driver reload. Without that, the maintainer's own words are that the
+  restriction "is not enforced on a kernel level and those can be bypassed" —
+  so the default-configured machine gives a jail whose network block hostile
+  code walks through. (2) Even with WFP enabled it filters TCP/UDP only, and
+  **DNS still resolves**: "sandboxed processes will still be able to resolve
+  domain names using the system service but will not be able to send or receive
+  data packets directly." A jail with a live DNS channel cannot honestly print
+  `network=DENIED`, and printing it anyway is exactly the failure the
+  cross-platform rules forbid. (3) It is a third-party kernel driver needing an
+  admin install, in a tool whose dependency list is otherwise Python, git and
+  bubblewrap.
+  **Reopens if** WFP filtering grows DNS coverage *and* becomes the default.

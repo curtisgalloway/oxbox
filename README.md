@@ -134,8 +134,11 @@ is still 3.9, so nothing here uses 3.10+ APIs).
 **Natively there is no jail, and `oxbox` refuses to run rather than pretend.**
 No unprivileged sandbox is reachable from a stdlib script that restricts both
 the filesystem and the network: Job Objects cap CPU and memory but not file or
-network access, AppContainer needs Win32 API work plus fragile ACLs, and
-Windows Sandbox needs Pro/Enterprise and boots a desktop VM per run.
+network access, and AppContainer needs Win32 API work plus fragile ACLs.
+Windows Sandbox is a real boundary, but the wrong shape for this tool — it
+reaches fewer machines than WSL does and cannot run without a writable host
+share. It and Sandboxie were both evaluated and declined; `AGENTS.md` records
+the reasoning and what would reopen either.
 
 The rest of the toolkit is fully native on Windows — `ox`, `oxseed` and
 `oxapply` are pure Python. You can talk to the model, scan for secrets, and
@@ -163,6 +166,56 @@ the WSL ext4 filesystem or on the Windows drive under `/mnt/c`. Unprivileged
 bubblewrap works there because the WSL2 kernel does not carry the AppArmor
 patch that restricts user namespaces on an Ubuntu 24.04 host; there is no
 `kernel.apparmor_restrict_unprivileged_userns` knob to trip over.
+
+WSL2 runs on **every** Windows edition, Home included — it needs the Virtual
+Machine Platform feature, not the full Hyper-V that Windows Sandbox requires.
+That is why it is the whole Windows story and not a fallback.
+
+#### A distro worth running it in
+
+The command above works, but it puts the jail inside the distro you use for
+everything else. Two defaults there are worth changing, because they decide
+where an escape from the jail lands, not whether one happens.
+
+Use a dedicated, throwaway distro:
+
+```powershell
+wsl --install -d Ubuntu-24.04
+wsl --export Ubuntu-24.04 "$env:TEMP\rootfs.tar"
+wsl --import oxbox "$env:LOCALAPPDATA\WSL\oxbox" "$env:TEMP\rootfs.tar"
+wsl -d oxbox
+```
+
+Inside it, cut both paths back to Windows:
+
+```ini
+# /etc/wsl.conf   —   then, from PowerShell: wsl --shutdown
+[automount]
+enabled = false           # no /mnt/c at all
+[interop]
+enabled = false           # cannot exec Windows binaries
+appendWindowsPath = false
+```
+
+Then `sudo apt install bubblewrap` and keep the checkout on the distro's own
+filesystem (`~/src/oxbox`), not under `/mnt/c`. Both locations work — that is
+the verified result above — but on ext4 the work dir lives inside the VM's
+virtual disk, so there is no Windows share for jailed code to reach through
+even after an escape.
+
+Stated exactly, because the difference matters:
+
+- **What this buys.** A bwrap escape lands in a distro holding no `~/.ssh`, no
+  credentials, and no route to the Windows filesystem — and `wsl --unregister
+  oxbox` erases the whole thing. Setting these on your *main* distro would buy
+  the same thing at the cost of `code .`, `explorer.exe` and your Windows PATH,
+  which is why a separate distro is the version people will actually keep.
+- **What it does not buy.** Kernel isolation. WSL2 runs every distro as a
+  container inside one shared utility VM on one shared kernel, so a kernel
+  exploit reaches your other distros. Windows itself stays behind the Hyper-V
+  boundary either way — which is the same boundary Windows Sandbox is built
+  from, and the reason a hardened WSL jail is layered rather than weaker: a
+  bwrap escape on a native Linux host owns that host outright.
 
 ## Setup
 
@@ -488,7 +541,15 @@ shape — a check that quietly stops checking:
 - **The secret scanner is pattern-based**, so it catches recognizable key
   formats and misses bespoke ones. It reduces accidents; it is not a guarantee.
 - **No jail on native Windows.** `oxbox` refuses there; use WSL2, which is
-  tested and gives you the full Linux backend. See Platforms above.
+  tested, runs on every edition including Home, and gives you the full Linux
+  backend. See Platforms above.
+- **Every backend shares the host kernel.** seatbelt and bubblewrap are policy
+  and namespace sandboxes, not virtual machines: a kernel privilege escalation
+  escapes both. That is accepted here — the threat model is an unreliable,
+  opaque model, not an adversary carrying a kernel 0-day — but it is the
+  ceiling on what the jail can promise. Under WSL2 the jail sits inside a
+  Hyper-V VM, making it the one configuration where an escape does not
+  immediately own the host.
 - **`sandbox-exec` is deprecated-but-functional** on macOS. It still works and
   Apple still ships it, but it is not a forever guarantee.
 - **The Linux backend needs unprivileged user namespaces.** Some hardened

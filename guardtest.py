@@ -311,12 +311,12 @@ def main():
 
     print("\n=== secret scanner ===")
     expect_refused("ox refuses a key in the task argument",
-                   OX + ["--dry-run", "--mode", "ask",
+                   OX + ["--dry-run", "--model", "test-model", "--mode", "ask",
                          "my key is sk-abcdefghijklmnopqrstuvwxyz012345"])
     creds = temp / "creds.txt"
     creds.write_text("AKIAIOSFODNN7EXAMPLE\n", encoding="utf-8")
     expect_refused("ox refuses a key in a --files body",
-                   OX + ["--dry-run", "--mode", "ask", "--files", str(creds),
+                   OX + ["--dry-run", "--model", "test-model", "--mode", "ask", "--files", str(creds),
                          "explain this"])
     # "_" is a word character, so the old \bsecret\b never matched inside
     # client_secret -- and the value half demanded quotes that .env files and
@@ -325,12 +325,12 @@ def main():
     underscored.write_text('client_secret = "wJalrXUtnFEMIK7MDENGbPxRfiCY"\n',
                            encoding="utf-8")
     expect_refused("ox refuses an underscore-prefixed credential name",
-                   OX + ["--dry-run", "--mode", "ask", "--files",
+                   OX + ["--dry-run", "--model", "test-model", "--mode", "ask", "--files",
                          str(underscored), "explain this"])
     unquoted = temp / "unquoted.env"
     unquoted.write_text("DB_PASSWORD=supersecretvalue12345\n", encoding="utf-8")
     expect_refused("ox refuses an unquoted credential value",
-                   OX + ["--dry-run", "--mode", "ask", "--files",
+                   OX + ["--dry-run", "--model", "test-model", "--mode", "ask", "--files",
                          str(unquoted), "explain this"])
     # The counterweight: a scanner that refuses everything passes every case
     # above. max_tokens contains "token" and must not trip it, or ox cannot
@@ -340,10 +340,10 @@ def main():
                       "completion_tokens = usage.get(\"completion_tokens\")\n",
                       encoding="utf-8")
     expect_allowed("ox does not mistake max_tokens for a credential",
-                   OX + ["--dry-run", "--mode", "ask", "--files",
+                   OX + ["--dry-run", "--model", "test-model", "--mode", "ask", "--files",
                          str(tokens), "explain this"])
     expect_allowed("ox accepts an ordinary prompt",
-                   OX + ["--dry-run", "--mode", "ask",
+                   OX + ["--dry-run", "--model", "test-model", "--mode", "ask",
                          "explain what a unified diff is"])
 
     print("\n=== exposure gate (the check that decides if code may leave) ===")

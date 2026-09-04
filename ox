@@ -36,7 +36,17 @@ VENUES = {
     "openrouter": {
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "key_env": "OPENROUTER_API_KEY",
-        "default_model": "stealth/ox-alpha",
+        # No venue names a default model, on purpose. The listings worth
+        # pointing this at are the free and cloaked ones, and those change
+        # week to week: stealth/ox-alpha was the default here from the
+        # first commit, was revealed as GLM 5.3 and delisted, and stayed
+        # hardcoded for weeks afterward -- absent from every archived
+        # catalog from 2026-08-27 on, while still being what a bare
+        # `ox "question"` would have tried to reach. A default that names
+        # a specific model is a claim with a shelf life, and this one
+        # outlived its subject silently. The survey is the list that gets
+        # updated; ox points at it instead of guessing.
+        "default_model": None,
     },
     "zenmux": {
         "url": "https://zenmux.ai/api/v1/chat/completions",
@@ -55,7 +65,6 @@ VENUES = {
     },
 }
 DEFAULT_VENUE = "openrouter"
-DEFAULT_MODEL = VENUES[DEFAULT_VENUE]["default_model"]
 HERE = os.path.dirname(os.path.abspath(__file__))
 # One VERSION per tool, all four equal — wiretest enforces the agreement, and
 # the release workflow checks the tag matches. Packaged installs make "which
@@ -741,7 +750,10 @@ def run(status):
                              "sent to an unlisted host by default.")
     parser.add_argument("--api-key-env", default=None,
                         help="environment variable holding the key for --base-url")
-    parser.add_argument("--model", default=None)
+    parser.add_argument("--model", default=None,
+                        help="model id to send to. There is no default -- see "
+                             "https://oxbox.ai for what is currently worth "
+                             "pointing at, or use --manifest")
     # Defaulted to None for the reason --venue and --max-tokens are: a
     # manifest entry may name the level its model actually accepts, and
     # honoring that requires knowing whether the flag was typed or assumed.
@@ -856,7 +868,21 @@ def run(status):
         venue = args.venue or DEFAULT_VENUE
         model = args.model or VENUES[venue]["default_model"]
         if not model:
-            sys.exit("ox: --model is required for venue %r (no default)" % venue)
+            sys.exit(
+                "ox: no model chosen, and %r has no default.\n"
+                "\n"
+                "ox names no model of its own: the free and cloaked listings\n"
+                "worth pointing it at change week to week, and a default that\n"
+                "names one goes stale without saying so.\n"
+                "\n"
+                "  --manifest https://oxbox.ai/manifests/latest.json"
+                "   this week's pick\n"
+                "  --model <id>"
+                "                                        a model you chose\n"
+                "\n"
+                "The Oxbox Survey publishes what is currently worth trying,\n"
+                "with the runs behind each recommendation: https://oxbox.ai"
+                % venue)
         entries = [{"position": 1, "venue": venue, "model": model,
                     "cost": None, "why": "", "params": {}, "skip": None,
                     "url": VENUES[venue]["url"],

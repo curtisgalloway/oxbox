@@ -73,17 +73,33 @@ oxbox: no supported sandbox on this platform.
 Windows has no unprivileged sandbox reachable from a stdlib script that can
 restrict both the filesystem and the network. Job Objects cap CPU and memory
 but not file or network access; AppContainer needs Win32 API work plus fragile
-ACLs; Windows Sandbox needs Pro/Enterprise and boots a desktop VM per run.
+ACLs. Windows Sandbox is a real boundary, but it needs Pro/Enterprise on 24H2
+and cannot run without a writable share back to the host -- so it reaches fewer
+machines than WSL2 does and guards less once it gets there. AGENTS.md records
+the full evaluation under "Rejected alternatives".
 
 Running model-generated code unsandboxed is exactly what this tool exists to
 prevent, so oxbox refuses rather than pretending.
 
-Use WSL2, where the Linux backend works unchanged:
+Use WSL2, where the Linux backend works unchanged. It runs on every Windows
+edition, Home included -- it needs only the Virtual Machine Platform feature,
+not the full Hyper-V that Windows Sandbox requires:
 
     wsl --install -d Ubuntu
     wsl
     sudo apt install bubblewrap
     ./oxbox -- python3 jailtest.py
+
+Better, give it a distro of its own, so an escape from the jail lands somewhere
+holding nothing of yours:
+
+    wsl --export Ubuntu "$env:TEMP\\rootfs.tar"
+    wsl --import oxbox "$env:LOCALAPPDATA\\WSL\\oxbox" "$env:TEMP\\rootfs.tar"
+
+Then, inside it, cut the two routes back to Windows in /etc/wsl.conf --
+[automount] enabled=false and [interop] enabled=false -- and keep the checkout
+on ext4 rather than under /mnt/c, so the work dir never becomes a Windows
+share. The README carries the full recipe and what it does and does not buy.
 
 The rest of the toolkit runs natively on Windows: ox (talk to the model),
 oxseed (build a sandbox copy), and oxapply (quarantined patch application).

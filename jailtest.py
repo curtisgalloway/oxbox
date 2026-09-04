@@ -164,7 +164,7 @@ else:
 #
 # From inside the jail the two backends disagree in a way that makes the result
 # meaningless. seatbelt denies the open() outright, so a write to ~/ESCAPED.txt
-# raises. bubblewrap instead materialises the work dir's parent directories as
+# raises. bubblewrap instead materializes the work dir's parent directories as
 # ephemeral tmpfs, so the same write SUCCEEDS -- into a throwaway layer the host
 # never sees. Judged from in here, identical containment looks like a pass on
 # macOS and a failure on Linux.

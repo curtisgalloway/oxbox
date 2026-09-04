@@ -6,9 +6,21 @@ SPDX-License-Identifier: Apache-2.0
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="oxbox-logo-dark.png">
-    <img src="oxbox-logo.png" width="320"
+    <img src="oxbox-logo.png" width="160"
          alt="Line drawing of an ox looking out of an open cardboard box">
   </picture>
+</p>
+
+<p align="center">
+  <a href="https://github.com/curtisgalloway/oxbox/actions/workflows/ci.yml"><img
+     src="https://github.com/curtisgalloway/oxbox/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/curtisgalloway/oxbox/releases/latest"><img
+     src="https://img.shields.io/github/v/release/curtisgalloway/oxbox"
+     alt="Latest release"></a>
+  <a href="LICENSE"><img
+     src="https://img.shields.io/badge/license-Apache--2.0-blue"
+     alt="License: Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="Python 3.9+">
 </p>
 
 # oxbox

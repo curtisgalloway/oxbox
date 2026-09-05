@@ -160,9 +160,11 @@ No unprivileged sandbox is reachable from a stdlib script that restricts both
 the filesystem and the network: Job Objects cap CPU and memory but not file or
 network access, and AppContainer needs Win32 API work plus fragile ACLs.
 Windows Sandbox is a real boundary, but the wrong shape for this tool — it
-reaches fewer machines than WSL does and cannot run without a writable host
-share. It and Sandboxie were both evaluated and declined; `AGENTS.md` records
-the reasoning and what would reopen either.
+reaches fewer machines than WSL does, cannot run without a writable host share,
+and on a real Pro machine would not start at all from a non-interactive
+session: the launcher exits 0 and silently does nothing. It and Sandboxie were
+both evaluated and declined; `AGENTS.md` records the reasoning, the hardware it
+was measured on, and what would reopen either.
 
 The rest of the toolkit is fully native on Windows — `ox`, `oxseed` and
 `oxapply` are pure Python. You can talk to the model, scan for secrets, and

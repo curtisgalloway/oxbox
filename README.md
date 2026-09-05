@@ -33,6 +33,16 @@ free, suspiciously capable. Free is the tell: you are paying in data, and you
 don't know who the counterparty is. This repo exists so you can *try* one
 anyway, on real code, without extending it any trust it hasn't earned.
 
+**Cheap is the same problem as free**, and most of what is worth trying is
+cheap rather than free. A model at a few cents per million tokens is no more
+audited than a free one: same unnamed provider, same logged prompts, same
+absence of anything you could call a contract. Price changes the invoice, not
+the counterparty — and a review that costs pennies is *easier* to fire off
+without thinking about where the code just went, which is the whole hazard.
+`--allow-paid` is how you opt into those deliberately, and an entry whose cost
+a manifest does not state counts as paid rather than free, because ox does not
+spend on the strength of an absence.
+
 **There is no default model.** The listings worth pointing this at change week
 to week, so `ox` names none of its own and asks you to choose: `--model` for a
 model you picked, or `--manifest` for the current issue of
@@ -131,14 +141,13 @@ is still 3.9, so nothing here uses 3.10+ APIs).
 |---|---|
 | CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 37/37 (Windows 30/30 + 3 skipped), wiretest 66/66 (Windows 65/65 + 1 skipped), jailtest 9/9 |
 | macOS 26.6.2, seatbelt | jailtest 13/13, guardtest 37/37, wiretest 66/66 |
-| Debian 13.6, bubblewrap 0.12.0, Python 3.13.5 | jailtest 14/14, guardtest 37/37; wiretest last run at 64 cases, due a re-run |
+| Debian 13 (trixie), bubblewrap 0.12.0, Python 3.13.5 | jailtest 14/14, guardtest 37/37, wiretest 66/66 |
 | Windows 11 Pro 25H2 (build 26200), PowerShell 7.6.5, Python 3.13.14 | guardtest 30/30 + 3 skipped, wiretest 65/65 + 1 skipped; `oxbox` refuses, exit 78 |
-| WSL2 Ubuntu 24.04.2, bubblewrap 0.9.0, Python 3.12.3 | jailtest 10/10, guardtest 37/37; wiretest last run at 64 cases, due a re-run |
+| WSL2 Ubuntu 24.04.2, bubblewrap 0.9.0, Python 3.12.3 | jailtest 10/10, guardtest 37/37, wiretest 66/66 |
 
-The CI row is the one that cannot go stale. macOS and Windows were re-run
-against the current suite on 2026-09-05; Debian and WSL2 are separate hardware
-and were not, so their `wiretest` figures say which suite size they were
-measured against rather than claiming a number nobody has checked.
+The CI row is the one that cannot go stale. Every hand-run row was measured
+against `036a99b` on 2026-09-05, each on its own hardware — macOS locally,
+Windows and its WSL2 distro on one box, Debian on another.
 
 `guardtest` and `wiretest` counts are host-independent **except for what a
 platform cannot express**: three guardtest cases and one wiretest case need

@@ -100,10 +100,19 @@ $ ./oxbox -- python3 jailtest.py
 jail holds: 12/12 probes passed, 0 skipped
 ```
 
-The probe count is **host-dependent by design**: the sensitive-path list is
-computed outside the jail and only paths that actually exist are probed, so a
-laptop carrying `~/.aws` and `~/.gnupg` runs more probes than a bare CI runner
-(which reports 9/9). A differing total is not a failure — a `FAIL` line is.
+**That total moves, by design, and the table below shows 13 for this same
+machine.** The sensitive-path list is computed outside the jail and only paths
+that actually exist get probed, so the count follows the box and the directory
+you run from:
+
+- A laptop carrying `~/.aws` and `~/.gnupg` probes more than a bare CI runner,
+  which reports 9/9.
+- The list includes the project root's `.env` (`sensitive_paths` in `oxbox`), so
+  the same machine reports 13 from a checkout that has one and 12 from a
+  worktree that does not — which is the whole difference between the run above
+  and the macOS row below.
+
+A differing total is not a failure — a `FAIL` line is.
 
 The checks that run *before* the jail — argument validation, patch validation,
 the secret scanner, the inherited-descriptor guard — can't be reached from
@@ -140,27 +149,29 @@ is still 3.9, so nothing here uses 3.10+ APIs).
 | Tested on | Result |
 |---|---|
 | CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 37/37 (Windows 30/30 + 3 skipped), wiretest 66/66 (Windows 65/65 + 1 skipped), jailtest 9/9 |
-| macOS 26.6.2, seatbelt | jailtest 13/13, guardtest 37/37, wiretest 66/66 |
-| Debian 13 (trixie), bubblewrap 0.12.0, Python 3.13.5 | jailtest 14/14, guardtest 37/37, wiretest 66/66 |
-| Windows 11 Pro 25H2 (build 26200), PowerShell 7.6.5, Python 3.13.14 | guardtest 30/30 + 3 skipped, wiretest 65/65 + 1 skipped; `oxbox` refuses, exit 78 |
-| WSL2 Ubuntu 24.04.2, bubblewrap 0.9.0, Python 3.12.3 | jailtest 10/10, guardtest 37/37, wiretest 66/66 |
+| macOS 26.6.2, seatbelt | jailtest 13/13 |
+| Debian 13 (trixie), bubblewrap 0.12.0, Python 3.13.5 | jailtest 14/14 |
+| WSL2 Ubuntu 24.04.2, bubblewrap 0.9.0, Python 3.12.3 | jailtest 10/10 |
+| Windows 11 Pro 25H2 (build 26200), PowerShell 7.6.5, Python 3.13.14 | no jail — `oxbox` refuses, exit 78 |
 
-The CI row is the one that cannot go stale. Every hand-run row was measured
-against `036a99b` on 2026-09-05, each on its own hardware — macOS locally,
-Windows and its WSL2 distro on one box, Debian on another.
+**The CI row owns every number that does not vary by host, because it is the
+only row that cannot go stale.** `guardtest` and `wiretest` are the same suite
+everywhere — bar the cases a platform cannot express, which are skipped and
+counted as skips, never quietly dropped — so repeating their totals per machine
+bought nothing except four hand-runs every time a case is added. It stopped
+being hypothetical twice on 2026-09-05.
 
-`guardtest` and `wiretest` counts are host-independent **except for what a
-platform cannot express**: three guardtest cases and one wiretest case need
-POSIX file permissions to provoke the failure they check, and skip on Windows
-saying so. A skip is not a smaller suite, it is a case that would otherwise
-pass vacuously.
+The hand-run rows therefore carry only what CI cannot know: which jail backend
+the host actually has, and `jailtest`'s count, which moves for the reasons
+above — the spread from 9 to 14 is the sensitive-path list, not the jail. All
+four were green at `036a99b` on 2026-09-05, on every suite the platform can run
+— which on native Windows is guardtest and wiretest, there being no jail to
+test. Three machines between them: macOS locally, Windows and its WSL2 distro on
+one box, Debian on another.
 
-`jailtest` counts are host-dependent per the note above — and
-working-directory-dependent too, which is the easier one to trip over. The
-sensitive-path list includes the project root's `.env` (`sensitive_paths` in `oxbox`),
-so the same machine reports 13 from a checkout that has one and 12 from a
-worktree that does not. The spread from 9 to 14 across these rows is that
-list, not the jail.
+Three guardtest cases and one wiretest case need POSIX file permissions to
+provoke the failure they check, so they skip on Windows and say why. A skip is
+not a smaller suite; it is a case that would otherwise pass vacuously.
 
 ### Windows
 

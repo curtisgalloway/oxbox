@@ -69,7 +69,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # One VERSION per tool, all four equal — wiretest enforces the agreement, and
 # the release workflow checks the tag matches. Packaged installs make "which
 # oxbox do I have" a real question; --version is the answer.
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 USER_AGENT = "oxbox (+https://github.com/curtisgalloway/oxbox)"
 MAX_PAYLOAD_BYTES = 400_000
 TIMEOUT_SECONDS = 900

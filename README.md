@@ -130,15 +130,16 @@ is still 3.9, so nothing here uses 3.10+ APIs).
 | Tested on | Result |
 |---|---|
 | CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 37/37 (Windows 30/30 + 3 skipped), wiretest 64/64, jailtest 9/9 |
-| macOS 26.6.2, seatbelt | jailtest 12/12, guardtest 37/37 |
-| Debian 13, bubblewrap 0.11.0 | jailtest 14/14 — hand-run against the 22-case guardtest; due a re-run |
-| Windows 11, PowerShell 7.6 | `oxbox` refuses, exit 78 (asserted by CI on every push) |
-| WSL2 Ubuntu 24.04, bubblewrap 0.9.0 | jailtest 10/10 — hand-run against the 22-case guardtest; due a re-run |
+| macOS 26.6.2, seatbelt | jailtest 12/12, guardtest 37/37, wiretest 64/64 |
+| Debian 13.6, bubblewrap 0.12.0, Python 3.13.5 | jailtest 14/14, guardtest 37/37, wiretest 64/64 |
+| Windows 11 Pro 25H2 (build 26200), PowerShell 7.6.5, Python 3.13.14 | guardtest 30/30 + 3 skipped, wiretest 64/64; `oxbox` refuses, exit 78 |
+| WSL2 Ubuntu 24.04.2, bubblewrap 0.9.0, Python 3.12.3 | jailtest 10/10, guardtest 37/37, wiretest 64/64 |
 
-The CI row is the one that cannot go stale; the others are hand-run on real
-hardware and carry the suite size they were run against. `guardtest` and
-`wiretest` counts are host-independent, so CI's figures hold everywhere —
-`jailtest` counts are not, per the note above.
+Every row here was run against the current suite — the hand-run ones on
+2026-09-04, on four separate machines. The CI row is the one that cannot go
+stale. `guardtest` and `wiretest` counts are host-independent, so CI's figures
+hold everywhere; `jailtest` counts are not, per the note above — the spread
+from 9 to 14 across these rows is the sensitive-path list, not the jail.
 
 ### Windows
 

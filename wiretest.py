@@ -449,6 +449,14 @@ def main():
         skip("an unreadable --files entry is a diagnosis, not a traceback",
              "chmod does not deny the owner on Windows")
         unreadable = None
+    elif hasattr(os, "geteuid") and os.geteuid() == 0:
+        # Same rule jailtest holds to: at uid 0 the probe cannot tell a
+        # working diagnosis from a process that bypasses file permissions,
+        # so it would report a defect that is really a privilege. Say so
+        # rather than answer vacuously.
+        skip("an unreadable --files entry is a diagnosis, not a traceback",
+             "mode 000 does not deny root")
+        unreadable = None
     else:
         unreadable = tmp / "unreadable.py"
         unreadable.write_text("x = 1\n", encoding="utf-8")
@@ -674,10 +682,19 @@ def main():
         [sys.executable, str(patched), "--manifest", str(paid_only),
          "--mode", "ask", "--log-dir", str(tmp / "mlogs"), "hello"],
         capture_output=True, text=True, timeout=60, env=menv)
+    # Match the summary's own per-entry line, not the reason text: ox also
+    # prints a progress line per attempt, and both strings the old
+    # assertion looked for appear there. Gutting the summary block left it
+    # green while an operator lost which entries failed and why. The
+    # summary is the only place those are aggregated under --failover.
+    summary = [line for line in result.stderr.splitlines()
+               if line.startswith("  [")]
     report(result.returncode != 0
            and "no manifest entry produced an answer" in result.stderr
-           and "--allow-paid" in result.stderr,
-           "an all-skipped manifest exits with each entry's reason")
+           and summary == ["  [1] openrouter/top-paid: cost=paid "
+                           "(pass --allow-paid to use it)"],
+           "an all-skipped manifest exits with each entry's reason",
+           repr(summary))
     print("\n=== a manifest may be fetched by URL, carrying nothing ===")
 
     # The survey publishes latest.json at a stable URL. Fetching it must behave
@@ -793,21 +810,20 @@ def main():
     print("\n=== the audit log survives collisions ===")
 
     logs = tmp / "collide"
-    store = {}
-    for _ in range(3):
-        send_to_local(store, tmp.__class__(str(tmp)), extra_argv=["--mode", "ask", "x"])
-    # Directly exercise the collision path: three runs in the same second must
-    # not share a directory, because a shared one overwrites request.json.
-    stamps = set()
     logs.mkdir(parents=True, exist_ok=True)
-    for _ in range(3):
+    # Three runs in the same second must not share a directory, because a
+    # shared one overwrites request.json. Each run carries a task nobody
+    # else sends, which is what lets the second assertion below check that
+    # every record survived rather than merely that some file is present.
+    tasks = ["collide-one", "collide-two", "collide-three"]
+    for task in tasks:
         store = {}
         server = serve(capture_handler(store))
         url = "http://127.0.0.1:%d/v1" % server.server_address[1]
         patched = tmp / "ox_local"
         subprocess.run([sys.executable, str(patched), "--base-url", url,
                         "--api-key-env", "OX_TEST_KEY", "--model", "m",
-                        "--mode", "ask", "--log-dir", str(logs), "x"],
+                        "--mode", "ask", "--log-dir", str(logs), task],
                        capture_output=True, text=True, timeout=60,
                        env=dict(os.environ, OX_TEST_KEY="sk-test-canary"))
         server.shutdown()
@@ -816,8 +832,22 @@ def main():
     report(len(dirs) == 3 and len(stamps) == 3,
            "three rapid runs get three distinct log directories",
            "got %d: %s" % (len(dirs), sorted(stamps)))
-    report(all((d / "request.json").exists() for d in dirs),
-           "every run kept its own request.json")
+    # Existence was the old assertion and it could not fail: a directory
+    # that survived a collision still holds a request.json -- the last
+    # writer's. Reverting make_log_dir to mkdir(exist_ok=True) turned the
+    # case above red and left this one green, which is the whole point of
+    # the pair. Read the tasks back instead: three distinct tasks recorded
+    # means three records survived, and an overwrite loses one.
+    recorded = set()
+    for d in dirs:
+        request = d / "request.json"
+        if not request.exists():
+            continue
+        payload = json.loads(request.read_text(encoding="utf-8"))
+        recorded.add(payload["messages"][-1]["content"].strip())
+    report(recorded == set(tasks),
+           "every run kept its own request.json, not just some file",
+           "recorded %s" % sorted(recorded))
 
     print("\nplatform: %s" % sys.platform)
     total = PASSES + len(FAILURES)

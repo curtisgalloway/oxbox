@@ -214,7 +214,9 @@ jobs:
           expected="$(python3 "$GITHUB_WORKSPACE/ox" --version)"
           [ "$("$prefix/bin/ox" --version)" = "$expected" ]
           "$prefix/bin/oxseed" "$scratch/srcrepo" thing.py
-          "$prefix/bin/ox" --mode ask --dry-run "hello" > /dev/null
+          # --model is explicit: no venue carries a default, and this
+          # asserts where the log lands rather than how a model is chosen.
+          "$prefix/bin/ox" --model smoke-test --mode ask --dry-run "hello" > /dev/null
           test -f "$scratch"/logs/*/meta.json
           for tool in ox oxbox oxseed oxapply; do
             "$prefix/bin/$tool" --skill 2>/dev/null > "skill-$tool.md"
@@ -376,7 +378,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "oxseed failed: $LASTEXITCODE" }
           # No key needed, and it proves the log lands in the working
           # directory rather than beside the scripts under LocalAppData.
-          & "$prefix\bin\ox.cmd" --mode ask --dry-run hello > $null
+          # --model is explicit: no venue carries a default, and this
+          # asserts where the log lands rather than how a model is chosen.
+          & "$prefix\bin\ox.cmd" --model smoke-test --mode ask --dry-run hello > $null
           if ($LASTEXITCODE -ne 0) { throw "ox dry run failed: $LASTEXITCODE" }
           if (-not (Get-ChildItem "$scratch\logs\*\meta.json")) {
             throw "the run logged nothing into the working directory"

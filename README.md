@@ -130,16 +130,28 @@ is still 3.9, so nothing here uses 3.10+ APIs).
 | Tested on | Result |
 |---|---|
 | CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 37/37 (Windows 30/30 + 3 skipped), wiretest 64/64, jailtest 9/9 |
-| macOS 26.6.2, seatbelt | jailtest 12/12, guardtest 37/37, wiretest 64/64 |
-| Debian 13.6, bubblewrap 0.12.0, Python 3.13.5 | jailtest 14/14, guardtest 37/37, wiretest 64/64 |
-| Windows 11 Pro 25H2 (build 26200), PowerShell 7.6.5, Python 3.13.14 | guardtest 30/30 + 3 skipped, wiretest 64/64; `oxbox` refuses, exit 78 |
-| WSL2 Ubuntu 24.04.2, bubblewrap 0.9.0, Python 3.12.3 | jailtest 10/10, guardtest 37/37, wiretest 64/64 |
+| macOS 26.6.2, seatbelt | jailtest 13/13, guardtest 37/37, wiretest 66/66 |
+| Debian 13.6, bubblewrap 0.12.0, Python 3.13.5 | jailtest 14/14, guardtest 37/37; wiretest last run at 64 cases, due a re-run |
+| Windows 11 Pro 25H2 (build 26200), PowerShell 7.6.5, Python 3.13.14 | guardtest 30/30 + 3 skipped, wiretest 65/65 + 1 skipped; `oxbox` refuses, exit 78 |
+| WSL2 Ubuntu 24.04.2, bubblewrap 0.9.0, Python 3.12.3 | jailtest 10/10, guardtest 37/37; wiretest last run at 64 cases, due a re-run |
 
-Every row here was run against the current suite — the hand-run ones on
-2026-09-04, on four separate machines. The CI row is the one that cannot go
-stale. `guardtest` and `wiretest` counts are host-independent, so CI's figures
-hold everywhere; `jailtest` counts are not, per the note above — the spread
-from 9 to 14 across these rows is the sensitive-path list, not the jail.
+The CI row is the one that cannot go stale. macOS and Windows were re-run
+against the current suite on 2026-09-05; Debian and WSL2 are separate hardware
+and were not, so their `wiretest` figures say which suite size they were
+measured against rather than claiming a number nobody has checked.
+
+`guardtest` and `wiretest` counts are host-independent **except for what a
+platform cannot express**: three guardtest cases and one wiretest case need
+POSIX file permissions to provoke the failure they check, and skip on Windows
+saying so. A skip is not a smaller suite, it is a case that would otherwise
+pass vacuously.
+
+`jailtest` counts are host-dependent per the note above — and
+working-directory-dependent too, which is the easier one to trip over. The
+sensitive-path list includes the project root's `.env` (`sensitive_paths` in `oxbox`),
+so the same machine reports 13 from a checkout that has one and 12 from a
+worktree that does not. The spread from 9 to 14 across these rows is that
+list, not the jail.
 
 ### Windows
 

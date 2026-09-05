@@ -87,8 +87,13 @@ $ ./oxbox -- python3 jailtest.py
 [PASS] fs metadata: stat ~/.ssh (oracle)     (PermissionError)
 [PASS] env: parent environment not inherited (succeeded)
 ...
-jail holds: 14/14 probes passed        (linux; 13/13 on macOS)
+jail holds: 12/12 probes passed, 0 skipped
 ```
+
+The probe count is **host-dependent by design**: the sensitive-path list is
+computed outside the jail and only paths that actually exist are probed, so a
+laptop carrying `~/.aws` and `~/.gnupg` runs more probes than a bare CI runner
+(which reports 9/9). A differing total is not a failure — a `FAIL` line is.
 
 The checks that run *before* the jail — argument validation, patch validation,
 the secret scanner, the inherited-descriptor guard — can't be reached from
@@ -102,7 +107,7 @@ $ python3 guardtest.py
 [PASS] oxapply refuses traversal in rename headers
 [PASS] ox refuses a key in the task argument
 ...
-guards hold: 22/22 passed              (15/15 on Windows, jail cases skipped)
+guards hold: 37/37 passed, 0 skipped   (30/30 + 3 skipped on Windows)
 ```
 
 Every case in it is a regression test for a defect that was actually found and
@@ -124,10 +129,16 @@ is still 3.9, so nothing here uses 3.10+ APIs).
 
 | Tested on | Result |
 |---|---|
-| macOS 15, seatbelt | jailtest 13/13, guardtest 22/22 |
-| Debian 13, bubblewrap 0.11.0 | jailtest 14/14, guardtest 22/22 |
-| Windows 11, PowerShell 7.6 | guardtest 15/15 + 3 skipped; `oxbox` refuses, exit 78 |
-| WSL2 Ubuntu 24.04, bubblewrap 0.9.0 | jailtest 10/10, guardtest 22/22 |
+| CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 37/37 (Windows 30/30 + 3 skipped), wiretest 64/64, jailtest 9/9 |
+| macOS 26.6.2, seatbelt | jailtest 12/12, guardtest 37/37 |
+| Debian 13, bubblewrap 0.11.0 | jailtest 14/14 — hand-run against the 22-case guardtest; due a re-run |
+| Windows 11, PowerShell 7.6 | `oxbox` refuses, exit 78 (asserted by CI on every push) |
+| WSL2 Ubuntu 24.04, bubblewrap 0.9.0 | jailtest 10/10 — hand-run against the 22-case guardtest; due a re-run |
+
+The CI row is the one that cannot go stale; the others are hand-run on real
+hardware and carry the suite size they were run against. `guardtest` and
+`wiretest` counts are host-independent, so CI's figures hold everywhere —
+`jailtest` counts are not, per the note above.
 
 ### Windows
 

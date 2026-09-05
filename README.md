@@ -129,7 +129,7 @@ is still 3.9, so nothing here uses 3.10+ APIs).
 
 | Tested on | Result |
 |---|---|
-| CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 37/37 (Windows 30/30 + 3 skipped), wiretest 64/64, jailtest 9/9 |
+| CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 37/37 (Windows 30/30 + 3 skipped), wiretest 66/66 (Windows 65/65 + 1 skipped), jailtest 9/9 |
 | macOS 26.6.2, seatbelt | jailtest 13/13, guardtest 37/37, wiretest 66/66 |
 | Debian 13.6, bubblewrap 0.12.0, Python 3.13.5 | jailtest 14/14, guardtest 37/37; wiretest last run at 64 cases, due a re-run |
 | Windows 11 Pro 25H2 (build 26200), PowerShell 7.6.5, Python 3.13.14 | guardtest 30/30 + 3 skipped, wiretest 65/65 + 1 skipped; `oxbox` refuses, exit 78 |

@@ -73,10 +73,11 @@ oxbox: no supported sandbox on this platform.
 Windows has no unprivileged sandbox reachable from a stdlib script that can
 restrict both the filesystem and the network. Job Objects cap CPU and memory
 but not file or network access; AppContainer needs Win32 API work plus fragile
-ACLs. Windows Sandbox is a real boundary, but it needs Pro/Enterprise on 24H2
-and cannot run without a writable share back to the host -- so it reaches fewer
-machines than WSL2 does and guards less once it gets there. AGENTS.md records
-the full evaluation under "Rejected alternatives".
+ACLs. Windows Sandbox is a real boundary, but it needs Pro/Enterprise, cannot
+run without a writable share back to the host, and will not start at all from a
+non-interactive session -- so it reaches fewer machines than WSL2 does and
+guards less once it gets there. AGENTS.md records the full evaluation, measured
+on real hardware, under "Rejected alternatives".
 
 Running model-generated code unsandboxed is exactly what this tool exists to
 prevent, so oxbox refuses rather than pretending.

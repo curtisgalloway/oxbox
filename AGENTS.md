@@ -371,6 +371,42 @@ is not re-derived from memory; each names the condition that would reopen it.
   becomes a use case. That is the one thing WSL genuinely cannot do, and the
   only argument that would justify the backend.
 
+  **Measured on real hardware 2026-09-04** — brik, Windows 11 Pro 25H2 (build
+  26200), `Containers-DisposableClientVM` reporting `Enabled`. The paragraph
+  above was written from Microsoft's documentation, and two of its claims did
+  not survive contact with a real machine:
+
+  - **The `wsb` CLI is not in the OS image, and the OS version does not tell
+    you whether it is present.** "Ships in 24H2" is wrong. On a 25H2 Pro box
+    with the feature *Enabled*, `wsb.exe` did not exist — not on PATH, not in
+    `System32`, no Store package installed. Launching `WindowsSandbox.exe`
+    triggered an on-demand Store install (`MicrosoftWindows.WindowsSandbox`
+    0.8.107.0), after which `wsb.exe` appeared under
+    `%LOCALAPPDATA%\Microsoft\WindowsApps` and `wsb --help` listed exactly the
+    documented surface. Detection would have to probe for the binary and cope
+    with it being absent on a machine that looks fully capable.
+  - **`WindowsSandbox.exe` exits 0 and does nothing** from a non-interactive
+    session. Empty stdout, empty stderr, exit code 0 — and no sandbox process,
+    no mapped-folder write, nothing at all after 60 seconds of polling. This is
+    the disqualifying behavior, not merely an inconvenience: a launcher that
+    reports success while running nothing would let jailed code *appear* to
+    execute and silently not, which is strictly worse than the refusal it would
+    replace. Any backend built on it would have to prove the sandbox started
+    rather than trust the exit status.
+  - **`wsb` cannot start one from a non-interactive session either.**
+    `wsb start --config` failed after 30.6s with `StatusCode="Cancelled"`, and
+    `wsb list` then failed with `Error starting gRPC call ... The operation has
+    timed out. (localhost:80)`. Nothing was listening on port 80. `HvHost` and
+    `vmcompute` were both Running, so Hyper-V itself was healthy — the CLI is a
+    thin gRPC client to a backend that does not come up without an interactive
+    desktop session.
+
+  What this does **not** establish is that no headless configuration exists.
+  What it does establish is that both documented launch paths fail over SSH,
+  which is the context CI and every form of remote automation live in — so the
+  "untestable in CI" point above is stronger than a missing-nested-virt
+  footnote: it would be untestable anywhere a human is not already logged in.
+
 - **Sandboxie-Plus (evaluated 2026-09-03, declined).** Tempting: it runs on
   Home, needs no Hyper-V, has kernel-enforced filesystem isolation via its own
   driver, imposes no VM boot, and `Start.exe /box:name /wait` returns the

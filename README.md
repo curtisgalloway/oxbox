@@ -40,11 +40,11 @@ absence of anything you could call a contract. Price changes the invoice, not
 the counterparty — and a review that costs pennies is *easier* to fire off
 without thinking about where the code just went, which is the whole hazard.
 `--allow-paid` is how you opt into those deliberately, and an entry whose cost
-a manifest does not state counts as paid rather than free, because ox does not
+a manifest does not state counts as paid rather than free, because `oxbox ask` does not
 spend on the strength of an absence.
 
 **There is no default model.** The listings worth pointing this at change week
-to week, so `ox` names none of its own and asks you to choose: `--model` for a
+to week, so `oxbox-ask` names none of its own and asks you to choose: `--model` for a
 model you picked, or `--manifest` for the current issue of
 [the Oxbox Survey](https://oxbox.ai), which publishes what is worth trying and
 the runs behind each recommendation. Point `--venue` at wherever it lives:
@@ -56,7 +56,7 @@ oxbox ask --venue requesty --model mistral/leanstral-1-5 --mode review --files x
 ```
 
 **Each venue carries its own API key variable** — `OPENROUTER_API_KEY`,
-`ZENMUX_API_KEY`, `OPENCODE_ZEN_API_KEY`, `REQUESTY_API_KEY` — and `ox` reads
+`ZENMUX_API_KEY`, `OPENCODE_ZEN_API_KEY`, `REQUESTY_API_KEY` — and `oxbox-ask` reads
 only the one belonging to the venue you asked for. That pairing is the security
 property: a single `--base-url` flag over one hardcoded key would mean a
 mistyped host receives your OpenRouter credential. An unlisted endpoint is still
@@ -77,16 +77,17 @@ supervising agent) reads that text before any of it executes.
 ## The five layers
 
 `oxbox` is the one command. Each step of the workflow is a subcommand —
-`oxbox seed`, `oxbox ask`, `oxbox apply`, `oxbox run` — and the first three
-are handed to a helper script (`oxseed`, `ox`, `oxapply`) that does that one
-job and nothing else; the fourth is the jail, which `oxbox` has always been.
-The layers below are named by the script that enforces them.
+`oxbox sandbox`, `oxbox ask`, `oxbox apply`, `oxbox jail` — handed to a
+script of the same name (`oxbox-sandbox`, `oxbox-ask`, `oxbox-apply`,
+`oxbox-jail`) that does that one job and nothing else, so a process listing
+says which piece is running. The layers below are named by the script that
+enforces them.
 
 | Layer | Mechanism |
 |---|---|
-| **No hands** | `ox` sends a chat completion with **no `tools` array**. The model cannot run, read, or write anything. If it emits `tool_calls` regardless, `ox` logs and warns. |
+| **No hands** | `oxbox-ask` sends a chat completion with **no `tools` array**. The model cannot run, read, or write anything. If it emits `tool_calls` regardless, `oxbox-ask` logs and warns. |
 | **Explicit context** | It sees only files passed to `--files`. A credential scanner refuses to send anything matching common key patterns. |
-| **Patch quarantine** | `oxapply` applies diffs **only** into `sandbox/work`, and rejects absolute paths and `..` traversal outright. |
+| **Patch quarantine** | `oxbox-apply` applies diffs **only** into `sandbox/work`, and rejects absolute paths and `..` traversal outright. |
 | **Execution jail** | `oxbox` runs code with **no network** and **no writes outside the sandbox** — seatbelt on macOS, bubblewrap on Linux — with the environment cleared so no inherited secret crosses in. It refuses to start if stdout/stderr point at a file outside the sandbox. |
 | **Audit trail** | Every call writes `logs/<timestamp>/` with the exact request, raw response, extracted content, and metadata. The API key is never logged. |
 
@@ -96,7 +97,7 @@ history, `.env`, `/etc/shadow`, `stat()` as a metadata oracle, and environment
 inheritance. The sensitive-path list is platform-aware and computed outside:
 
 ```
-$ oxbox run -- python3 jailtest.py
+$ oxbox jail -- python3 jailtest.py
 [PASS] network: outbound TCP to 1.1.1.1:443  (PermissionError)
 [PASS] network: DNS resolution               (gaierror)
 [PASS] fs read: ~/.ssh                       (PermissionError)
@@ -126,13 +127,13 @@ inside it, so they get their own suite:
 
 ```
 $ python3 guardtest.py
-[PASS] oxseed refuses parent traversal
+[PASS] oxbox-sandbox refuses parent traversal
 [PASS] oxbox refuses --work outside sandbox/
 [PASS] oxbox refuses stdout redirected outside the sandbox
-[PASS] oxapply refuses traversal in rename headers
-[PASS] ox refuses a key in the task argument
+[PASS] oxbox-apply refuses traversal in rename headers
+[PASS] `oxbox ask` refuses a key in the task argument
 ...
-guards hold: 37/37 passed, 0 skipped   (30/30 + 3 skipped on Windows)
+guards hold: 68/68 passed, 0 skipped
 ```
 
 Every case in it is a regression test for a defect that was actually found and
@@ -154,7 +155,7 @@ is still 3.9, so nothing here uses 3.10+ APIs).
 
 | Tested on | Result |
 |---|---|
-| CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 37/37 (Windows 30/30 + 3 skipped), wiretest 66/66 (Windows 65/65 + 1 skipped), jailtest 9/9 |
+| CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 68/68 (Windows: the 3 symlink cases skip; its total is whatever the next CI run prints), wiretest 66/66 (Windows 65/65 + 1 skipped), jailtest 9/9 |
 | macOS 26.6.2, seatbelt | jailtest 13/13 |
 | Debian 13 (trixie), bubblewrap 0.12.0, Python 3.13.5 | jailtest 14/14 |
 | WSL2 Ubuntu 24.04.2, bubblewrap 0.9.0, Python 3.12.3 | jailtest 10/10 |
@@ -192,16 +193,16 @@ session: the launcher exits 0 and silently does nothing. It and Sandboxie were
 both evaluated and declined; `AGENTS.md` records the reasoning, the hardware it
 was measured on, and what would reopen either.
 
-The rest of the toolkit is fully native on Windows — `ox`, `oxseed` and
-`oxapply` are pure Python. You can talk to the model, scan for secrets, and
+The rest of the toolkit is fully native on Windows — `oxbox-ask`, `oxbox-sandbox` and
+`oxbox-apply` are pure Python. You can talk to the model, scan for secrets, and
 quarantine its patches. Only *executing* its output needs the jail.
 
 That much ships as a signed per-user MSI on the
 [latest release](https://github.com/curtisgalloway/oxbox/releases): no
 elevation, `%LOCALAPPDATA%\Programs\oxbox\bin` added to your PATH, and a
-`.cmd` shim beside each tool because Windows cannot execute a shebang. It
-carries `oxbox` too, refusal and all, so `oxbox --skill` answers and the four
-tools stay one set. Python 3.9+ has to be on PATH; the shims say so plainly
+`.cmd` shim beside `oxbox` because Windows cannot execute a shebang. It
+carries `oxbox-jail` too, refusal and all, so `oxbox --skill` answers and the
+five tools stay one set. Python 3.9+ has to be on PATH; the shim says so plainly
 if it is not.
 
 **With WSL2 you get the full thing**, and the Linux backend runs unchanged:
@@ -304,23 +305,22 @@ cd oxbox
 export OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-Either way, the tools operate on the **working directory**: `oxbox seed`
-builds `./sandbox/`, `oxbox ask` logs to `./logs/`, and `oxbox run` jails into
+Either way, the tools operate on the **working directory**: `oxbox sandbox`
+builds `./sandbox/`, `oxbox ask` logs to `./logs/`, and `oxbox jail` runs in
 `./sandbox/work` — so stand in the project directory you are working from (a
 source checkout run from its root behaves the same as always, with `./oxbox`
 in place of `oxbox`). The test suites assert against the checkout layout, so
 verifying the jail on a new machine is a git-clone operation even when the
 tools came from a package.
 
-**Only `oxbox` is on `PATH`.** A package installs the three helper scripts
-into a `libexec` directory beside it — the Homebrew keg's and the tarball's
+**Only `oxbox` is on `PATH`.** A package installs the four scripts into a
+`libexec` directory beside it — the Homebrew keg's and the tarball's
 `libexec/bin`, the `.deb`'s `/usr/libexec/oxbox/bin`, the MSI's `libexec\bin`
 — and `oxbox` finds them from its own location, so there is one way to run
 everything and one `--help` to read. `oxbox helper` lists them with the path
-each resolved to, and `oxbox helper ox ...` runs one directly with its own
-flags, for the rare case where the subcommand is in the way. Type a helper's
-flag at `oxbox` by mistake (`oxbox --manifest ...`) and it answers with the
-subcommand that takes it.
+each resolved to, and `oxbox helper ask ...` runs one directly. Type a
+subcommand's flag at `oxbox` by mistake (`oxbox --manifest ...`) and it
+answers with the subcommand that takes it.
 
 If you use 1Password, copy `.env.example` to `.env`, point it at your item, and
 prefix commands with `op run --env-file .env --`. Any method that puts
@@ -332,7 +332,8 @@ agent driving a review never holds the key in its own environment.
 
 ```bash
 # 1. disposable copy of the files you're willing to expose
-oxbox seed /path/to/repo src/thing.py tests/test_thing.py
+#    (--add, --remove, --list, --read and --write tend it afterwards)
+oxbox sandbox --create /path/to/repo src/thing.py tests/test_thing.py
 
 # 2. ask the model (nothing is applied). Name one, or take this week's
 #    pick from the survey with --manifest; there is no default.
@@ -345,13 +346,13 @@ oxbox ask --manifest https://oxbox.ai/manifests/latest.json \
 oxbox apply --log logs/<timestamp>
 
 # 5. run the result with no network, no escape
-oxbox run -- .venv/bin/python -m pytest -q
+oxbox jail -- .venv/bin/python -m pytest -q
 
 # 6. see exactly what changed
 git -C sandbox/work diff HEAD
 
 # 7. burn it down
-oxbox seed --clean
+oxbox sandbox --destroy
 ```
 
 Install dependencies **outside** the jail (it has no network), then execute
@@ -366,14 +367,14 @@ are the levels venues serve, and **no model serves all of them**: Gemini 3.x
 Flash accepts `low`, `medium` and `high` and calls `medium` its own default,
 OpenAI's reasoning models add `xhigh`, and `max` is carried by around one
 model in eight — Claude Sonnet 5 and GLM 5.3 Flash among them. Asking a model
-for a level it does not serve is answered by the venue, not by ox, so the
+for a level it does not serve is answered by the venue, not by `oxbox ask`, so the
 level a model actually takes belongs in the manifest entry beside its token
 cap (below) rather than in a table here that goes stale every issue.
 
 ## Survey manifests
 
 The Oxbox Survey publishes a machine-readable manifest with each issue — an
-ordered list of that week's recommended models. `--manifest` points ox at the
+ordered list of that week's recommended models. `--manifest` points `oxbox ask` at the
 file instead of transcribing venue and model by hand:
 
 ```bash
@@ -386,12 +387,12 @@ manifest at a dated URL and the current one as `latest.json`, so the second
 form is "this week's pick" with no download step. The fetch follows the same
 rules as the venue request: https only, no redirects, and no credential — the
 request carries no Authorization header and reads no key variable. The bytes
-ox used are written into the run's log directory as `manifest.json`, because
+`oxbox ask` used are written into the run's log directory as `manifest.json`, because
 `latest.json` will say something else next issue and the audit trail has to
 keep saying what this run used.
 
-ox takes the first *permitted* entry: cost confirmed `free` unless you pass
-`--allow-paid` (an entry of unknown cost counts as paid), a venue this ox
+`oxbox ask` takes the first *permitted* entry: cost confirmed `free` unless you pass
+`--allow-paid` (an entry of unknown cost counts as paid), a venue this `oxbox ask`
 knows, and that venue's key variable actually set. Skipped entries are
 announced with their reasons, and the run's status record lists every one.
 
@@ -401,7 +402,7 @@ Two usage models, chosen explicitly:
   survey measurement needs. If the chosen entry fails, the run fails.
 - **`--failover`.** For everyday use — you want an answer, not a data point.
   On a failure after the request is sent (429, 5xx, network error, empty
-  response), ox moves to the next permitted entry. One pass, no waiting:
+  response), `oxbox ask` moves to the next permitted entry. One pass, no waiting:
   waiting out a busy pool on a timer is still the caller's job. Each attempt
   is announced on stderr and gets its own log directory, and the status
   record carries the full attempt list.
@@ -411,14 +412,14 @@ Two usage models, chosen explicitly:
   and which key variables you export bound it.
 
 The manifest chooses provider and model — **never where a credential goes**.
-`venue` must name an entry in ox's own table; the URL and key variable come
-from there, and a `base_url` in the file is documentation that ox
+`venue` must name an entry in `oxbox ask`'s own table; the URL and key variable come
+from there, and a `base_url` in the file is documentation that `oxbox ask`
 cross-checks and refuses to honor. A tampered manifest cannot re-aim a key.
 Precedence: explicit flags beat the entry's `params`, which beat the
 manifest's `defaults`, which beat the built-ins. `params` and `defaults`
 both carry `max_tokens` and `effort` — the two facts that are properties of
 the model rather than of the request, and that the survey has measured and
-ox has not. An `effort` ox does not recognize is reported and ignored
+`oxbox ask` has not. An `effort` `oxbox ask` does not recognize is reported and ignored
 rather than forwarded, because a manifest is an outside document.
 Each attempt's `meta.json` records the manifest's sha256 and the entry
 used, because an audit trail should say why the destination was chosen,
@@ -430,15 +431,15 @@ not just what it was.
 oxbox --skill       # print the runbook, with this installation's paths
 ```
 
-`oxbox skill` is the same thing, and the three helper scripts answer `--skill`
-too (`oxbox helper ox --skill`), so an agent that reached for any of them
-first still finds it.
+`oxbox skill` is the same thing, and the four scripts answer `--skill` too
+(`oxbox helper ask --skill`), so an agent that reached for any of them first
+still finds it.
 
 `.claude/skills/ox-review/` is a Claude Code skill that hands the whole review
 loop to an agent: it picks the current manifest, batches the files, fans the
 work out across subagents, and merges what comes back. Copy the directory into
 another project's `.claude/skills/` to use it there; the scripts are stdlib-only
-Python 3.9+ like everything else here, and they find `ox` through `oxbox` on
+Python 3.9+ like everything else here, and they find `oxbox-ask` through `oxbox` on
 `PATH` (as `oxbox ask`), directly via `OX`, or in the checkout named by
 `OXBOX_HOME`. `OXBOX_MANIFEST` names the current
 manifest — a file or the survey's https URL — and `OXBOX_ENV_FILE` the
@@ -450,8 +451,8 @@ in every tool's `--help`, and printing it substitutes the script paths of the
 installation it is standing in — a checkout's `.claude/skills/ox-review`, or
 `/usr/share/oxbox/ox-review` from the package — so the commands it reads are
 commands it can run. The document goes to stdout and the path it came from to
-stderr, so `ox --skill > runbook.md` yields the document alone. wiretest asserts
-the four print the same bytes, the same way it asserts they declare one
+stderr, so `oxbox --skill > runbook.md` yields the document alone. wiretest asserts
+the five print the same bytes, the same way it asserts they declare one
 VERSION.
 
 Two things in it are worth knowing about even if you never run an agent.
@@ -465,7 +466,7 @@ request is in flight and backs off on the 120-second floor. Batches pipeline;
 requests do not overlap.
 
 ```bash
-python3 .claude/skills/ox-review/scripts/preflight.py   # ox, manifest, gate
+python3 .claude/skills/ox-review/scripts/preflight.py   # oxbox ask, manifest, gate
 python3 .claude/skills/ox-review/scripts/oxreview.py \
     --manifest oxbox-manifest-2026-08-27.json \
     --label auth --out .ox-review/auth --file src/auth.py \
@@ -517,7 +518,7 @@ hardcoded default any more.
 - **Malformed diffs.** It emitted a hunk with zero trailing context
   (`@@ -1,4 +1,7 @@` where a real diff has `@@ -1,7 +1,10 @@`), ignoring an
   explicit instruction to include three lines. Both `git apply` and GNU `patch`
-  reject such a patch. `oxapply` falls back to `--recount -C1` and warns when it
+  reject such a patch. `oxbox-apply` falls back to `--recount -C1` and warns when it
   has to, because a patch that only applies loosely deserves a second read.
 - The fix itself was correct and minimal — byte-identical to a hand-written
   reference patch once applied.
@@ -546,10 +547,10 @@ hardcoded default any more.
   404's advice (go enable prompt logging) is the wrong move here and sends
   you to a settings page that is already correct.
 
-  Worth planning around if you script `ox`: a long review can simply be
+  Worth planning around if you script `oxbox-ask`: a long review can simply be
   unavailable for a while, and the model you are evaluating is exactly the
   kind least likely to have capacity when you want it. Note also that
-  `ox` exits non-zero on an API error, but a pipeline hides that
+  `oxbox-ask` exits non-zero on an API error, but a pipeline hides that
   (`oxbox ask … | tail` reports `tail`'s status). If you must pipe, use
   `set -o pipefail`; better, skip the pipeline: `--output review.md` writes
   the answer to a file, and `--status-file status.json` writes a run summary
@@ -571,7 +572,7 @@ verified by direct experiment and **all four were real**:
 | Task text skips the secret scanner | a key in the prompt string was sent unscanned | **fixed** — task and `--stdin` now scanned too |
 | `rename`/`copy` headers unvalidated | a rename-only patch reported "targets (0)" and passed | **fixed** — extended headers now checked |
 | Symlink-creating patches unvalidated | mode `120000` patches accepted | **fixed** — refused outright |
-| `oxseed` traversal unguarded | `../../../etc/hosts` copied outside the tree | **fixed** |
+| `oxbox-sandbox` traversal unguarded | `../../../etc/hosts` copied outside the tree | **fixed** |
 | TOCTOU on shared `pending.patch` | `--check` and `--apply` re-read a predictable path | **fixed** — unique temp file per run |
 | Inherited descriptors bypass the jail | `oxbox -- cmd > ~/f` wrote through a handle opened before the jail | **fixed** — `oxbox` refuses unless opted in |
 | `mach-lookup` / `ipc-posix-shm` unscoped | flagged UNCERTAIN; no escape demonstrated | **fixed** — both removed after verifying nothing needs them |
@@ -584,7 +585,7 @@ run both work without them.
 Fixing them kept surfacing bugs the audit hadn't flagged, all of the same
 shape — a check that quietly stops checking:
 
-- `oxseed` wiped the work directory *before* validating its arguments, so a
+- `oxbox-sandbox` wiped the work directory *before* validating its arguments, so a
   refused seed still destroyed the sandbox.
 - Scoping `file-read-metadata` broke `jailtest.py`: with `stat()` denied, its
   own existence checks reported every sensitive path as absent and the read

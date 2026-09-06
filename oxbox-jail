@@ -1,0 +1,439 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+"""Run a command inside a jail: no network, no writes outside the work dir.
+
+Backends:
+  macOS   sandbox-exec (seatbelt) with profiles/jail.sb
+  Linux   bubblewrap, everything read-only except the work dir
+  else    refuse
+
+Refusing is the point. A harness that appears to sandbox but doesn't is worse
+than none, because you would trust it. There is no "best effort" mode.
+
+Usage: oxbox jail [--work DIR] [--allow-external-output] -- command args...
+
+This is the script `oxbox jail` runs (and the bare `oxbox -- cmd`). It lives
+in a libexec directory rather than on PATH; oxbox finds it from its own
+location. See helper_dirs in oxbox.
+"""
+
+import os
+import shutil
+import socket
+import stat
+import sys
+
+VERSION = "0.6.0"
+HERE = os.path.dirname(os.path.abspath(__file__))
+USAGE = """\
+usage: oxbox jail [--work DIR] [--allow-external-output] -- command args...
+       oxbox      [--work DIR] [--allow-external-output] -- command args...
+
+Run a command in a jail with no network and no writes outside the work dir.
+
+  --work DIR                the directory the command may write to; must be
+                            inside ./sandbox (default: ./sandbox/work)
+  --allow-external-output   permit stdout/stderr already redirected outside
+                            the sandbox; refused by default, because an
+                            inherited descriptor writes straight past the jail
+  --skill                   print the ox-review agent skill and exit
+  --version                 print the version and exit
+  --help                    print this and exit
+
+exit status: the command's own; 2 for a usage error; 78 when the jail refuses
+(no backend on this platform, or a work dir or output file outside the
+sandbox).
+"""
+# The project root is the working directory, not the script's directory: an
+# installed oxbox lives in /usr/bin, and the sandbox belongs to whatever
+# project you are standing in. oxseed and oxapply anchor the same way, so all
+# three agree on where sandbox/ is. Running a source checkout from its root
+# behaves exactly as before.
+PROJECT_ROOT = os.getcwd()
+SANDBOX_ROOT = os.path.realpath(os.path.join(PROJECT_ROOT, "sandbox"))
+DEFAULT_WORK = os.path.join(SANDBOX_ROOT, "work")
+
+
+def find_profile():
+    """The seatbelt profile, wherever this oxbox is installed.
+
+    A source checkout carries it at profiles/jail.sb next to the script; a
+    package installs this script into <prefix>/libexec/bin (the .deb:
+    <prefix>/libexec/oxbox/bin) and the profile into
+    <prefix>/share/oxbox/jail.sb, two or three levels up. Refusing when none
+    exists is deliberate — there is no jail without the profile, and no jail
+    means no run.
+    """
+    candidates = [
+        os.path.join(HERE, "profiles", "jail.sb"),
+        os.path.normpath(os.path.join(HERE, "..", "share", "oxbox", "jail.sb")),
+        os.path.normpath(os.path.join(HERE, "..", "..", "share", "oxbox", "jail.sb")),
+        os.path.normpath(os.path.join(HERE, "..", "..", "..", "share", "oxbox", "jail.sb")),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    sys.exit("oxbox-jail: seatbelt profile jail.sb not found; looked in:\n"
+             + "\n".join("oxbox-jail:   " + path for path in candidates))
+
+F_GETPATH = 50  # macOS fcntl: resolve a descriptor back to its path
+
+WINDOWS_HELP = """\
+oxbox: no supported sandbox on this platform.
+
+Windows has no unprivileged sandbox reachable from a stdlib script that can
+restrict both the filesystem and the network. Job Objects cap CPU and memory
+but not file or network access; AppContainer needs Win32 API work plus fragile
+ACLs. Windows Sandbox is a real boundary, but it needs Pro/Enterprise, cannot
+run without a writable share back to the host, and will not start at all from a
+non-interactive session -- so it reaches fewer machines than WSL2 does and
+guards less once it gets there. AGENTS.md records the full evaluation, measured
+on real hardware, under "Rejected alternatives".
+
+Running model-generated code unsandboxed is exactly what this tool exists to
+prevent, so oxbox refuses rather than pretending.
+
+Use WSL2, where the Linux backend works unchanged. It runs on every Windows
+edition, Home included -- it needs only the Virtual Machine Platform feature,
+not the full Hyper-V that Windows Sandbox requires:
+
+    wsl --install -d Ubuntu
+    wsl
+    sudo apt install bubblewrap
+    oxbox jail -- python3 jailtest.py
+
+Better, give it a distro of its own, so an escape from the jail lands somewhere
+holding nothing of yours:
+
+    wsl --export Ubuntu "$env:TEMP\\rootfs.tar"
+    wsl --import oxbox "$env:LOCALAPPDATA\\WSL\\oxbox" "$env:TEMP\\rootfs.tar"
+
+Then, inside it, cut the two routes back to Windows in /etc/wsl.conf --
+[automount] enabled=false and [interop] enabled=false -- and keep the checkout
+on ext4 rather than under /mnt/c, so the work dir never becomes a Windows
+share. The README carries the full recipe and what it does and does not buy.
+
+The rest of the toolkit runs natively on Windows: oxbox ask (talk to the
+model), oxbox seed (build a sandbox copy), and oxbox apply (quarantined patch
+application). Only executing the model's output needs the jail.
+"""
+
+
+def sensitive_paths(real_home):
+    """Paths jailtest should try to read, per platform. Existence is decided
+    HERE, outside the jail: inside, stat() is denied, so every hidden path
+    looks absent and a probe that checks for itself would skip rather than
+    test."""
+    names = [".ssh", ".aws", ".gnupg", ".config/gh", ".netrc", ".git-credentials"]
+    if sys.platform == "darwin":
+        names += [".zsh_history", ".claude", "Library/Keychains"]
+    else:
+        names += [".bash_history", ".claude", ".kube/config", ".docker/config.json"]
+    paths = [os.path.join(real_home, name) for name in names]
+    paths.append(os.path.join(PROJECT_ROOT, ".env"))
+    if sys.platform != "darwin":
+        paths.append("/etc/shadow")
+    return paths
+
+
+def host_has_route():
+    """Whether this host can route to the internet at all, decided outside the
+    jail like the sensitive-path list is. Inside the jail a blocked connect and
+    an offline host raise the same errors -- bubblewrap's --unshare-net gives
+    ENETUNREACH, exactly what a laptop with Wi-Fi off gives -- so on such a
+    host jailtest's network probes would pass without testing anything. A UDP
+    connect() sends no packet; it only asks the kernel whether a route exists.
+    Found by a baseline run on 2026-09-02."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("1.1.1.1", 53))
+        return True
+    except OSError:
+        return False
+
+
+def descriptor_target(fd):
+    """Absolute path a descriptor points at, or None if it is not a regular file.
+
+    Pipes, ttys and /dev/null cannot be steered to a location of anyone's
+    choosing, so they are not escapes.
+    """
+    try:
+        info = os.fstat(fd)
+    except OSError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        return None
+
+    if sys.platform == "darwin":
+        try:
+            import fcntl
+            raw = fcntl.fcntl(fd, F_GETPATH, b"\0" * 1024)
+        except (OSError, ImportError):
+            return None
+        path = raw.split(b"\0")[0].decode("utf-8", "replace")
+    else:
+        try:
+            path = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            return None
+    return os.path.realpath(path) if path else None
+
+
+def escaping_descriptors():
+    """stdout/stderr that point at regular files outside the sandbox.
+
+    Neither backend can help here: the shell opened those files before the jail
+    existed, so the descriptor is already live. `oxbox -- cmd > ~/notes.md`
+    would let jailed code write whatever it likes there.
+    """
+    found = []
+    for fd, name in ((1, "stdout"), (2, "stderr")):
+        target = descriptor_target(fd)
+        if target is None:
+            continue
+        if target != SANDBOX_ROOT and not target.startswith(SANDBOX_ROOT + os.sep):
+            found.append(f"{name} -> {target}")
+    return found
+
+
+def macos_argv(work, command):
+    if not os.path.exists("/usr/bin/sandbox-exec"):
+        sys.exit("oxbox-jail: /usr/bin/sandbox-exec not found; cannot jail on this macOS")
+    profile = find_profile()
+    return ["/usr/bin/sandbox-exec", "-f", profile, "-D", f"WORK={work}", *command]
+
+
+def linux_argv(work, command):
+    bwrap = shutil.which("bwrap")
+    if not bwrap:
+        sys.exit(
+            "oxbox-jail: bubblewrap (bwrap) not found.\n"
+            "oxbox-jail: it is the sandbox on Linux; without it there is no jail.\n"
+            "oxbox-jail:   Debian/Ubuntu  sudo apt install bubblewrap\n"
+            "oxbox-jail:   Fedora/RHEL    sudo dnf install bubblewrap\n"
+            "oxbox-jail:   Arch           sudo pacman -S bubblewrap\n"
+            "oxbox-jail:   Alpine         sudo apk add bubblewrap"
+        )
+
+    argv = [
+        bwrap,
+        # Namespaces: --unshare-all includes the network, which is the guarantee
+        # that matters most. Nothing is bound in unless named below, so the
+        # user's home simply does not exist inside.
+        "--unshare-all",
+        "--die-with-parent",
+        # Blocks TIOCSTI-style injection back into the controlling terminal.
+        "--new-session",
+        "--proc", "/proc",
+        "--dev", "/dev",
+        "--tmpfs", "/tmp",
+    ]
+
+    # /bin, /lib, /sbin are symlinks into /usr on merged-usr distributions;
+    # binding a symlink's path would fail, so reproduce the link instead.
+    for path in ("/usr", "/bin", "/lib", "/lib32", "/lib64", "/sbin",
+                 "/etc", "/opt", "/usr/local"):
+        if not os.path.lexists(path):
+            continue
+        if os.path.islink(path):
+            argv += ["--symlink", os.readlink(path), path]
+        else:
+            argv += ["--ro-bind", path, path]
+
+    argv += [
+        "--bind", work, work,
+        "--chdir", work,
+        "--clearenv",
+    ]
+    return argv + command
+
+
+SKILL_NAME = "ox-review"
+# The path the runbook uses to name its own scripts. It is written for a
+# checkout, where the skill sits where Claude Code looks for it; --skill
+# rewrites it to wherever this tool actually found the skill.
+SKILL_PATH_IN_TEXT = ".claude/skills/" + SKILL_NAME
+
+
+def find_skill():
+    """The ox-review runbook, wherever this tool is installed.
+
+    Same two-location rule as oxbox's seatbelt profile: a source checkout
+    carries it at .claude/skills/ox-review next to the script, where Claude
+    Code finds it on its own; a package installs oxbox into <prefix>/bin, the
+    helpers into <prefix>/libexec/bin (the .deb: <prefix>/libexec/oxbox/bin)
+    and the skill into <prefix>/share/oxbox/ox-review -- one, two or three
+    levels up from the script. Code assets anchor at the script — only state
+    anchors at the working directory.
+
+    All four tools carry this, the way all four carry VERSION: each is a
+    standalone script, so sharing it would mean shipping a module and a
+    sys.path to find it on. wiretest asserts the four print the same bytes,
+    which is what keeps four copies of one document from drifting.
+    """
+    candidates = [
+        os.path.join(HERE, ".claude", "skills", SKILL_NAME),
+        os.path.normpath(os.path.join(HERE, "..", "share", "oxbox", SKILL_NAME)),
+        os.path.normpath(os.path.join(HERE, "..", "..", "share", "oxbox", SKILL_NAME)),
+        os.path.normpath(os.path.join(HERE, "..", "..", "..", "share", "oxbox", SKILL_NAME)),
+    ]
+    for directory in candidates:
+        if os.path.isfile(os.path.join(directory, "SKILL.md")):
+            return directory
+    sys.exit("oxbox-jail: the %s skill was not found; looked in:\n" % SKILL_NAME
+             + "\n".join("oxbox-jail:   " + path for path in candidates)
+             + "\noxbox-jail: a Homebrew install may predate the skill; reinstall or "
+               "read it at https://github.com/curtisgalloway/oxbox")
+
+
+def print_skill():
+    """Print the runbook, with the paths this installation actually uses.
+
+    An agent finds this through --help, so the copy it reads has to be
+    runnable where it is standing. The text names its scripts by their
+    checkout path; an installed tool keeps them under a prefix instead, and a
+    runbook whose commands do not exist is worse than no runbook. Provenance
+    goes to stderr and the document to stdout, the same split these tools use
+    everywhere else, so piping this into a file yields the document alone.
+    """
+    directory = find_skill()
+    path = os.path.join(directory, "SKILL.md")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError as error:
+        sys.exit("oxbox-jail: cannot read %s: %s" % (path, error))
+    sys.stderr.write("oxbox-jail: skill -> %s\n" % path)
+    # The document is UTF-8 with LF endings on disk and has to leave that way.
+    # Windows' sys.stdout would encode it in the locale codepage instead --
+    # cp1252 renders SKILL.md's em dashes as 0x97 -- and translate every \n to
+    # \r\n on the way out, so `--skill > runbook.md` there produced a file no
+    # UTF-8 reader could open. Same hazard write_lf exists for, one stream over.
+    body = text.replace(SKILL_PATH_IN_TEXT, directory).encode("utf-8")
+    sys.stdout.flush()
+    sys.stdout.buffer.write(body)
+    sys.stdout.buffer.flush()
+
+
+def main():
+    args = sys.argv[1:]
+    work = DEFAULT_WORK
+    allow_external = False
+
+    while args:
+        if args[0] in ("--help", "-h"):
+            sys.stdout.write(USAGE)
+            return 0
+        if args[0] == "--version":
+            print("oxbox-jail %s" % VERSION)
+            return 0
+        if args[0] == "--skill":
+            print_skill()
+            return 0
+        if args[0] == "--work":
+            if len(args) < 2:
+                sys.stderr.write("oxbox-jail: --work needs a directory\n")
+                return 2
+            work, args = args[1], args[2:]
+        elif args[0] == "--allow-external-output":
+            allow_external, args = True, args[1:]
+        elif args[0] == "--":
+            args = args[1:]
+            break
+        else:
+            sys.stderr.write("oxbox-jail: unexpected argument %s; the command "
+                             "goes after --  (see oxbox jail --help)\n" % args[0])
+            return 2
+
+    command = args
+    if not command:
+        sys.stderr.write("oxbox-jail: no command given (use: oxbox jail -- pytest -q)\n")
+        sys.stderr.write(USAGE)
+        return 2
+
+    if sys.platform == "win32":
+        sys.stderr.write(WINDOWS_HELP)
+        return 78
+    if sys.platform not in ("darwin", "linux"):
+        sys.exit(f"oxbox-jail: no sandbox backend for platform {sys.platform!r}; refusing")
+
+    if not os.path.isdir(work):
+        sys.exit(f"oxbox-jail: work dir does not exist: {work}")
+    work = os.path.realpath(work)
+
+    # The backend grants write access to whatever --work names, so a work dir
+    # outside the sandbox is not a jail at all.
+    if work != SANDBOX_ROOT and not work.startswith(SANDBOX_ROOT + os.sep):
+        sys.stderr.write(
+            f"oxbox-jail: REFUSING --work {work}\n"
+            f"oxbox-jail: the backend grants write access to whatever --work names, so a\n"
+            f"oxbox-jail: work dir outside {SANDBOX_ROOT} is not a jail at all.\n"
+        )
+        return 78
+
+    escaping = escaping_descriptors()
+    if escaping and not allow_external:
+        sys.stderr.write("oxbox-jail: REFUSING - output is redirected outside the sandbox:\n")
+        for item in escaping:
+            sys.stderr.write(f"oxbox-jail:   {item}\n")
+        sys.stderr.write(
+            "oxbox-jail: the shell opened that file before the jail existed, so jailed\n"
+            "oxbox-jail: code can write whatever it likes through the inherited handle.\n"
+            f"oxbox-jail: redirect inside {work}, or pass --allow-external-output.\n"
+        )
+        return 78
+    if escaping:
+        sys.stderr.write("oxbox-jail: WARNING - output redirected outside the sandbox (allowed):\n")
+        for item in escaping:
+            sys.stderr.write(f"oxbox-jail:   {item}\n")
+
+    real_home = os.path.expanduser("~")
+    tmpdir = os.path.join(work, ".oxtmp")
+    os.makedirs(tmpdir, exist_ok=True)
+
+    existing = [p for p in sensitive_paths(real_home) if os.path.lexists(p)]
+
+    # A fresh environment, not the caller's. The parent shell routinely holds
+    # OPENROUTER_API_KEY (via `op run`), and inheriting it would hand jailed
+    # code the key.
+    env = {
+        "HOME": work,
+        "REAL_HOME": real_home,
+        "REPO_ROOT": PROJECT_ROOT,
+        "OXBOX_EXISTING_PATHS": "\n".join(existing),
+        "OXBOX_HOST_HAS_ROUTE": "1" if host_has_route() else "0",
+        "OXBOX_PLATFORM": sys.platform,
+        "TMPDIR": tmpdir,
+        "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "TERM": os.environ.get("TERM", "dumb"),
+        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+    if sys.platform == "darwin":
+        argv = macos_argv(work, command)
+    else:
+        argv = linux_argv(work, command)
+        # bwrap --clearenv wipes what execve passes, so set it inside instead.
+        setenv = []
+        for key, value in env.items():
+            setenv += ["--setenv", key, value]
+        index = argv.index("--clearenv") + 1
+        argv = argv[:index] + setenv + argv[index:]
+
+    backend = "seatbelt" if sys.platform == "darwin" else "bubblewrap"
+    sys.stderr.write(f"oxbox-jail: backend={backend} work={work}\n")
+    sys.stderr.write(f"oxbox-jail: network=DENIED writes={work} only\n")
+    sys.stderr.write("oxbox-jail: env=CLEARED (nothing from the parent shell crosses in)\n")
+
+    os.chdir(work)
+    try:
+        os.execvpe(argv[0], argv, env)
+    except OSError as error:
+        sys.exit(f"oxbox-jail: failed to start {argv[0]}: {error}")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

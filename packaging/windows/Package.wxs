@@ -87,21 +87,22 @@ Design notes:
         <RemoveFolder Id="rmProgramsDir" Directory="ProgramsDir" On="uninstall" />
       </Component>
 
-      <!-- The helpers, off PATH. oxbox finds them at ..\libexec\bin from its
+      <!-- The scripts, off PATH. oxbox finds them at ..\libexec\bin from its
            own directory (helper_dirs) and runs them through its interpreter,
            so they need no shim; find_skill resolves ..\..\share\oxbox from
            here. -->
       <Component Id="cmpLibexec" Directory="LibexecBinDir" Guid="FAB339EE-44C8-4DD3-B70B-7F0B7A5C2048">
-        <File Id="filOx" Name="ox" Source="$(var.StageDir)\libexec\bin\ox" />
-        <File Id="filOxseed" Name="oxseed" Source="$(var.StageDir)\libexec\bin\oxseed" />
-        <File Id="filOxapply" Name="oxapply" Source="$(var.StageDir)\libexec\bin\oxapply" />
+        <File Id="filOxSandbox" Name="oxbox-sandbox" Source="$(var.StageDir)\libexec\bin\oxbox-sandbox" />
+        <File Id="filOxAsk" Name="oxbox-ask" Source="$(var.StageDir)\libexec\bin\oxbox-ask" />
+        <File Id="filOxApply" Name="oxbox-apply" Source="$(var.StageDir)\libexec\bin\oxbox-apply" />
+        <File Id="filOxJail" Name="oxbox-jail" Source="$(var.StageDir)\libexec\bin\oxbox-jail" />
         <RegistryValue Root="HKCU" Key="Software\oxbox\msi" Name="libexec"
                        Value="1" Type="integer" KeyPath="yes" />
         <RemoveFolder Id="rmLibexecBinDir" Directory="LibexecBinDir" On="uninstall" />
         <RemoveFolder Id="rmLibexecDir" Directory="LibexecDir" On="uninstall" />
       </Component>
 
-      <!-- The ox-review runbook. Without it all four tools refuse the skill
+      <!-- The ox-review runbook. Without it all five tools refuse the skill
            flag, which is the failure a package is most likely to ship
            silently. -->
       <Component Id="cmpSkill" Directory="SkillDir" Guid="E6A8C3CB-A381-4094-9B79-639A88C2A264">

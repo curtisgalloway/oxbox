@@ -108,9 +108,9 @@ def find_skill():
     for directory in candidates:
         if os.path.isfile(os.path.join(directory, "SKILL.md")):
             return directory
-    sys.exit("oxapply: the %s skill was not found; looked in:\n" % SKILL_NAME
-             + "\n".join("oxapply:   " + path for path in candidates)
-             + "\noxapply: a Homebrew install may predate the skill; reinstall or "
+    sys.exit("oxbox-apply: the %s skill was not found; looked in:\n" % SKILL_NAME
+             + "\n".join("oxbox-apply:   " + path for path in candidates)
+             + "\noxbox-apply: a Homebrew install may predate the skill; reinstall or "
                "read it at https://github.com/curtisgalloway/oxbox")
 
 
@@ -130,8 +130,8 @@ def print_skill():
         with open(path, encoding="utf-8") as handle:
             text = handle.read()
     except OSError as error:
-        sys.exit("oxapply: cannot read %s: %s" % (path, error))
-    sys.stderr.write("oxapply: skill -> %s\n" % path)
+        sys.exit("oxbox-apply: cannot read %s: %s" % (path, error))
+    sys.stderr.write("oxbox-apply: skill -> %s\n" % path)
     # The document is UTF-8 with LF endings on disk and has to leave that way.
     # Windows' sys.stdout would encode it in the locale codepage instead --
     # cp1252 renders SKILL.md's em dashes as 0x97 -- and translate every \n to
@@ -162,8 +162,8 @@ class SkillAction(argparse.Action):
 
 
 def main():
-    parser = argparse.ArgumentParser(prog="oxapply")
-    parser.add_argument("--version", action="version", version="oxapply %s" % VERSION)
+    parser = argparse.ArgumentParser(prog="oxbox apply")
+    parser.add_argument("--version", action="version", version="oxbox-apply %s" % VERSION)
     parser.add_argument("--skill", action=SkillAction,
                         help="print the ox-review agent skill — a runbook for "
                              "driving a review from an agent, with the script "
@@ -182,16 +182,16 @@ def main():
     if args.log:
         content_path = Path(args.log) / "content.md"
         if not content_path.is_file():
-            sys.exit(f"oxapply: no content.md in {args.log}")
+            sys.exit(f"oxbox-apply: no content.md in {args.log}")
         patch = extract(content_path.read_text(encoding="utf-8"))
         if patch is None:
-            sys.exit("oxapply: no diff block found in the response")
+            sys.exit("oxbox-apply: no diff block found in the response")
     else:
         patch = Path(args.diff).read_text(encoding="utf-8")
 
     work = Path(args.work).resolve()
     if not work.is_dir():
-        sys.exit(f"oxapply: work dir does not exist: {work}")
+        sys.exit(f"oxbox-apply: work dir does not exist: {work}")
 
     # oxbox refuses a --work outside its sandbox because whatever --work names
     # is what gets written to. This file's own docstring makes the same promise
@@ -202,18 +202,18 @@ def main():
     # nothing about where the work dir itself is.
     sandbox_root = (Path.cwd() / "sandbox").resolve()
     if work != sandbox_root and sandbox_root not in work.parents:
-        sys.stderr.write(f"oxapply: REFUSING --work {work}\n")
-        sys.stderr.write(f"oxapply: it lies outside {sandbox_root}, so applying a\n")
-        sys.stderr.write("oxapply: model-produced patch there would touch a real tree.\n")
-        sys.stderr.write("oxapply: run oxbox seed first, or name a --work inside the sandbox.\n")
+        sys.stderr.write(f"oxbox-apply: REFUSING --work {work}\n")
+        sys.stderr.write(f"oxbox-apply: it lies outside {sandbox_root}, so applying a\n")
+        sys.stderr.write("oxbox-apply: model-produced patch there would touch a real tree.\n")
+        sys.stderr.write("oxbox-apply: run oxbox seed first, or name a --work inside the sandbox.\n")
         sys.exit(2)
 
     if not (work / ".git").exists():
-        sys.exit(f"oxapply: {work} is not a git repo (run oxbox seed first)")
+        sys.exit(f"oxbox-apply: {work} is not a git repo (run oxbox seed first)")
 
     bad = unsafe_paths(patch)
     if bad:
-        sys.stderr.write("oxapply: REFUSING - patch targets paths outside the sandbox:\n")
+        sys.stderr.write("oxbox-apply: REFUSING - patch targets paths outside the sandbox:\n")
         for item in bad:
             sys.stderr.write(f"  {item}\n")
         sys.exit(2)
@@ -234,8 +234,8 @@ def main():
 
     try:
         targets = sorted(set(candidate_paths(patch)) - {"/dev/null"})
-        sys.stderr.write(f"oxapply: patch -> {patch_path}\n")
-        sys.stderr.write(f"oxapply: targets ({len(targets)}): {', '.join(targets)}\n")
+        sys.stderr.write(f"oxbox-apply: patch -> {patch_path}\n")
+        sys.stderr.write(f"oxbox-apply: targets ({len(targets)}): {', '.join(targets)}\n")
 
         strategies = [
             ("strict", []),
@@ -256,16 +256,16 @@ def main():
             last_error = check.stderr
 
         if chosen is None:
-            sys.stderr.write("oxapply: patch does not apply at any strictness level:\n")
+            sys.stderr.write("oxbox-apply: patch does not apply at any strictness level:\n")
             sys.stderr.write(last_error)
             sys.exit(3)
 
         name, flags = chosen
         if name != "strict":
             sys.stderr.write(
-                f"oxapply: WARNING - patch only applied with '{name}'. The model emitted a\n"
-                f"oxapply: malformed hunk (usually wrong line counts or missing trailing\n"
-                f"oxapply: context). Re-read the resulting diff carefully.\n"
+                f"oxbox-apply: WARNING - patch only applied with '{name}'. The model emitted a\n"
+                f"oxbox-apply: malformed hunk (usually wrong line counts or missing trailing\n"
+                f"oxbox-apply: context). Re-read the resulting diff carefully.\n"
             )
 
         applied = subprocess.run(
@@ -285,8 +285,8 @@ def main():
                 check=True,
             )
 
-        sys.stderr.write("oxapply: applied inside sandbox only\n")
-        sys.stderr.write(f"oxapply: review with: git -C {work} diff HEAD\n")
+        sys.stderr.write("oxbox-apply: applied inside sandbox only\n")
+        sys.stderr.write(f"oxbox-apply: review with: git -C {work} diff HEAD\n")
     finally:
         # mkstemp leaves the file behind on every exit path -- success, a
         # refused patch, a patch that would not apply. They accumulated in
@@ -296,7 +296,7 @@ def main():
         try:
             patch_path.unlink()
         except OSError as error:
-            sys.stderr.write(f"oxapply: could not remove {patch_path}: {error}\n")
+            sys.stderr.write(f"oxbox-apply: could not remove {patch_path}: {error}\n")
 
 
 

@@ -17,7 +17,7 @@
 # a git-clone operation, and README says so.
 #
 # Packaged, though it is not an executable: the ox-review skill, because
-# `ox --skill` has to find it on an installed system as well as in a checkout.
+# `oxbox --skill` has to find it on an installed system as well as in a checkout.
 
 name: oxbox
 arch: all
@@ -31,10 +31,10 @@ license: Apache-2.0
 description: |
   Supervised harness for pointing an untrusted LLM at your code.
   No tools, no shell, no network path back to your machine: oxbox ask
-  talks to the model (text in, text out, full audit log), oxbox seed
-  builds a disposable sandbox copy, oxbox apply quarantines its patches
-  into the sandbox, and oxbox run executes the result under bubblewrap
-  with no network and no writes outside the sandbox.
+  talks to the model (text in, text out, full audit log), oxbox sandbox
+  builds a disposable copy, oxbox apply quarantines its patches into the
+  sandbox, and oxbox jail executes the result under bubblewrap with no
+  network and no writes outside the sandbox.
 depends:
   - python3
   - bubblewrap
@@ -44,25 +44,29 @@ contents:
     dst: /usr/bin/oxbox
     file_info:
       mode: 0o755
-  # The helpers live off PATH. oxbox finds them at <prefix>/libexec/oxbox/bin
-  # from its own location (helper_dirs); `oxbox seed`, `oxbox ask` and
-  # `oxbox apply` run them, and `oxbox helper <name>` runs one directly.
-  - src: ox
-    dst: /usr/libexec/oxbox/bin/ox
+  # The scripts live off PATH. oxbox finds them at <prefix>/libexec/oxbox/bin
+  # from its own location (helper_dirs); `oxbox <sub>` execs oxbox-<sub>,
+  # and `oxbox helper <sub>` runs one directly.
+  - src: oxbox-sandbox
+    dst: /usr/libexec/oxbox/bin/oxbox-sandbox
     file_info:
       mode: 0o755
-  - src: oxapply
-    dst: /usr/libexec/oxbox/bin/oxapply
+  - src: oxbox-ask
+    dst: /usr/libexec/oxbox/bin/oxbox-ask
     file_info:
       mode: 0o755
-  - src: oxseed
-    dst: /usr/libexec/oxbox/bin/oxseed
+  - src: oxbox-apply
+    dst: /usr/libexec/oxbox/bin/oxbox-apply
     file_info:
       mode: 0o755
-  # The ox-review agent skill. `ox --skill` prints it, and looks for it here
-  # when installed — the same two-location rule oxbox uses for jail.sb. A
-  # package that ships ox without it turns --skill into a refusal, so the
-  # release smoke test runs --skill against the installed ox.
+  - src: oxbox-jail
+    dst: /usr/libexec/oxbox/bin/oxbox-jail
+    file_info:
+      mode: 0o755
+  # The ox-review agent skill. `oxbox --skill` prints it, and looks for it
+  # here when installed — the same rule oxbox-jail uses for jail.sb. A
+  # package that ships the tools without it turns --skill into a refusal, so
+  # the release smoke test runs --skill against the installed copy.
   - src: .claude/skills/ox-review/SKILL.md
     dst: /usr/share/oxbox/ox-review/SKILL.md
   - src: .claude/skills/ox-review/scripts/preflight.py

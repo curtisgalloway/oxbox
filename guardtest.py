@@ -25,10 +25,11 @@ WORK = SANDBOX / "work"
 
 # Invoke via the interpreter rather than the shebang: Windows does not honor
 # shebang lines, and these tools must be testable there too.
-OX = [sys.executable, str(HERE / "ox")]
+OX = [sys.executable, str(HERE / "oxbox-ask")]
+# The front door: jail cases go through it, the way a user's do.
 OXBOX = [sys.executable, str(HERE / "oxbox")]
-OXSEED = [sys.executable, str(HERE / "oxseed")]
-OXAPPLY = [sys.executable, str(HERE / "oxapply")]
+OXSANDBOX = [sys.executable, str(HERE / "oxbox-sandbox")]
+OXAPPLY = [sys.executable, str(HERE / "oxbox-apply")]
 
 passed = 0
 failed = 0
@@ -86,21 +87,21 @@ def main():
     jail_supported = sys.platform in ("darwin", "linux")
 
     print("=== seed guards ===")
-    expect_refused("oxseed refuses parent traversal",
-                   OXSEED + [str(source), "../../../etc/hosts"])
-    expect_refused("oxseed refuses absolute path",
-                   OXSEED + [str(source), "/etc/hosts"])
+    expect_refused("oxbox-sandbox refuses parent traversal",
+                   OXSANDBOX + ["--create", str(source), "../../../etc/hosts"])
+    expect_refused("oxbox-sandbox refuses absolute path",
+                   OXSANDBOX + ["--create", str(source), "/etc/hosts"])
     # Windows-shaped roots. Path.is_absolute() returns False for "/etc/hosts"
     # on Windows (root but no drive), so these need textual checks and are
     # worth asserting on every platform, not just win32.
-    expect_refused("oxseed refuses a drive-letter path",
-                   OXSEED + [str(source), "C:/Windows/System32/drivers/etc/hosts"])
-    expect_refused("oxseed refuses a UNC path",
-                   OXSEED + [str(source), "\\\\server\\share\\payload"])
-    expect_refused("oxseed refuses backslash traversal",
-                   OXSEED + [str(source), "..\\..\\payload"])
-    expect_allowed("oxseed accepts a normal file",
-                   OXSEED + [str(source), "mod.py"])
+    expect_refused("oxbox-sandbox refuses a drive-letter path",
+                   OXSANDBOX + ["--create", str(source), "C:/Windows/System32/drivers/etc/hosts"])
+    expect_refused("oxbox-sandbox refuses a UNC path",
+                   OXSANDBOX + ["--create", str(source), "\\\\server\\share\\payload"])
+    expect_refused("oxbox-sandbox refuses backslash traversal",
+                   OXSANDBOX + ["--create", str(source), "..\\..\\payload"])
+    expect_allowed("oxbox-sandbox accepts a normal file",
+                   OXSANDBOX + ["--create", str(source), "mod.py"])
 
     # os.walk does not descend into a symlinked directory, so one never shows
     # up in its `files` list -- while copytree(symlinks=False) dereferences it
@@ -127,14 +128,14 @@ def main():
         # Windows needs Developer Mode or admin to create one at all.
         symlinks_available = False
     if symlinks_available:
-        expect_refused("oxseed refuses a symlinked directory inside a tree",
-                       OXSEED + [str(linked), "pkg"])
-        expect_refused("oxseed refuses a symlink in an intermediate component",
-                       OXSEED + [str(linked), "gate/key.txt"])
-        expect_allowed("oxseed still accepts a tree with no links in it",
-                       OXSEED + [str(linked), "mod.py"])
+        expect_refused("oxbox-sandbox refuses a symlinked directory inside a tree",
+                       OXSANDBOX + ["--create", str(linked), "pkg"])
+        expect_refused("oxbox-sandbox refuses a symlink in an intermediate component",
+                       OXSANDBOX + ["--create", str(linked), "gate/key.txt"])
+        expect_allowed("oxbox-sandbox still accepts a tree with no links in it",
+                       OXSANDBOX + ["--create", str(linked), "mod.py"])
     else:
-        skip("oxseed symlink containment", "cannot create symlinks here")
+        skip("oxbox-sandbox symlink containment", "cannot create symlinks here")
 
     print("\n=== jail argument guards ===")
     if jail_supported:
@@ -211,7 +212,7 @@ def main():
         "similarity index 100%\n"
         "rename from mod.py\n"
         "rename to ../../../../tmp/pwned\n", encoding="utf-8")
-    expect_refused("oxapply refuses traversal in rename headers",
+    expect_refused("oxbox-apply refuses traversal in rename headers",
                    OXAPPLY + ["--diff", str(temp / "rename.patch")])
 
     (temp / "symlink.patch").write_text(
@@ -221,7 +222,7 @@ def main():
         "+++ b/leak\n"
         "@@ -0,0 +1 @@\n"
         "+/etc/passwd\n", encoding="utf-8")
-    expect_refused("oxapply refuses symlink-creating patches",
+    expect_refused("oxbox-apply refuses symlink-creating patches",
                    OXAPPLY + ["--diff", str(temp / "symlink.patch")])
 
     (temp / "absolute.patch").write_text(
@@ -230,7 +231,7 @@ def main():
         "@@ -1 +1 @@\n"
         "-x\n"
         "+y\n", encoding="utf-8")
-    expect_refused("oxapply refuses absolute paths",
+    expect_refused("oxbox-apply refuses absolute paths",
                    OXAPPLY + ["--diff", str(temp / "absolute.patch")])
 
     (temp / "drive.patch").write_text(
@@ -239,7 +240,7 @@ def main():
         "@@ -1 +1 @@\n"
         "-x\n"
         "+y\n", encoding="utf-8")
-    expect_refused("oxapply refuses drive-letter paths",
+    expect_refused("oxbox-apply refuses drive-letter paths",
                    OXAPPLY + ["--diff", str(temp / "drive.patch")])
 
     # oxapply promises in its docstring that it "Never touches a real
@@ -278,10 +279,10 @@ def main():
         untouched = (real / "mod.py").read_text(encoding="utf-8") == \
             "def f():\n    return 1\n"
         report(code != 0 and untouched,
-               "oxapply refuses --work outside sandbox/",
+               "oxbox-apply refuses --work outside sandbox/",
                f"exit={code} untouched={untouched}")
     else:
-        skip("oxapply --work confinement", "git unavailable for the fixture")
+        skip("oxbox-apply --work confinement", "git unavailable for the fixture")
 
     print("\n=== patch application (positive control) ===")
     # Refusal tests alone are not enough: a validator that rejects everything
@@ -291,7 +292,7 @@ def main():
     # bug this section was added for -- oxapply wrote its temp patch in text
     # mode, turning LF into CRLF on Windows, and git rejected every patch with
     # an error that looked like a malformed diff.
-    run(OXSEED + [str(source), "mod.py"])
+    run(OXSANDBOX + ["--create", str(source), "mod.py"])
     valid = temp / "valid.patch"
     valid.write_text(
         "--- a/mod.py\n"
@@ -306,16 +307,16 @@ def main():
         landed = "return 2" in (WORK / "mod.py").read_text(encoding="utf-8")
     except OSError:
         pass
-    report(code == 0 and landed, "oxapply applies a valid patch",
+    report(code == 0 and landed, "oxbox-apply applies a valid patch",
            f"exit={code} landed={landed}")
 
     print("\n=== secret scanner ===")
-    expect_refused("ox refuses a key in the task argument",
+    expect_refused("oxbox-ask refuses a key in the task argument",
                    OX + ["--dry-run", "--model", "test-model", "--mode", "ask",
                          "my key is sk-abcdefghijklmnopqrstuvwxyz012345"])
     creds = temp / "creds.txt"
     creds.write_text("AKIAIOSFODNN7EXAMPLE\n", encoding="utf-8")
-    expect_refused("ox refuses a key in a --files body",
+    expect_refused("oxbox-ask refuses a key in a --files body",
                    OX + ["--dry-run", "--model", "test-model", "--mode", "ask", "--files", str(creds),
                          "explain this"])
     # "_" is a word character, so the old \bsecret\b never matched inside
@@ -324,12 +325,12 @@ def main():
     underscored = temp / "underscored.txt"
     underscored.write_text('client_secret = "wJalrXUtnFEMIK7MDENGbPxRfiCY"\n',
                            encoding="utf-8")
-    expect_refused("ox refuses an underscore-prefixed credential name",
+    expect_refused("oxbox-ask refuses an underscore-prefixed credential name",
                    OX + ["--dry-run", "--model", "test-model", "--mode", "ask", "--files",
                          str(underscored), "explain this"])
     unquoted = temp / "unquoted.env"
     unquoted.write_text("DB_PASSWORD=supersecretvalue12345\n", encoding="utf-8")
-    expect_refused("ox refuses an unquoted credential value",
+    expect_refused("oxbox-ask refuses an unquoted credential value",
                    OX + ["--dry-run", "--model", "test-model", "--mode", "ask", "--files",
                          str(unquoted), "explain this"])
     # The counterweight: a scanner that refuses everything passes every case
@@ -339,10 +340,10 @@ def main():
     tokens.write_text("max_tokens = DEFAULT_MAX_TOKENS\n"
                       "completion_tokens = usage.get(\"completion_tokens\")\n",
                       encoding="utf-8")
-    expect_allowed("ox does not mistake max_tokens for a credential",
+    expect_allowed("oxbox-ask does not mistake max_tokens for a credential",
                    OX + ["--dry-run", "--model", "test-model", "--mode", "ask", "--files",
                          str(tokens), "explain this"])
-    expect_allowed("ox accepts an ordinary prompt",
+    expect_allowed("oxbox-ask accepts an ordinary prompt",
                    OX + ["--dry-run", "--model", "test-model", "--mode", "ask",
                          "explain what a unified diff is"])
 
@@ -480,16 +481,16 @@ def main():
     except UnicodeDecodeError:
         text = ""
     report(bool(raw) and b"\r\n" not in raw and "—" in text,
-           "ox --skill emits UTF-8 with LF endings",
+           "oxbox-ask --skill emits UTF-8 with LF endings",
            "bytes=%d crlf=%s decoded=%s" % (len(raw), b"\r\n" in raw, bool(text)))
     report(code == 0 and text.startswith("---") and "name: ox-review" in text,
-           "ox --skill prints the runbook", f"exit={code} bytes={len(text)}")
+           "oxbox-ask --skill prints the runbook", f"exit={code} bytes={len(text)}")
     # The printed copy has to name scripts where this ox found them, or the
     # commands an agent reads are commands it cannot run.
     report(str(HERE / ".claude" / "skills" / "ox-review") in text,
-           "ox --skill rewrites the script paths to this installation")
+           "oxbox-ask --skill rewrites the script paths to this installation")
     report(not skill_logs.exists() and not skill_status.exists(),
-           "ox --skill opens no run: no log directory, no status record",
+           "oxbox-ask --skill opens no run: no log directory, no status record",
            f"logs={skill_logs.exists()} status={skill_status.exists()}")
 
     # oxseed's rule is that it validates everything before destroying
@@ -499,10 +500,65 @@ def main():
     # wipes the sandbox you were working in.
     marker = WORK / "skill-canary.txt"
     marker.write_text("still here\n", encoding="utf-8")
-    code = run(OXSEED + ["--skill"])
+    code = run(OXSANDBOX + ["--skill"])
     survived = marker.is_file()
-    report(code == 0 and survived, "oxseed --skill destroys nothing",
+    report(code == 0 and survived, "oxbox-sandbox --skill destroys nothing",
            f"exit={code} sandbox_intact={survived}")
+
+    print("\n=== sandbox tending ===")
+    # --add, --remove, --list, --read and --write take paths from the
+    # operator, so they get the seeding checks' refusals (traversal,
+    # absolute, .git) and one more property: only --create, --add and
+    # --remove touch the baseline commit, and each commits only what it was
+    # asked about, so an edit the operator --wrote (or a patch the model
+    # produced) is never swept into "pristine" by a later --remove.
+    def tend(argv, stdin=b""):
+        return subprocess.run(OXSANDBOX + argv, input=stdin, capture_output=True)
+
+    tend_src = temp / "tend-src"
+    (tend_src / "pkg").mkdir(parents=True)
+    (tend_src / "a.py").write_text("a = 1\n", encoding="utf-8")
+    (tend_src / "pkg" / "b.py").write_text("b = 2\n", encoding="utf-8")
+    (tend_src / "c.py").write_text("c = 3\n", encoding="utf-8")
+    expect_allowed("sandbox --create seeds a tree",
+                   OXSANDBOX + ["--create", str(tend_src), "a.py", "pkg"])
+    done = tend(["--list"])
+    report(done.returncode == 0 and done.stdout.split() == [b"a.py", b"pkg/b.py"],
+           "sandbox --list names the seeded files", repr(done.stdout))
+    expect_allowed("sandbox --add copies from the recorded source",
+                   OXSANDBOX + ["--add", "c.py"])
+    done = tend(["--read", "c.py"])
+    report(done.returncode == 0 and done.stdout == b"c = 3\n",
+           "sandbox --read prints the file's bytes", repr(done.stdout))
+    done = tend(["--write", "c.py"], stdin=b"c = 4\r\n")
+    report(done.returncode == 0 and (WORK / "c.py").read_bytes() == b"c = 4\r\n",
+           "sandbox --write stores stdin byte for byte", f"exit={done.returncode}")
+    changed = subprocess.run(["git", "-C", str(WORK), "diff", "--name-only", "HEAD"],
+                             capture_output=True, text=True).stdout.split()
+    report(changed == ["c.py"], "sandbox --write is not committed", repr(changed))
+    expect_allowed("sandbox --remove deletes a seeded file",
+                   OXSANDBOX + ["--remove", "pkg/b.py"])
+    changed = subprocess.run(["git", "-C", str(WORK), "diff", "--name-only", "HEAD"],
+                             capture_output=True, text=True).stdout.split()
+    report(changed == ["c.py"] and not (WORK / "pkg" / "b.py").exists(),
+           "sandbox --remove commits only the removal, leaving the edit alone",
+           repr(changed))
+    done = tend(["--list"])
+    report(done.stdout.split() == [b"a.py", b"c.py"],
+           "sandbox --list reflects the removal", repr(done.stdout))
+    expect_refused("sandbox --read refuses parent traversal",
+                   OXSANDBOX + ["--read", "../tend-src/a.py"])
+    expect_refused("sandbox --remove refuses an absolute path",
+                   OXSANDBOX + ["--remove", str(tend_src / "a.py")])
+    report(tend(["--write", ".git/config"], stdin=b"x").returncode == 78,
+           "sandbox --write refuses a path inside .git")
+    report(tend(["--read", "nope.py"]).returncode == 3,
+           "sandbox --read exits 3 for a file that is not there")
+    report(tend(["--list", "--destroy"]).returncode == 2,
+           "sandbox refuses two operations at once")
+    expect_allowed("sandbox --destroy removes the tree", OXSANDBOX + ["--destroy"])
+    report(not SANDBOX.exists() and tend(["--list"]).returncode == 3,
+           "sandbox --list exits 3 once there is no sandbox")
 
     print("\n=== the front door ===")
     # The project is called oxbox, so oxbox is what a reader types first --
@@ -525,23 +581,27 @@ def main():
     # PATH. --version is the cheapest question that proves which script
     # answered.
     versions = {}
-    for tool, argv in (("ox", OX), ("oxseed", OXSEED), ("oxapply", OXAPPLY)):
+    for tool, argv in (("oxbox-ask", OX), ("oxbox-sandbox", OXSANDBOX),
+                       ("oxbox-apply", OXAPPLY),
+                       ("oxbox-jail", [sys.executable, str(HERE / "oxbox-jail")])):
         versions[tool] = subprocess.run(argv + ["--version"], capture_output=True,
                                         text=True).stdout.strip()
-    for sub, tool in (("ask", "ox"), ("seed", "oxseed"), ("apply", "oxapply")):
+    for sub, tool in (("ask", "oxbox-ask"), ("sandbox", "oxbox-sandbox"),
+                      ("apply", "oxbox-apply"), ("jail", "oxbox-jail")):
         done = subprocess.run(OXBOX + [sub, "--version"], capture_output=True,
                               text=True)
         report(done.returncode == 0 and done.stdout.strip() == versions[tool],
                f"oxbox {sub} runs {tool}",
                f"exit={done.returncode} stdout={done.stdout.strip()!r}")
-    done = subprocess.run(OXBOX + ["helper", "ox", "--version"],
+    done = subprocess.run(OXBOX + ["helper", "ask", "--version"],
                           capture_output=True, text=True)
-    report(done.returncode == 0 and done.stdout.strip() == versions["ox"],
-           "oxbox helper ox runs ox", f"stdout={done.stdout.strip()!r}")
+    report(done.returncode == 0 and done.stdout.strip() == versions["oxbox-ask"],
+           "oxbox helper ask runs oxbox-ask", f"stdout={done.stdout.strip()!r}")
     done = subprocess.run(OXBOX + ["helper"], capture_output=True, text=True)
     listed = [line.split()[0] for line in done.stdout.splitlines() if line.strip()]
-    report(done.returncode == 0 and listed == ["ox", "oxseed", "oxapply"],
-           "oxbox helper lists the three helpers", f"stdout={done.stdout!r}")
+    report(done.returncode == 0
+           and listed == ["oxbox-sandbox", "oxbox-ask", "oxbox-apply", "oxbox-jail"],
+           "oxbox helper lists the four scripts", f"stdout={done.stdout!r}")
     expect_refused("oxbox helper refuses a name that is not a helper",
                    OXBOX + ["helper", "python3", "-c", "pass"])
 
@@ -560,7 +620,7 @@ def main():
         shutil.copy(HERE / "oxbox", prefix / "bin" / "oxbox")
         helper_dir = prefix.joinpath(*helper_sub)
         helper_dir.mkdir(parents=True)
-        shutil.copy(HERE / "ox", helper_dir / "ox")
+        shutil.copy(HERE / "oxbox-ask", helper_dir / "oxbox-ask")
         skill_dir = prefix / "share" / "oxbox" / "ox-review"
         skill_dir.mkdir(parents=True)
         shutil.copy(skill_source, skill_dir / "SKILL.md")
@@ -570,19 +630,19 @@ def main():
         staged = [sys.executable, str(prefix / "bin" / "oxbox")]
         done = subprocess.run(staged + ["ask", "--version"], capture_output=True,
                               text=True, env=env)
-        report(done.returncode == 0 and done.stdout.strip() == versions["ox"],
-               f"oxbox ask finds ox in the {label} layout with nothing on PATH",
+        report(done.returncode == 0 and done.stdout.strip() == versions["oxbox-ask"],
+               f"oxbox ask finds oxbox-ask in the {label} layout with nothing on PATH",
                f"exit={done.returncode} stderr={done.stderr.strip()!r}")
-        done = subprocess.run(staged + ["helper", "ox", "--skill"],
+        done = subprocess.run(staged + ["helper", "ask", "--skill"],
                               capture_output=True, text=True, env=env)
         report(done.returncode == 0 and str(skill_dir) in done.stderr,
                f"a helper in the {label} layout finds the skill under share/",
                f"exit={done.returncode} stderr={done.stderr.strip()!r}")
-        (helper_dir / "ox").unlink()
+        (helper_dir / "oxbox-ask").unlink()
         done = subprocess.run(staged + ["ask", "--version"], capture_output=True,
                               text=True, env=env)
         report(done.returncode == 3,
-               f"oxbox ask exits 3 when the {label} layout has no ox",
+               f"oxbox ask exits 3 when the {label} layout has no oxbox-ask",
                f"exit={done.returncode}")
 
     shutil.rmtree(temp, ignore_errors=True)

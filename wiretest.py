@@ -27,7 +27,7 @@ import http.server
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-OX = [sys.executable, str(HERE / "ox")]
+OX = [sys.executable, str(HERE / "oxbox-ask")]
 
 FAILURES = []
 PASSES = 0
@@ -91,14 +91,14 @@ def capture_handler(store, status=200, body=None, headers=None):
 
 def load_ox():
     """Import ox as a module without running main()."""
-    source = (HERE / "ox").read_text(encoding="utf-8")
+    source = (HERE / "oxbox-ask").read_text(encoding="utf-8")
     source = source.replace('if __name__ == "__main__":', "if False:")
     # __file__ too, not just __name__: a real import provides both, and ox
     # anchors its script-relative asset lookup (find_skill) on __file__ the
     # way oxbox anchors find_profile. A namespace missing it does not fail
     # like the real module, it fails at import with a NameError.
-    namespace = {"__name__": "oxmod", "__file__": str(HERE / "ox")}
-    exec(compile(source, str(HERE / "ox"), "exec"), namespace)
+    namespace = {"__name__": "oxmod", "__file__": str(HERE / "oxbox-ask")}
+    exec(compile(source, str(HERE / "oxbox-ask"), "exec"), namespace)
     return namespace
 
 
@@ -138,7 +138,7 @@ def send_to_local(store, tmp, extra_argv=None, **kwargs):
     server = serve(capture_handler(store, **kwargs))
     url = "http://127.0.0.1:%d/v1/chat/completions" % server.server_address[1]
     patched = tmp / "ox_local"
-    source = (HERE / "ox").read_text(encoding="utf-8")
+    source = (HERE / "oxbox-ask").read_text(encoding="utf-8")
     source = source.replace('if not args.base_url.startswith("https://"):', "if False:")
     patched.write_text(source, encoding="utf-8")
     argv = [sys.executable, str(patched), "--base-url", url,
@@ -155,23 +155,23 @@ def main():
     tmp = Path(tempfile.mkdtemp(prefix="wiretest-"))
     ox = load_ox()
 
-    print("=== one version, declared four times, all equal ===")
+    print("=== one version, declared five times, all equal ===")
 
     # Each tool is a standalone script, so each carries its own VERSION
     # constant. Four copies of one fact drift unless something checks; this
     # is the check, same pattern as the env_canary list agreement below.
     import re as _re
     versions = {}
-    for tool in ("ox", "oxbox", "oxapply", "oxseed"):
+    for tool in ("oxbox", "oxbox-ask", "oxbox-apply", "oxbox-sandbox", "oxbox-jail"):
         match = _re.search(r'^VERSION = "([^"]+)"', (HERE / tool).read_text(encoding="utf-8"),
                            _re.MULTILINE)
         versions[tool] = match.group(1) if match else None
     report(len(set(versions.values())) == 1 and None not in versions.values(),
-           "all four tools declare the same VERSION", repr(versions))
+           "all five tools declare the same VERSION", repr(versions))
     result = run_ox(["--version"])
     report(result.returncode == 0
-           and result.stdout.strip() == "ox %s" % ox["VERSION"],
-           "ox --version prints it", repr(result.stdout))
+           and result.stdout.strip() == "oxbox-ask %s" % ox["VERSION"],
+           "oxbox-ask --version prints it", repr(result.stdout))
 
     # Same hazard, bigger payload: find_skill/print_skill is carried by each
     # tool because each is a standalone script, and four copies of one
@@ -180,7 +180,7 @@ def main():
     # it catches a lookup that silently resolves somewhere else as well as a
     # block someone edited in one file only.
     skills = {}
-    for tool in ("ox", "oxbox", "oxapply", "oxseed"):
+    for tool in ("oxbox", "oxbox-ask", "oxbox-apply", "oxbox-sandbox", "oxbox-jail"):
         done = subprocess.run([sys.executable, str(HERE / tool), "--skill"],
                               capture_output=True, text=True, timeout=30)
         skills[tool] = (done.returncode, done.stdout)
@@ -189,13 +189,13 @@ def main():
            "every tool exits 0 for --skill", repr(codes))
     bodies = {text for _, text in skills.values()}
     report(len(bodies) == 1 and next(iter(bodies)).startswith("---"),
-           "all four tools print the same skill",
+           "all five tools print the same skill",
            "%d distinct outputs, lengths %r"
            % (len(bodies), sorted(len(text) for _, text in skills.values())))
     # The provenance line is the one part that differs, and it has to name the
     # tool you actually ran or an error message points at the wrong program.
     prefixes = {}
-    for tool in ("ox", "oxbox", "oxapply", "oxseed"):
+    for tool in ("oxbox", "oxbox-ask", "oxbox-apply", "oxbox-sandbox", "oxbox-jail"):
         done = subprocess.run([sys.executable, str(HERE / tool), "--skill"],
                               capture_output=True, text=True, timeout=30)
         prefixes[tool] = done.stderr.startswith("%s: skill -> " % tool)
@@ -347,7 +347,7 @@ def main():
 
     redirector = serve(Redirector)
     patched = tmp / "ox_local"
-    source = (HERE / "ox").read_text(encoding="utf-8")
+    source = (HERE / "oxbox-ask").read_text(encoding="utf-8")
     source = source.replace('if not args.base_url.startswith("https://"):', "if False:")
     patched.write_text(source, encoding="utf-8")
     result = subprocess.run(
@@ -540,7 +540,7 @@ def main():
         body=json.dumps({"error": {"message": "rate-limited", "code": 429}}).encode()))
     solid = {}
     solid_server = serve(capture_handler(solid))
-    source = (HERE / "ox").read_text(encoding="utf-8")
+    source = (HERE / "oxbox-ask").read_text(encoding="utf-8")
     source = source.replace(
         "https://openrouter.ai/api/v1/chat/completions",
         "http://127.0.0.1:%d/or/v1/chat/completions" % flaky_server.server_address[1])

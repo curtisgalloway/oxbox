@@ -11,7 +11,7 @@
 # consumers generating revenue, which this is not).
 #
 # The staged layout is the same prefix the .deb and the macOS tarball install:
-# oxbox in bin\, the three helpers it runs in libexec\bin\ (helper_dirs finds
+# oxbox in bin\, the four scripts it runs in libexec\bin\ (helper_dirs finds
 # them at ..\libexec\bin from oxbox), and the skill under share\oxbox, which
 # find_skill resolves one, two or three levels up from whichever script asks.
 # What is different on Windows is bin\, which holds oxbox twice -- the
@@ -22,7 +22,7 @@
 #
 # jail.sb is deliberately absent: there is no jail on native Windows and
 # oxbox refuses rather than pretending. It is packaged anyway, refusal and
-# all, so that `oxbox --skill` answers and the four tools stay one set.
+# all, so that `oxbox --skill` answers and the five tools stay one set.
 
 param(
     [Parameter(Mandatory = $true)][string]$Version,
@@ -60,7 +60,7 @@ foreach ($dir in @($BinDir, $LibexecDir, $ScriptsDir, $DocDir)) {
 }
 
 $Tools = @("oxbox")
-$Helpers = @("ox", "oxapply", "oxseed")
+$Helpers = @("oxbox-sandbox", "oxbox-ask", "oxbox-apply", "oxbox-jail")
 
 # %~dp0 ends in a backslash, so "%~dp0ox" is the script beside this shim.
 # No parenthesised blocks anywhere: %errorlevel% inside one expands when the

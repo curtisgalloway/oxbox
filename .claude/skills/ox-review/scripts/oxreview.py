@@ -74,8 +74,8 @@ def find_ox(explicit):
     if front_door:
         return as_command(front_door) + ["ask"]
     for base in (Path.cwd(), Path(os.environ.get("OXBOX_HOME") or Path.cwd())):
-        if (base / "ox").exists():
-            return as_command(base / "ox")
+        if (base / "oxbox-ask").exists():
+            return as_command(base / "oxbox-ask")
     sys.exit("oxreview: cannot find ox — install it, set OX=/path/to/ox, or run "
              "from a checkout that contains ./ox")
 

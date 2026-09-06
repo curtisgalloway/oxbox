@@ -218,7 +218,12 @@ executed inside it.
 - **State anchors at the working directory; only code anchors at the script.**
   `sandbox/`, `logs/`, and the `.env` sensitive-path probe are
   working-directory relative, because installed tools live in `/usr/bin` or a
-  Homebrew Cellar where script-relative state is unwritable or worse. Two
+  Homebrew Cellar where script-relative state is unwritable or worse. The
+  sandbox root can be moved — `OXBOX_SANDBOX_ROOT`, else `[sandbox] root` in
+  `~/.config/oxbox/config.ini`, else `./sandbox`, with a relative value still
+  resolving against the working directory — and every sandbox is
+  `<root>/NAME`, `work` by default. The config file is INI via `configparser`
+  because the floor is Python 3.9 and `tomllib` arrived in 3.11. Two
   assets are script-relative, and both use the same two-location pattern:
   the seatbelt profile (`profiles/jail.sb` beside the script, or
   `../share/oxbox/jail.sb` in an installed prefix — `find_profile` in
@@ -311,8 +316,12 @@ executed inside it.
   already downloaded. The signing account is shared across projects; the
   onboarding runbook is `~/src/iac/mac-common/code-signing/README.md`.
 - **All three tools must agree on where the sandbox is.** `oxbox-sandbox`
-  creates it, `oxbox-patch` writes into it, `oxbox-jail` runs in it; they all derive it
-  from the working directory. Changing the anchor in one without the others
+  creates it, `oxbox-patch` writes into it, `oxbox-jail` runs in it; all
+  three carry the same `sandbox_root`/`sandbox_name` block (env, config
+  file, default, in that order) and take the same `--sandbox NAME`. It is
+  duplicated three times for the same reason `find_skill` is, and guarded
+  the same way: guardtest drives all three under one root and asserts they
+  landed in the same tree. Changing the resolution in one without the others
   quietly splits the sandbox in two.
 - **The test suites assert against the checkout layout** (`guardtest`
   chdirs to the repo root for exactly this reason) and are not packaged.

@@ -18,6 +18,7 @@ in a libexec directory rather than on PATH; oxbox finds it from its own
 location. See helper_dirs in oxbox.
 """
 
+import configparser
 import os
 import shutil
 import socket
@@ -27,13 +28,14 @@ import sys
 VERSION = "0.6.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 USAGE = """\
-usage: oxbox jail [--work DIR] [--allow-external-output] -- command args...
-       oxbox      [--work DIR] [--allow-external-output] -- command args...
+usage: oxbox jail [--sandbox NAME | --work DIR] [--allow-external-output] -- command args...
+       oxbox      [--sandbox NAME | --work DIR] [--allow-external-output] -- command args...
 
 Run a command in a jail with no network and no writes outside the work dir.
 
-  --work DIR                the directory the command may write to; must be
-                            inside ./sandbox (default: ./sandbox/work)
+  --sandbox NAME            the sandbox to run in: <root>/NAME (default: work)
+  --work DIR                the directory the command may write to instead;
+                            must be inside the sandbox root
   --allow-external-output   permit stdout/stderr already redirected outside
                             the sandbox; refused by default, because an
                             inherited descriptor writes straight past the jail
@@ -41,17 +43,74 @@ Run a command in a jail with no network and no writes outside the work dir.
   --version                 print the version and exit
   --help                    print this and exit
 
+The sandbox root is OXBOX_SANDBOX_ROOT, else `root` under [sandbox] in
+~/.config/oxbox/config.ini, else ./sandbox.
+
 exit status: the command's own; 2 for a usage error; 78 when the jail refuses
 (no backend on this platform, or a work dir or output file outside the
-sandbox).
+sandbox root).
 """
 # The project root is the working directory, not the script's directory: an
 # installed oxbox lives in /usr/bin, and the sandbox belongs to whatever
-# project you are standing in. oxseed and oxapply anchor the same way, so all
-# three agree on where sandbox/ is. Running a source checkout from its root
+# project you are standing in. Running a source checkout from its root
 # behaves exactly as before.
 PROJECT_ROOT = os.getcwd()
-SANDBOX_ROOT = os.path.realpath(os.path.join(PROJECT_ROOT, "sandbox"))
+
+# Where sandboxes live. Every sandbox is <root>/NAME, NAME defaulting to
+# "work", so the layout with nothing configured is ./sandbox/work, as it
+# always was. The root is the first of:
+#   1. OXBOX_SANDBOX_ROOT in the environment
+#   2. `root` under [sandbox] in the config file: ~/.config/oxbox/config.ini
+#      (XDG_CONFIG_HOME honored; %APPDATA%\\oxbox\\config.ini on Windows)
+#   3. ./sandbox
+# A relative value resolves against the working directory, and ~ expands.
+# oxbox-sandbox, oxbox-patch and oxbox-jail carry this block identically, the
+# way all five tools carry VERSION: they must agree on where the sandbox is
+# or the sandbox quietly splits in two. guardtest drives all three under one
+# setting and asserts they landed in the same place.
+CONFIG_FILE = "config.ini"
+
+
+def config_path():
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.join(
+            os.path.expanduser("~"), "AppData", "Roaming")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+            os.path.expanduser("~"), ".config")
+    return os.path.join(base, "oxbox", CONFIG_FILE)
+
+
+def sandbox_root():
+    """The directory holding the sandboxes, and where that setting came from."""
+    value = os.environ.get("OXBOX_SANDBOX_ROOT")
+    origin = "OXBOX_SANDBOX_ROOT"
+    if not value:
+        path = config_path()
+        parser = configparser.ConfigParser(interpolation=None)
+        try:
+            parser.read(path, encoding="utf-8")
+        except configparser.Error as error:
+            sys.exit("oxbox-jail: cannot parse %s: %s" % (path, error))
+        value = parser.get("sandbox", "root", fallback=None)
+        origin = path
+    if not value:
+        value, origin = "sandbox", "default"
+    root = os.path.realpath(os.path.join(os.getcwd(), os.path.expanduser(value)))
+    return root, origin
+
+
+def sandbox_name(name):
+    """One plain path component: no separators, no traversal, no leading dot
+    (dot-names are the root's own bookkeeping)."""
+    if (not name or name in (".", "..") or name.startswith(".")
+            or "/" in name or "\\" in name or (len(name) > 1 and name[1] == ":")):
+        sys.stderr.write("oxbox-jail: not a sandbox name: %r (one plain path component)\n" % name)
+        sys.exit(2)
+    return name
+
+
+SANDBOX_ROOT, SANDBOX_ROOT_ORIGIN = sandbox_root()
 DEFAULT_WORK = os.path.join(SANDBOX_ROOT, "work")
 
 
@@ -337,6 +396,11 @@ def main():
                 sys.stderr.write("oxbox-jail: --work needs a directory\n")
                 return 2
             work, args = args[1], args[2:]
+        elif args[0] == "--sandbox":
+            if len(args) < 2:
+                sys.stderr.write("oxbox-jail: --sandbox needs a name\n")
+                return 2
+            work, args = os.path.join(SANDBOX_ROOT, sandbox_name(args[1])), args[2:]
         elif args[0] == "--allow-external-output":
             allow_external, args = True, args[1:]
         elif args[0] == "--":
@@ -370,6 +434,7 @@ def main():
             f"oxbox-jail: REFUSING --work {work}\n"
             f"oxbox-jail: the backend grants write access to whatever --work names, so a\n"
             f"oxbox-jail: work dir outside {SANDBOX_ROOT} is not a jail at all.\n"
+            f"oxbox-jail: (the sandbox root comes from {SANDBOX_ROOT_ORIGIN})\n"
         )
         return 78
 

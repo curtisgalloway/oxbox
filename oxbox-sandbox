@@ -5,19 +5,21 @@
 real repo, made a git repo so patches can be applied and diffed without ever
 touching the original.
 
-Usage: oxbox sandbox --create /path/to/repo file1 [file2 ...]
-       oxbox sandbox --add file1 [file2 ...]
-       oxbox sandbox --remove file1 [file2 ...]
-       oxbox sandbox --list
-       oxbox sandbox --read file
-       oxbox sandbox --write file   < content
-       oxbox sandbox --destroy
+Usage: oxbox sandbox [--sandbox NAME] --create /path/to/repo file1 [file2 ...]
+       oxbox sandbox [--sandbox NAME] --add file1 [file2 ...]
+       oxbox sandbox [--sandbox NAME] --remove file1 [file2 ...]
+       oxbox sandbox [--sandbox NAME] --list
+       oxbox sandbox [--sandbox NAME] --read file
+       oxbox sandbox [--sandbox NAME] --write file   < content
+       oxbox sandbox [--sandbox NAME] --destroy [--all]
+       oxbox sandbox --status
 
 This is the script `oxbox sandbox` runs. It lives in a libexec directory
 rather than on PATH; oxbox finds it from its own location.
 """
 
 import argparse
+import configparser
 import os
 import shutil
 import stat
@@ -28,25 +30,31 @@ from pathlib import Path
 VERSION = "0.6.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 USAGE = """\
-usage: oxbox sandbox --create /path/to/repo file1 [file2 ...]
-       oxbox sandbox --add file1 [file2 ...]
-       oxbox sandbox --remove file1 [file2 ...]
-       oxbox sandbox --list
-       oxbox sandbox --read file
-       oxbox sandbox --write file   < content
-       oxbox sandbox --destroy
+usage: oxbox sandbox [--sandbox NAME] --create /path/to/repo file1 [file2 ...]
+       oxbox sandbox [--sandbox NAME] --add file1 [file2 ...]
+       oxbox sandbox [--sandbox NAME] --remove file1 [file2 ...]
+       oxbox sandbox [--sandbox NAME] --list
+       oxbox sandbox [--sandbox NAME] --read file
+       oxbox sandbox [--sandbox NAME] --write file   < content
+       oxbox sandbox [--sandbox NAME] --destroy [--all]
+       oxbox sandbox --status
 
-Build and tend a disposable ./sandbox tree: a copy of chosen files from a
-real repo, made a git repo so patches can be applied and diffed without ever
+Build and tend disposable sandbox trees: a copy of chosen files from a real
+repo, made a git repo so patches can be applied and diffed without ever
 touching the original.
 
-Baseline operations commit, so `git -C sandbox/work diff HEAD` keeps meaning
+Sandboxes live under a root -- OXBOX_SANDBOX_ROOT, else `root` under
+[sandbox] in ~/.config/oxbox/config.ini, else ./sandbox -- as <root>/NAME.
+--sandbox NAME picks one (default: work); --status lists them all.
+
+Baseline operations commit, so `git -C <root>/NAME diff HEAD` keeps meaning
 "what changed since the operator set the baseline":
   --create REPO FILE...   wipe the sandbox and copy FILEs from REPO into it,
                           recording REPO as the source for --add
   --add FILE...           copy more files from the recorded source
   --remove FILE...        delete files from the sandbox
-  --destroy               remove ./sandbox entirely
+  --destroy               remove this sandbox; with --all, every sandbox and
+                          the root itself
 
 Working-tree operations do not commit; they read and edit the tree as the
 model's patch would:
@@ -58,22 +66,85 @@ model's patch would:
   --version               print the version and exit
   --help                  print this and exit
 
+  --status                one line per sandbox under the root: name, file
+                          count, clean or modified, and source
+
 Paths are relative to the sandbox; anything absolute, traversing upward,
-through a symlink, or into .git is refused. exit status: 0; 1 when --list
-finds nothing; 2 for a usage error; 3 when there is no sandbox, no recorded
-source, or a named file does not exist; 78 for a refused path.
+through a symlink, or into .git is refused. exit status: 0; 1 when --list or
+--status finds nothing; 2 for a usage error; 3 when there is no sandbox, no
+recorded source, or a named file does not exist; 78 for a refused path.
 """
-# The sandbox lives under the working directory, not the script's: an
-# installed oxseed lives in /usr/bin, and the project you are seeding for is
-# wherever you are standing. A source checkout run from its root is unchanged.
-SANDBOX = Path.cwd() / "sandbox"
+# Where sandboxes live. Every sandbox is <root>/NAME, NAME defaulting to
+# "work", so the layout with nothing configured is ./sandbox/work, as it
+# always was. The root is the first of:
+#   1. OXBOX_SANDBOX_ROOT in the environment
+#   2. `root` under [sandbox] in the config file: ~/.config/oxbox/config.ini
+#      (XDG_CONFIG_HOME honored; %APPDATA%\\oxbox\\config.ini on Windows)
+#   3. ./sandbox
+# A relative value resolves against the working directory, and ~ expands.
+# oxbox-sandbox, oxbox-patch and oxbox-jail carry this block identically, the
+# way all five tools carry VERSION: they must agree on where the sandbox is
+# or the sandbox quietly splits in two. guardtest drives all three under one
+# setting and asserts they landed in the same place.
+CONFIG_FILE = "config.ini"
+
+
+def config_path():
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.join(
+            os.path.expanduser("~"), "AppData", "Roaming")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+            os.path.expanduser("~"), ".config")
+    return os.path.join(base, "oxbox", CONFIG_FILE)
+
+
+def sandbox_root():
+    """The directory holding the sandboxes, and where that setting came from."""
+    value = os.environ.get("OXBOX_SANDBOX_ROOT")
+    origin = "OXBOX_SANDBOX_ROOT"
+    if not value:
+        path = config_path()
+        parser = configparser.ConfigParser(interpolation=None)
+        try:
+            parser.read(path, encoding="utf-8")
+        except configparser.Error as error:
+            sys.exit("oxbox-sandbox: cannot parse %s: %s" % (path, error))
+        value = parser.get("sandbox", "root", fallback=None)
+        origin = path
+    if not value:
+        value, origin = "sandbox", "default"
+    root = os.path.realpath(os.path.join(os.getcwd(), os.path.expanduser(value)))
+    return root, origin
+
+
+def sandbox_name(name):
+    """One plain path component: no separators, no traversal, no leading dot
+    (dot-names are the root's own bookkeeping)."""
+    if (not name or name in (".", "..") or name.startswith(".")
+            or "/" in name or "\\" in name or (len(name) > 1 and name[1] == ":")):
+        sys.stderr.write("oxbox-sandbox: not a sandbox name: %r (one plain path component)\n" % name)
+        sys.exit(2)
+    return name
+
+
+SANDBOX_ROOT, SANDBOX_ROOT_ORIGIN = sandbox_root()
+SANDBOX = Path(SANDBOX_ROOT)
+# The selected sandbox, set by select() once --sandbox is parsed; module-level
+# because every operation and validator below refers to them. SOURCE_RECORD
+# is where --create copied from, so --add can copy more from the same place.
+# It sits beside the tree, not inside it: the jail writes only into the tree,
+# so nothing that ran in it can redirect the next --add at a directory of its
+# choosing. (An operator who passes the root itself as --work to the jail
+# gives that up.)
 WORK = SANDBOX / "work"
-# Where --create copied from, so --add can copy more from the same place. It
-# sits beside work/, not inside it: the jail writes only into the work dir,
-# so nothing that ran in it can redirect the next --add at a directory of
-# its choosing. (An operator who passes `--work sandbox` to the jail gives
-# that up, along with the rest of the sandbox/work distinction.)
-SOURCE_RECORD = SANDBOX / ".source"
+SOURCE_RECORD = SANDBOX / ".sources" / "work"
+
+
+def select(name):
+    global WORK, SOURCE_RECORD
+    WORK = SANDBOX / name
+    SOURCE_RECORD = SANDBOX / ".sources" / name
 
 
 def refuse(message):
@@ -324,6 +395,7 @@ def op_create(repo, relatives):
     if WORK.exists():
         rmtree_force(WORK)
     WORK.mkdir(parents=True)
+    SOURCE_RECORD.parent.mkdir(parents=True, exist_ok=True)
     SOURCE_RECORD.write_text(str(source) + "\n", encoding="utf-8")
 
     copy_in(source, relatives)
@@ -374,11 +446,56 @@ def op_remove(relatives):
     return 0
 
 
-def op_destroy():
-    if SANDBOX.exists():
+def sandboxes():
+    """Every sandbox under the root, by name."""
+    try:
+        names = [entry.name for entry in os.scandir(SANDBOX)
+                 if entry.is_dir(follow_symlinks=False) and not entry.name.startswith(".")]
+    except OSError:
+        return []
+    return sorted(names)
+
+
+def op_destroy(everything):
+    if everything:
+        if SANDBOX.exists():
+            rmtree_force(SANDBOX)
+        sys.stderr.write(f"oxbox-sandbox: removed {SANDBOX} and every sandbox in it\n")
+        return 0
+    if WORK.exists():
+        rmtree_force(WORK)
+    if SOURCE_RECORD.exists():
+        SOURCE_RECORD.unlink()
+    sys.stderr.write(f"oxbox-sandbox: removed {WORK}\n")
+    # Leave no empty root behind, so the single-sandbox case ends the way it
+    # always did: ./sandbox is gone.
+    if SANDBOX.exists() and not sandboxes():
         rmtree_force(SANDBOX)
-    sys.stderr.write("oxbox-sandbox: sandbox removed\n")
     return 0
+
+
+def op_status():
+    print(f"root {SANDBOX}  (from {SANDBOX_ROOT_ORIGIN})")
+    names = sandboxes()
+    for name in names:
+        tree = SANDBOX / name
+        count = 0
+        for walk_root, dirs, files in os.walk(tree):
+            dirs[:] = [d for d in dirs if d not in (".git", ".oxtmp")]
+            count += len(files)
+        if (tree / ".git").is_dir():
+            porcelain = subprocess.run(["git", "-C", str(tree), "status", "--porcelain"],
+                                       capture_output=True, text=True)
+            state = "modified" if porcelain.stdout.strip() else "clean"
+        else:
+            state = "no-git"
+        record = SANDBOX / ".sources" / name
+        try:
+            source = record.read_text(encoding="utf-8").strip()
+        except OSError:
+            source = "?"
+        print(f"{name}  {count} files  {state}  {source}")
+    return 0 if names else 1
 
 
 def op_list():
@@ -459,12 +576,19 @@ def main():
     parser.add_argument("--version", action="version",
                         version="oxbox-sandbox %s" % VERSION)
     parser.add_argument("--skill", action=SkillAction)
+    parser.add_argument("--sandbox", default="work", metavar="NAME")
+    parser.add_argument("--all", action="store_true")
     ops = parser.add_mutually_exclusive_group(required=True)
-    for name in ("create", "add", "remove", "destroy", "list", "read", "write"):
+    for name in ("create", "add", "remove", "destroy", "list", "read", "write",
+                 "status"):
         ops.add_argument("--" + name, action="store_const", const=name, dest="op")
     parser.add_argument("paths", nargs="*")
     args = parser.parse_args()
 
+    select(sandbox_name(args.sandbox))
+    if args.all and args.op != "destroy":
+        sys.stderr.write("oxbox-sandbox: --all goes with --destroy only\n")
+        return 2
     if args.op == "create":
         return op_create(args.paths[0] if args.paths else "", args.paths[1:])
     if args.op == "add":
@@ -479,7 +603,9 @@ def main():
         sys.stderr.write("oxbox-sandbox: --%s takes no paths\n" % args.op)
         return 2
     if args.op == "destroy":
-        return op_destroy()
+        return op_destroy(args.all)
+    if args.op == "status":
+        return op_status()
     return op_list()
 
 

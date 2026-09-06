@@ -31,9 +31,9 @@ A supervised harness for pointing an untrusted LLM at your code: one command
 in front of four scripts. Each step is a subcommand, handed to the script
 that does it; the bare form is the jail.
 
-  sandbox --create REPO FILE...  copy files into a disposable ./sandbox
+  sandbox --create REPO FILE...  copy files into a disposable sandbox
           --add | --remove FILE  tend the copy; --list, --read, --write it;
-          --destroy              burn it down                  (oxbox-sandbox)
+          --destroy, --status    burn it down; list them all   (oxbox-sandbox)
   send    [flags] "task"         send it to a model; nothing is applied
                                                                (oxbox-send)
   patch   --log logs/<ts>        apply its patch into the sandbox only
@@ -44,7 +44,9 @@ that does it; the bare form is the jail.
                                  to, or run one directly
   skill                          print the ox-review agent skill
 
-Every subcommand answers --help.
+Every subcommand answers --help. Sandboxes live under OXBOX_SANDBOX_ROOT,
+else `root` under [sandbox] in ~/.config/oxbox/config.ini, else ./sandbox;
+sandbox, patch and jail take --sandbox NAME to pick one (default: work).
 
   --skill                   print the ox-review agent skill and exit
   --version                 print the version and exit
@@ -63,13 +65,13 @@ for _flag in ("--files", "--mode", "--venue", "--manifest", "--allow-paid",
               "--log-dir", "--output", "--status-file", "--force", "--dry-run"):
     OWNED_FLAGS[_flag] = "send"
 for _flag in ("--create", "--add", "--remove", "--destroy", "--list",
-              "--read", "--write"):
+              "--read", "--write", "--status", "--all"):
     OWNED_FLAGS[_flag] = "sandbox"
 for _flag in ("--log", "--diff", "--commit"):
     OWNED_FLAGS[_flag] = "patch"
 # The jail's flags are accepted here too, ahead of `--`, because that is the
 # command line the jail has always taken.
-JAIL_FLAGS = ("--work", "--allow-external-output")
+JAIL_FLAGS = ("--work", "--sandbox", "--allow-external-output")
 
 
 def helper_dirs():

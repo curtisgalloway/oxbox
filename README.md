@@ -133,7 +133,7 @@ $ python3 guardtest.py
 [PASS] oxbox-patch refuses traversal in rename headers
 [PASS] `oxbox send` refuses a key in the task argument
 ...
-guards hold: 68/68 passed, 0 skipped
+guards hold: 84/84 passed, 0 skipped
 ```
 
 Every case in it is a regression test for a defect that was actually found and
@@ -155,7 +155,7 @@ is still 3.9, so nothing here uses 3.10+ APIs).
 
 | Tested on | Result |
 |---|---|
-| CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 68/68 (Windows: the 3 symlink cases skip; its total is whatever the next CI run prints), wiretest 66/66 (Windows 65/65 + 1 skipped), jailtest 9/9 |
+| CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 84/84 (Windows: the 3 symlink cases skip; its total is whatever the next CI run prints), wiretest 66/66 (Windows 65/65 + 1 skipped), jailtest 9/9 |
 | macOS 26.6.2, seatbelt | jailtest 13/13 |
 | Debian 13 (trixie), bubblewrap 0.12.0, Python 3.13.5 | jailtest 14/14 |
 | WSL2 Ubuntu 24.04.2, bubblewrap 0.9.0, Python 3.12.3 | jailtest 10/10 |
@@ -313,6 +313,23 @@ in place of `oxbox`). The test suites assert against the checkout layout, so
 verifying the jail on a new machine is a git-clone operation even when the
 tools came from a package.
 
+**Where sandboxes live, and how many.** Every sandbox is `<root>/NAME`. The
+root is `OXBOX_SANDBOX_ROOT` if set, else `root` under `[sandbox]` in
+`~/.config/oxbox/config.ini` (`XDG_CONFIG_HOME` honored; `%APPDATA%\oxbox\config.ini`
+on Windows), else `./sandbox`; a relative value resolves against the working
+directory. `oxbox sandbox`, `oxbox patch` and `oxbox jail` all take
+`--sandbox NAME` to pick one, and the default name is `work`, so with nothing
+configured the layout is `./sandbox/work` as it always was. `oxbox sandbox
+--status` lists every sandbox under the root with its file count, whether it
+has uncommitted changes, and the repo it was seeded from; `--destroy` removes
+the named one and `--destroy --all` removes the root.
+
+```ini
+# ~/.config/oxbox/config.ini
+[sandbox]
+root = ~/oxbox-sandboxes
+```
+
 **Only `oxbox` is on `PATH`.** A package installs the four scripts into a
 `libexec` directory beside it — the Homebrew keg's and the tarball's
 `libexec/bin`, the `.deb`'s `/usr/libexec/oxbox/bin`, the MSI's `libexec\bin`
@@ -332,7 +349,8 @@ agent driving a review never holds the key in its own environment.
 
 ```bash
 # 1. disposable copy of the files you're willing to expose
-#    (--add, --remove, --list, --read and --write tend it afterwards)
+#    (--add, --remove, --list, --read and --write tend it afterwards;
+#    --sandbox NAME on this, patch and jail keeps several apart)
 oxbox sandbox --create /path/to/repo src/thing.py tests/test_thing.py
 
 # 2. ask the model (nothing is applied). Name one, or take this week's

@@ -560,6 +560,94 @@ def main():
     report(not SANDBOX.exists() and tend(["--list"]).returncode == 3,
            "sandbox --list exits 3 once there is no sandbox")
 
+    print("\n=== sandbox root and names ===")
+    # oxbox-sandbox, oxbox-patch and oxbox-jail each carry their own copy of
+    # the root resolution (env, config file, default). Three copies of one
+    # rule drift unless something drives all three under one setting and
+    # checks they met in the same tree -- that is this section. PATH-style
+    # isolation again: HOME/XDG_CONFIG_HOME/APPDATA point at a temp dir so a
+    # real config file on this machine cannot leak into the run.
+    cfg_home = temp / "cfg"
+    (cfg_home / "oxbox").mkdir(parents=True)
+    cfg_root = temp / "cfg-root"
+    (cfg_home / "oxbox" / "config.ini").write_text(
+        "[sandbox]\nroot = %s\n" % cfg_root, encoding="utf-8")
+    base_env = {k: v for k, v in os.environ.items() if k != "OXBOX_SANDBOX_ROOT"}
+    base_env.update(XDG_CONFIG_HOME=str(cfg_home), APPDATA=str(cfg_home))
+    env_root = temp / "env-root"
+    env_env = dict(base_env, OXBOX_SANDBOX_ROOT=str(env_root))
+    src2 = temp / "root-src"
+    src2.mkdir()
+    (src2 / "mod.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+
+    def rooted(argv, env, stdin=None):
+        return subprocess.run(argv, env=env, capture_output=True, text=True,
+                              input=stdin)
+
+    done = rooted(OXSANDBOX + ["--create", str(src2), "mod.py"], base_env)
+    report(done.returncode == 0 and (cfg_root / "work" / "mod.py").is_file(),
+           "the config file's root is honored when the env var is unset",
+           f"exit={done.returncode} stderr={done.stderr.strip()!r}")
+    done = rooted(OXSANDBOX + ["--create", str(src2), "mod.py"], env_env)
+    report(done.returncode == 0 and (env_root / "work" / "mod.py").is_file()
+           and not (env_root / "alt").exists(),
+           "OXBOX_SANDBOX_ROOT wins over the config file",
+           f"exit={done.returncode} stderr={done.stderr.strip()!r}")
+    done = rooted(OXSANDBOX + ["--sandbox", "alt", "--create", str(src2), "mod.py"], env_env)
+    report(done.returncode == 0 and (env_root / "alt" / "mod.py").is_file()
+           and (env_root / "work" / "mod.py").is_file(),
+           "--sandbox NAME makes a second sandbox beside the first",
+           f"exit={done.returncode} stderr={done.stderr.strip()!r}")
+    done = rooted(OXSANDBOX + ["--status"], env_env)
+    lines = done.stdout.splitlines()
+    # The header prints the resolved root, and a macOS temp dir is a symlink
+    # into /private/var, so compare resolved with resolved.
+    report(done.returncode == 0 and lines
+           and lines[0].startswith("root %s" % os.path.realpath(env_root))
+           and [line.split()[0] for line in lines[1:]] == ["alt", "work"],
+           "--status names the root and every sandbox under it", repr(done.stdout))
+    # The same root, seen from oxbox-patch: the patch lands in alt, not work.
+    done = rooted(OXAPPLY + ["--sandbox", "alt", "--diff", str(valid)], env_env)
+    patched_alt = "return 2" in (env_root / "alt" / "mod.py").read_text(encoding="utf-8")
+    untouched_work = "return 1" in (env_root / "work" / "mod.py").read_text(encoding="utf-8")
+    report(done.returncode == 0 and patched_alt and untouched_work,
+           "oxbox-patch --sandbox resolves the same root and tree",
+           f"exit={done.returncode} stderr={done.stderr.strip()!r}")
+    done = rooted(OXSANDBOX + ["--status"], env_env)
+    states = {line.split()[0]: line.split()[3] for line in done.stdout.splitlines()[1:]}
+    report(states == {"alt": "modified", "work": "clean"},
+           "--status tells a patched sandbox from a clean one", repr(states))
+    # And from oxbox-jail: --sandbox alt is inside the configured root, while
+    # the checkout's own ./sandbox/work is now outside it and refused.
+    if jail_supported:
+        done = rooted(OXBOX + ["--sandbox", "alt", "--", sys.executable, "-c", "pass"], env_env)
+        report(done.returncode == 0, "oxbox-jail --sandbox runs in the configured root",
+               f"exit={done.returncode} stderr={done.stderr.strip()!r}")
+        WORK.mkdir(parents=True, exist_ok=True)
+        done = rooted(OXBOX + ["--work", str(WORK), "--", sys.executable, "-c", "pass"], env_env)
+        report(done.returncode == 78 and "OXBOX_SANDBOX_ROOT" in done.stderr,
+               "oxbox-jail refuses a work dir outside the configured root, naming the setting",
+               f"exit={done.returncode} stderr={done.stderr.strip()!r}")
+    else:
+        skip("oxbox-jail under a configured root", f"no jail backend on {sys.platform}")
+    done = rooted(OXAPPLY + ["--work", str(WORK), "--diff", str(valid)], env_env)
+    report(done.returncode == 2 and "OXBOX_SANDBOX_ROOT" in done.stderr,
+           "oxbox-patch refuses a work dir outside the configured root, naming the setting",
+           f"exit={done.returncode} stderr={done.stderr.strip()!r}")
+    for bad in ("../x", "a/b", ".hidden", ""):
+        done = rooted(OXSANDBOX + ["--sandbox", bad, "--list"], env_env)
+        report(done.returncode == 2, f"a sandbox name of {bad!r} is refused",
+               f"exit={done.returncode}")
+    done = rooted(OXSANDBOX + ["--sandbox", "alt", "--destroy"], env_env)
+    report(done.returncode == 0 and not (env_root / "alt").exists()
+           and (env_root / "work" / "mod.py").is_file(),
+           "--destroy removes only the named sandbox", f"exit={done.returncode}")
+    done = rooted(OXSANDBOX + ["--destroy", "--all"], env_env)
+    report(done.returncode == 0 and not env_root.exists(),
+           "--destroy --all removes the root", f"exit={done.returncode}")
+    done = rooted(OXSANDBOX + ["--status"], env_env)
+    report(done.returncode == 1, "--status exits 1 with no sandboxes", f"exit={done.returncode}")
+
     print("\n=== the front door ===")
     # The project is called oxbox, so oxbox is what a reader types first --
     # and the first thing one typed was ox's --manifest, which the jail

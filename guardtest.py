@@ -728,7 +728,12 @@ def main():
                f"exit={done.returncode} stderr={done.stderr.strip()!r}")
         done = subprocess.run(staged + ["helper", "send", "--skill"],
                               capture_output=True, text=True, env=env)
-        report(done.returncode == 0 and str(skill_dir) in done.stderr,
+        # The provenance line carries the resolved path: oxbox resolves its
+        # own location before walking up, so the script prints the long form
+        # of a directory that tempfile may have handed us as a symlink
+        # (macOS /var -> /private/var) or an 8.3 short name (GitHub's Windows
+        # runner: RUNNER~1 for runneradmin). Compare resolved with resolved.
+        report(done.returncode == 0 and os.path.realpath(skill_dir) in done.stderr,
                f"a helper in the {label} layout finds the skill under share/",
                f"exit={done.returncode} stderr={done.stderr.strip()!r}")
         (helper_dir / "oxbox-send").unlink()

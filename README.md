@@ -619,6 +619,46 @@ hardcoded default any more.
   of that route — the survey saw one model billed at double its card price on
   a different route. Null when the venue names none.
 
+## The Rust port
+
+The five tools exist twice in this repository: the Python scripts at the
+root, which are what every package installs today, and a Rust workspace
+under `crates/` that reproduces them executable for executable — `oxbox`,
+`oxbox-sandbox`, `oxbox-send`, `oxbox-patch`, `oxbox-jail`, with the shared
+pieces (version, the embedded runbook, the sandbox root and name rules, the
+libexec lookup) in one library crate instead of a copy per file. The
+structure is the same because it was designed for this: one command on
+`PATH`, four executables in `libexec`, each a process of its own so a
+process listing says which piece is running.
+
+The Python scripts are the reference until the binaries ship. The same three
+suites hold both to it: `OXBOX_UNDER_TEST=$PWD/target/debug python3
+guardtest.py` and `wiretest.py` drive the binaries instead of the scripts,
+and `target/debug/oxbox jail -- python3 jailtest.py` probes from inside the
+Rust jail. wiretest needs the binaries built with
+`cargo build --features oxbox-send/test-overrides`, which compiles in the
+same knobs the suite patches into a copy of the Python source (venue URLs
+aimed at its loopback listener, the https guards relaxed); a release build
+lacks the feature and ignores those variables. CI runs all of it on macOS,
+Ubuntu and Windows.
+
+**Only `oxbox-send` has dependencies.** The jail, the sandbox, the patch
+quarantine and the dispatcher are standard-library only, so the
+security-critical pieces stay readable in full with nothing to audit beneath
+them; `Cargo.lock` is where that claim can be checked. `oxbox-send` needs a
+TLS stack, and the tree it pulls in — 52 crates as of this writing, from
+`cargo tree -p oxbox-send` — is: `ureq` (HTTP, redirects disabled) with
+`rustls`, `rustls-webpki`, `webpki-roots`, `ring` and `rustls-pki-types`;
+`serde_json` with `serde_core`, `indexmap`, `itoa`, `zmij`; `fancy-regex`
+(the scanner's lookahead patterns) with `regex-automata`, `regex-syntax`,
+`aho-corasick`, `memchr`, `bit-set`, `bit-vec`; `sha2` with `digest`,
+`block-buffer`, `crypto-common`, `generic-array`, `typenum`, `cpufeatures`;
+`flate2` with `miniz_oxide`, `adler2`, `simd-adler32`, `crc32fast` for gzip
+responses; and the small crates beneath those (`http`, `httparse`,
+`ureq-proto`, `base64`, `percent-encoding`, `utf8-zero`, `bytes`, `log`,
+`once_cell`, `cfg-if`, `libc`, `getrandom`, `hashbrown`, `equivalent`,
+`subtle`, `untrusted`, `zeroize`).
+
 ## The self-audit
 
 `stealth/ox-alpha` was pointed at this harness's own source in `--mode review`

@@ -213,6 +213,44 @@ executed inside it.
   `build_context`, so route new content through it rather than around it.
 - Do not send anything to this model you would not hand to an unnamed lab.
 
+## The Rust port
+
+- **Two implementations, one behavior, until the binaries ship.** The
+  Python scripts at the root are the reference; `crates/` holds the Rust
+  workspace that reproduces them. A behavior change lands in both, in the
+  same commit, or it is not done. The suites are the arbiter: guardtest and
+  wiretest take `OXBOX_UNDER_TEST=<dir of binaries>` and drive those instead
+  of the scripts, and jailtest runs inside whichever jail launched it.
+  Verified at parity on 2026-09-06 on macOS (guards 84/84, wire 69/69, jail
+  13/13), Debian 13 on dev.h.curtisg.xyz (84/84, 69/69, jail 14/14) and
+  Windows 11 on brik (75/75 + 4 skipped, 68/68 + 1 skipped, jail refuses 78).
+- **Separate packages, not [[bin]] targets.** The dependency tree is per
+  package, and "oxbox-jail is standard-library only" has to be a fact
+  Cargo.lock can show. Only `oxbox-send` depends on anything beyond
+  `oxbox-core`; its tree is listed in the README and a new dependency there
+  updates that list.
+- **Shared code lives in `oxbox-core`, once.** VERSION comes from the
+  workspace; the runbook is `include_str!` so all five print the same bytes
+  by construction; the sandbox root and name rules, the INI reader and the
+  libexec lookup are single implementations. Do not copy a block into an
+  executable because it was copied in Python — that duplication was forced,
+  and the crate is what removes it.
+- **wiretest's rewiring is a feature, not a flag.** The Python suite patches
+  a copy of the source to aim the venue table at a loopback listener and
+  relax the https guards. The binary does the same only when built with
+  `--features oxbox-send/test-overrides`, which reads
+  `OXBOX_TEST_VENUE_URLS`, `OXBOX_TEST_ALLOW_HTTP` and
+  `OXBOX_TEST_MANIFEST_MAX_BYTES`. A release build does not have the
+  feature and does not read the variables; never add a runtime switch that
+  does the same thing.
+- **Header names are lowercase on the wire from the Rust client.** HTTP
+  allows it, urllib does not do it, and a test that stores headers as sent
+  and looks them up by the spelled name sees nothing. wiretest's `header()`
+  is the case-insensitive lookup; use it.
+- **Windows temp paths are 8.3 short names on GitHub's runner** (`RUNNER~1`),
+  and the binaries resolve their own location, so assertions on printed paths
+  compare resolved with resolved.
+
 ## Packaging rules
 
 - **State anchors at the working directory; only code anchors at the script.**

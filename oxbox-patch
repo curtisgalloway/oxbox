@@ -8,6 +8,7 @@ land outside the work tree. Never touches a real repository.
 """
 
 import argparse
+import configparser
 import os
 import re
 import subprocess
@@ -17,6 +18,59 @@ from pathlib import Path
 
 VERSION = "0.6.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# Where sandboxes live. Every sandbox is <root>/NAME, NAME defaulting to
+# "work", so the layout with nothing configured is ./sandbox/work, as it
+# always was. The root is the first of:
+#   1. OXBOX_SANDBOX_ROOT in the environment
+#   2. `root` under [sandbox] in the config file: ~/.config/oxbox/config.ini
+#      (XDG_CONFIG_HOME honored; %APPDATA%\\oxbox\\config.ini on Windows)
+#   3. ./sandbox
+# A relative value resolves against the working directory, and ~ expands.
+# oxbox-sandbox, oxbox-patch and oxbox-jail carry this block identically, the
+# way all five tools carry VERSION: they must agree on where the sandbox is
+# or the sandbox quietly splits in two. guardtest drives all three under one
+# setting and asserts they landed in the same place.
+CONFIG_FILE = "config.ini"
+
+
+def config_path():
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.join(
+            os.path.expanduser("~"), "AppData", "Roaming")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+            os.path.expanduser("~"), ".config")
+    return os.path.join(base, "oxbox", CONFIG_FILE)
+
+
+def sandbox_root():
+    """The directory holding the sandboxes, and where that setting came from."""
+    value = os.environ.get("OXBOX_SANDBOX_ROOT")
+    origin = "OXBOX_SANDBOX_ROOT"
+    if not value:
+        path = config_path()
+        parser = configparser.ConfigParser(interpolation=None)
+        try:
+            parser.read(path, encoding="utf-8")
+        except configparser.Error as error:
+            sys.exit("oxbox-patch: cannot parse %s: %s" % (path, error))
+        value = parser.get("sandbox", "root", fallback=None)
+        origin = path
+    if not value:
+        value, origin = "sandbox", "default"
+    root = os.path.realpath(os.path.join(os.getcwd(), os.path.expanduser(value)))
+    return root, origin
+
+
+def sandbox_name(name):
+    """One plain path component: no separators, no traversal, no leading dot
+    (dot-names are the root's own bookkeeping)."""
+    if (not name or name in (".", "..") or name.startswith(".")
+            or "/" in name or "\\" in name or (len(name) > 1 and name[1] == ":")):
+        sys.stderr.write("oxbox-patch: not a sandbox name: %r (one plain path component)\n" % name)
+        sys.exit(2)
+    return name
 FENCE = re.compile(r"```(?:diff|patch)\s*\n(.*?)```", re.DOTALL)
 PATH_LINE = re.compile(r"^(?:---|\+\+\+)\s+(?:[ab]/)?(\S+)", re.MULTILINE)
 
@@ -171,10 +225,13 @@ def main():
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--log", help="an ox log dir containing content.md")
     source.add_argument("--diff", help="a file containing a raw diff")
-    # Working-directory anchored, like oxseed's sandbox: the two must agree
-    # on where the sandbox is, and neither can be script-relative once
-    # installed to /usr/bin.
-    parser.add_argument("--work", default=str(Path.cwd() / "sandbox" / "work"))
+    # The sandbox root is resolved the same way oxbox-sandbox and oxbox-jail
+    # resolve it (sandbox_root above); the three must agree on where the
+    # sandbox is, and none can be script-relative once installed.
+    parser.add_argument("--sandbox", default=None, metavar="NAME",
+                        help="the sandbox to patch: <root>/NAME (default: work)")
+    parser.add_argument("--work", default=None, metavar="DIR",
+                        help="a work dir to patch instead; must be inside the sandbox root")
     parser.add_argument("--commit", action="store_true",
                         help="commit the applied patch in the sandbox git repo")
     args = parser.parse_args()
@@ -189,7 +246,14 @@ def main():
     else:
         patch = Path(args.diff).read_text(encoding="utf-8")
 
-    work = Path(args.work).resolve()
+    root, origin = sandbox_root()
+    sandbox_root_path = Path(root)
+    if args.work and args.sandbox:
+        sys.exit("oxbox-patch: --work and --sandbox name the same thing; pass one")
+    if args.work:
+        work = Path(args.work).resolve()
+    else:
+        work = sandbox_root_path / sandbox_name(args.sandbox or "work")
     if not work.is_dir():
         sys.exit(f"oxbox-patch: work dir does not exist: {work}")
 
@@ -200,16 +264,16 @@ def main():
     # a real checkout. unsafe_paths below cannot stand in for this: it
     # constrains where a patch may write *relative to* the work dir, and says
     # nothing about where the work dir itself is.
-    sandbox_root = (Path.cwd() / "sandbox").resolve()
-    if work != sandbox_root and sandbox_root not in work.parents:
+    if work != sandbox_root_path and sandbox_root_path not in work.parents:
         sys.stderr.write(f"oxbox-patch: REFUSING --work {work}\n")
-        sys.stderr.write(f"oxbox-patch: it lies outside {sandbox_root}, so applying a\n")
-        sys.stderr.write("oxbox-patch: model-produced patch there would touch a real tree.\n")
-        sys.stderr.write("oxbox-patch: run oxbox seed first, or name a --work inside the sandbox.\n")
+        sys.stderr.write(f"oxbox-patch: it lies outside {sandbox_root_path} (the sandbox root,\n")
+        sys.stderr.write(f"oxbox-patch: from {origin}), so applying a model-produced patch\n")
+        sys.stderr.write("oxbox-patch: there would touch a real tree. Run oxbox sandbox --create\n")
+        sys.stderr.write("oxbox-patch: first, or name a --work inside the sandbox root.\n")
         sys.exit(2)
 
     if not (work / ".git").exists():
-        sys.exit(f"oxbox-patch: {work} is not a git repo (run oxbox seed first)")
+        sys.exit(f"oxbox-patch: {work} is not a git repo (run oxbox sandbox --create first)")
 
     bad = unsafe_paths(patch)
     if bad:

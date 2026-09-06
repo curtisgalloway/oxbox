@@ -309,9 +309,9 @@ upwards to discover it exists.
 
 Nothing prunes automatically today — this is a rule for whoever prunes by hand,
 and for any tool that later does it for them. `OXBOX_LOG_RETENTION_DAYS` is the
-name reserved for that knob, in days, with `0` meaning keep everything; it is an
-environment variable rather than a config file because `oxbox-send` has no config file
-and one setting does not justify inventing one. Deletion is the only operation
+name reserved for that knob, in days, with `0` meaning keep everything; when it
+is implemented it belongs beside `OXBOX_SANDBOX_ROOT`, as an environment variable
+with a `[logs]` entry in `~/.config/oxbox/config.ini`. Deletion is the only operation
 in this toolset with no undo, which is why it is documented here before it is
 automated.
 

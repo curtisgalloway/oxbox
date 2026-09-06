@@ -572,9 +572,13 @@ hardcoded default any more.
   (`oxbox send … | tail` reports `tail`'s status). If you must pipe, use
   `set -o pipefail`; better, skip the pipeline: `--output review.md` writes
   the answer to a file, and `--status-file status.json` writes a run summary
-  (`ok`, `error`, `finish_reason`, token counts, `truncated`, `venue_cost`)
-  on every exit,
-  so a script checks a fact instead of shell plumbing.
+  (`ok`, `error`, `finish_reason`, token counts, `truncated`, `venue_cost`,
+  `route`) on every exit, so a script checks a fact instead of shell plumbing.
+  `route` is the upstream provider the venue says it sent the request to,
+  when it says: a model listing on OpenRouter can be served by several
+  providers, the venue picks one per request, and `venue_cost` is the price
+  of that route — the survey saw one model billed at double its card price on
+  a different route. Null when the venue names none.
 
 ## The self-audit
 

@@ -657,11 +657,23 @@ def send_and_parse(api_url, api_key, payload, log_dir):
         )
 
     usage = body.get("usage", {}) or {}
+    # Who actually served the request, when the venue says. A model name on
+    # OpenRouter is a listing that several upstream providers may serve, and
+    # the venue picks one per request; the response names it in a top-level
+    # "provider". That route, not the model, is what a bill follows: the
+    # survey saw one run routed to SiliconFlow billed exactly double the
+    # card price for the same model (2026-09-06). Recorded verbatim when it
+    # is a string, None when the venue says nothing, never guessed from the
+    # model name.
+    route = body.get("provider")
+    if not isinstance(route, str):
+        route = None
     sys.stderr.write(
         f"oxbox-send: finish={choice.get('finish_reason')} "
         f"prompt_tokens={usage.get('prompt_tokens')} "
         f"completion_tokens={usage.get('completion_tokens')} "
-        f"reasoning_chars={len(reasoning)}\n"
+        f"reasoning_chars={len(reasoning)}"
+        + (f" route={route}" if route else "") + "\n"
     )
 
     # An empty completion is a failure for every caller, and the API called it
@@ -682,7 +694,7 @@ def send_and_parse(api_url, api_key, payload, log_dir):
             % (choice.get("finish_reason"), detail, log_dir)
         )
 
-    return choice, usage, reasoning, content
+    return choice, usage, reasoning, content, route
 
 
 def main():
@@ -711,6 +723,7 @@ def main():
         "reasoning_chars": None,
         "truncated": None,
         "venue_cost": None,
+        "route": None,
         "manifest": None,
         "attempts": None,
         "status_file": None,
@@ -1048,7 +1061,7 @@ def run(status):
         record = {"position": entry["position"], "venue": entry["venue"],
                   "model": entry["model"], "log_dir": str(log_dir)}
         try:
-            choice, usage, reasoning, content = send_and_parse(
+            choice, usage, reasoning, content, route = send_and_parse(
                 entry["url"], os.environ.get(entry["key_env"]), payload, log_dir)
         except AttemptFailed as failure:
             if attempts is not None:
@@ -1077,6 +1090,9 @@ def run(status):
         # venue sends nothing, which stays distinguishable from a real zero:
         # a failed attempt that billed nothing reports 0, not absence.
         status["venue_cost"] = usage.get("cost")
+        # The upstream provider the venue routed to, when it says (see
+        # send_and_parse); venue_cost is the price of this route.
+        status["route"] = route
         # A provider that reports no finish reason has said nothing about
         # whether the answer was cut off, and recording False there claims
         # evidence we do not have. None means unknown -- which is exactly what
@@ -1086,6 +1102,7 @@ def run(status):
         if attempts is not None:
             record["finish_reason"] = choice.get("finish_reason")
             record["venue_cost"] = usage.get("cost")
+            record["route"] = route
             attempts.append(record)
         chosen = content
         break

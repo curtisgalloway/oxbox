@@ -19,8 +19,8 @@ Design notes:
     that needs elevation to install is a CLI people do not install.
   - Every component keypaths on an HKCU registry value, which per-user file
     components require (ICE38). Those components therefore cannot
-    auto-generate their guids (WIX0230), so the five guids below are
-    permanent identity — like the UpgradeCode, never regenerate them.
+    auto-generate their guids (WIX0230), so every component guid below is
+    permanent identity — like the UpgradeCode, never regenerate one.
   - Files are grouped one component per directory rather than one per file.
     A component's files must share a directory, and this package has no
     servicing story that would benefit from finer granularity.

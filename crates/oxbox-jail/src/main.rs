@@ -18,8 +18,11 @@
 //! it should be readable in full with nothing to audit beneath it.
 
 use std::env;
+#[cfg(unix)]
 use std::fs;
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process;
 
 use oxbox_core as core;
@@ -106,6 +109,7 @@ fn refuse(message: &str) -> ! {
 /// `<prefix>/share/oxbox/jail.sb`; a build tree keeps it two levels above
 /// `target/debug`. Refusing when none exists is deliberate: there is no jail
 /// without the profile, and no jail means no run.
+#[cfg(unix)]
 fn find_profile() -> PathBuf {
     let mut candidates = Vec::new();
     for start in [core::exe_dir(), core::real_exe_dir()] {
@@ -139,6 +143,7 @@ fn find_profile() -> PathBuf {
 /// HERE, outside the jail: inside, `stat()` is denied, so every hidden path
 /// looks absent and a probe that checks for itself would skip rather than
 /// test.
+#[cfg(unix)]
 fn sensitive_paths(real_home: &Path, project_root: &Path) -> Vec<PathBuf> {
     let mut names = vec![
         ".ssh",
@@ -173,6 +178,7 @@ fn sensitive_paths(real_home: &Path, project_root: &Path) -> Vec<PathBuf> {
 /// such a host jailtest's network probes would pass without testing
 /// anything. A UDP connect sends no packet; it only asks the kernel whether
 /// a route exists.
+#[cfg(unix)]
 fn host_has_route() -> bool {
     std::net::UdpSocket::bind("0.0.0.0:0")
         .and_then(|socket| socket.connect("1.1.1.1:53"))

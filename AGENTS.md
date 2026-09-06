@@ -57,14 +57,19 @@ entirely. The README carries the dedicated-distro setup; keep the two in step.
 
 ## Workflow
 
+`oxbox` is the one command; each step is a subcommand that hands off to the
+script doing that job (`oxbox seed` → `oxseed`, `oxbox ask` → `ox`,
+`oxbox apply` → `oxapply`), and `oxbox run` — or the bare `oxbox -- cmd` —
+is the jail. From a checkout, `./oxbox` in place of `oxbox`.
+
 ```bash
-./oxseed /path/to/repo file1.py file2.py           # disposable copy + pristine commit
-op run --env-file .env -- ./ox --files file1.py "task"   # ask the model
+oxbox seed /path/to/repo file1.py file2.py         # disposable copy + pristine commit
+op run --env-file .env -- oxbox ask --files file1.py "task"   # ask the model
 # a human/Claude reads logs/<ts>/content.md here
-./oxapply --log logs/<ts>                          # sandbox only
-./oxbox -- .venv/bin/python -m pytest -q           # jailed, no network
+oxbox apply --log logs/<ts>                        # sandbox only
+oxbox run -- .venv/bin/python -m pytest -q         # jailed, no network
 git -C sandbox/work diff HEAD                      # what actually changed
-./oxseed --clean                                   # burn it down
+oxbox seed --clean                                 # burn it down
 ```
 
 Dependencies are installed **outside** the jail (it has no network), then
@@ -93,7 +98,7 @@ executed inside it.
   shared pool, not a second draw on the same one.) Do not "fix" a 429 by
   touching the privacy toggle; that is the 404's remedy and it is already
   right.
-- `ox` exits non-zero on an API error, but a pipeline masks it: `./ox … |
+- `ox` exits non-zero on an API error, but a pipeline masks it: `oxbox ask … |
   tail` reports `tail`'s exit status, not `ox`'s. A script that must pipe
   needs `set -o pipefail`; better is not to pipe — `--output` writes the
   answer to a file (removed first, so a failed run cannot leave a stale one)
@@ -143,7 +148,7 @@ executed inside it.
 - Re-run ALL THREE suites after any change to `profiles/jail.sb`, `oxbox`, `ox`,
   or the validators: `python3 guardtest.py` (pre-jail refusals plus positive
   controls), `python3 wiretest.py` (what the request actually carries, against a
-  local listener), and `./oxbox -- python3 jailtest.py` (in-jail probes). A jail
+  local listener), and `./oxbox run -- python3 jailtest.py` (in-jail probes). A jail
   you have not tested since editing is decoration.
 - **A wire test must drive `ox`, never rebuild its logic.** The first version of
   the redirect check constructed an opener with `NoRedirects` itself, so it passed
@@ -213,8 +218,31 @@ executed inside it.
   the seatbelt profile (`profiles/jail.sb` beside the script, or
   `../share/oxbox/jail.sb` in an installed prefix — `find_profile` in
   `oxbox`) and the ox-review skill (`.claude/skills/ox-review` beside the
-  script, or `../share/oxbox/ox-review` — `find_skill`, carried by all four
-  tools). Keep new state cwd-anchored and new code assets on that pattern.
+  script, or `share/oxbox/ox-review` one, two or three levels up —
+  `find_skill`, carried by all four tools, because the helpers sit in
+  `libexec/bin` or `libexec/oxbox/bin` below the prefix). A third asset is
+  the helpers themselves, which `oxbox` resolves from its own location
+  (`helper_dirs`). Keep new state cwd-anchored and new code assets on that
+  pattern.
+- **`oxbox` is the front door, and the helpers stay off PATH.** The pattern
+  is paniolo's: one command installs to `bin`, its helper scripts install to
+  a private `libexec` directory, each workflow step is a subcommand that
+  execs the script doing that job, and `oxbox helper [NAME]` lists or runs
+  one directly. `helper_dirs` resolves, in order, beside the script with
+  symlinks resolved (a checkout), `<prefix>/libexec/bin` (Homebrew keg, macOS
+  tarball, MSI), `<prefix>/libexec/oxbox/bin` (the `.deb`),
+  `/usr/libexec/oxbox/bin`, then PATH as a transitional fallback for an
+  install from before the move — and never the working directory, which is
+  untrusted input. Homebrew links `bin/` and `share/` into its prefix but
+  never `libexec/`, which is why the symlink is resolved first. The bare
+  `oxbox -- cmd` form stays the jail so nothing that worked stops, and a
+  helper's flag typed at `oxbox` (`oxbox --manifest`, the first thing a
+  reader tried) is answered with the subcommand that takes it, exit 2. The
+  ox-review scripts find ox as `oxbox ask` when only `oxbox` is on PATH,
+  after trying a bare `ox` — a bare `ox` on PATH means an older install
+  whose `oxbox` has no subcommands. guardtest stages both installed layouts
+  with an emptied PATH; the release smoke tests prove the same against the
+  real packages and assert the helpers are *not* in `bin`.
 - **`find_skill`/`print_skill` is duplicated four times on purpose, like
   `VERSION`.** Each tool is a standalone script, so sharing the block would
   mean shipping a module and a `sys.path` to find it on — which is a bigger
@@ -232,21 +260,23 @@ executed inside it.
   layout; a tap that installs only the four executables leaves `--skill`
   refusing on brew installs.
 - **Four channels, one layout.** The release ships a `.deb` (Linux, a `/usr`
-  prefix, `packaging/nfpm.yaml`), a macOS tarball (a relocatable `bin/` beside
-  `share/`, `packaging/macos-tarball.sh`) and a Windows MSI (per-user under
-  `%LOCALAPPDATA%\Programs\oxbox`, `packaging/windows/`); the Homebrew
-  formula installs that same prefix into the Cellar. All four are the same
-  shape because `find_profile` and `find_skill` know exactly one rule —
-  `../share/oxbox` from the script — so a change to that resolution breaks
+  prefix, `packaging/nfpm.yaml`), a macOS tarball (a relocatable `bin/`
+  beside `libexec/` and `share/`, `packaging/macos-tarball.sh`) and a Windows
+  MSI (per-user under `%LOCALAPPDATA%\Programs\oxbox`, `packaging/windows/`);
+  the Homebrew formula installs that same prefix into the Cellar. All four
+  are the same shape because the lookups know one prefix — `oxbox` in `bin`,
+  the helpers in `libexec/bin` (`libexec/oxbox/bin` for the `.deb`, the FHS
+  spelling), assets in `share/oxbox` — so a change to that resolution breaks
   four packages at once, and a new asset has to be added in four places. Each
   is smoke-tested by the job that builds it, installed for real; the macOS
   tarball is unpacked into a scratch prefix rather than copied over
   `/usr/local`, because running from wherever you put it is what that
   artifact promises.
-- **Windows ships each tool twice, and one of the four is a refusal.** `bin\`
-  in the MSI holds the extensionless script and a `.cmd` shim beside it,
-  because Windows cannot execute a shebang; the shim is what the PATH entry
-  makes typeable. Write those shims with labels and never with parenthesised
+- **Windows ships `oxbox` twice, and it is a refusal.** `bin\` in the MSI
+  holds the extensionless script and a `.cmd` shim beside it, because Windows
+  cannot execute a shebang; the shim is what the PATH entry makes typeable.
+  The helpers in `libexec\bin` need no shim: `oxbox` runs them through its
+  own interpreter. Write the shim with labels and never with parenthesised
   blocks — `%errorlevel%` inside a block expands when the block is parsed
   rather than when it runs — and treat the exit code as load-bearing, because
   `oxbox` exits 78 on native Windows by design and a shim that swallowed that

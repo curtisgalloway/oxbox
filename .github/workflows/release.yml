@@ -117,10 +117,16 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          test -x /usr/bin/ox
           test -x /usr/bin/oxbox
-          test -x /usr/bin/oxapply
-          test -x /usr/bin/oxseed
+          test -x /usr/libexec/oxbox/bin/ox
+          test -x /usr/libexec/oxbox/bin/oxapply
+          test -x /usr/libexec/oxbox/bin/oxseed
+          # The helpers left PATH on purpose: oxbox is the one command, and a
+          # package that still put them in bin would be two ways to run
+          # everything.
+          test ! -e /usr/bin/ox
+          test ! -e /usr/bin/oxapply
+          test ! -e /usr/bin/oxseed
           test -f /usr/share/doc/oxbox/LICENSE
           scratch="$RUNNER_TEMP/smoke"
           mkdir -p "$scratch/srcrepo"
@@ -133,14 +139,17 @@ jobs:
           # What is being asserted here is that the tool on PATH is this
           # checkout's tool.
           expected="$(python3 "$GITHUB_WORKSPACE/ox" --version)"
-          [ "$(/usr/bin/ox --version)" = "$expected" ]
-          /usr/bin/oxseed "$scratch/srcrepo" thing.py
+          # Through the front door and through the escape hatch: both have
+          # to find the ox this package shipped in /usr/libexec/oxbox/bin.
+          [ "$(/usr/bin/oxbox ask --version)" = "$expected" ]
+          [ "$(/usr/bin/oxbox helper ox --version)" = "$expected" ]
+          /usr/bin/oxbox seed "$scratch/srcrepo" thing.py
           # A dry run needs no key and proves logs land in the working
           # directory, not somewhere script-relative under /usr. --model is
           # explicit because no venue carries a default: this asserts where
           # the log lands, not how a model gets chosen, and a bare run is
           # supposed to refuse.
-          /usr/bin/ox --model smoke-test --mode ask --dry-run "hello" > /dev/null
+          /usr/bin/oxbox ask --model smoke-test --mode ask --dry-run "hello" > /dev/null
           test -f "$scratch"/logs/*/meta.json
           # --skill reads a packaged file, so it fails exactly when the
           # package forgets to ship one. It must also rewrite the runbook's
@@ -148,17 +157,30 @@ jobs:
           # name a .claude directory that does not exist here. All four
           # tools answer it, and wiretest already proves they agree in a
           # checkout — what only an installed system can show is that the
-          # lookup still resolves from /usr/bin.
+          # lookup still resolves from /usr/bin, and from the helpers'
+          # /usr/libexec/oxbox/bin three levels below share/.
+          /usr/bin/oxbox --skill 2>/dev/null > skill-oxbox.md
+          for tool in ox oxseed oxapply; do
+            /usr/bin/oxbox helper "$tool" --skill 2>/dev/null > "skill-$tool.md"
+          done
           for tool in ox oxbox oxseed oxapply; do
-            "/usr/bin/$tool" --skill 2>/dev/null > "skill-$tool.md"
             grep -q '^name: ox-review' "skill-$tool.md"
             grep -q '/usr/share/oxbox/ox-review/scripts/preflight.py' "skill-$tool.md"
             cmp -s skill-ox.md "skill-$tool.md"
           done
           test -f /usr/share/oxbox/ox-review/scripts/exposure.py
-          # The full in-jail probe suite, against the installed oxbox.
+          # The front door's own guard, against the installed copy: the flag
+          # a reader types first has to be answered with the command that
+          # takes it.
+          if /usr/bin/oxbox --manifest x 2> front-door.txt; then
+            echo "::error::oxbox --manifest should have been refused"
+            exit 1
+          fi
+          grep -q 'oxbox ask --manifest' front-door.txt
+          # The full in-jail probe suite, against the installed oxbox, in
+          # the subcommand form; the macOS job uses the bare form.
           cp "$GITHUB_WORKSPACE/jailtest.py" sandbox/work/jailtest.py
-          /usr/bin/oxbox -- /usr/bin/python3 jailtest.py
+          /usr/bin/oxbox run -- /usr/bin/python3 jailtest.py
 
       - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v7.0.1
         with:
@@ -199,10 +221,11 @@ jobs:
           mkdir -p "$prefix"
           tar xzf "dist/oxbox-${VERSION}-macos.tar.gz" -C "$prefix" \
             --strip-components 1
-          test -x "$prefix/bin/ox"
           test -x "$prefix/bin/oxbox"
-          test -x "$prefix/bin/oxapply"
-          test -x "$prefix/bin/oxseed"
+          test -x "$prefix/libexec/bin/ox"
+          test -x "$prefix/libexec/bin/oxapply"
+          test -x "$prefix/libexec/bin/oxseed"
+          test ! -e "$prefix/bin/ox"
           test -f "$prefix/share/doc/oxbox/LICENSE"
           # The seatbelt profile, which the .deb has no reason to ship and a
           # macOS package has every reason to: without it oxbox refuses.
@@ -212,14 +235,18 @@ jobs:
           echo 'print("hi")' > "$scratch/srcrepo/thing.py"
           cd "$scratch"
           expected="$(python3 "$GITHUB_WORKSPACE/ox" --version)"
-          [ "$("$prefix/bin/ox" --version)" = "$expected" ]
-          "$prefix/bin/oxseed" "$scratch/srcrepo" thing.py
+          [ "$("$prefix/bin/oxbox" ask --version)" = "$expected" ]
+          [ "$("$prefix/bin/oxbox" helper ox --version)" = "$expected" ]
+          "$prefix/bin/oxbox" seed "$scratch/srcrepo" thing.py
           # --model is explicit: no venue carries a default, and this
           # asserts where the log lands rather than how a model is chosen.
-          "$prefix/bin/ox" --model smoke-test --mode ask --dry-run "hello" > /dev/null
+          "$prefix/bin/oxbox" ask --model smoke-test --mode ask --dry-run "hello" > /dev/null
           test -f "$scratch"/logs/*/meta.json
+          "$prefix/bin/oxbox" --skill 2>/dev/null > skill-oxbox.md
+          for tool in ox oxseed oxapply; do
+            "$prefix/bin/oxbox" helper "$tool" --skill 2>/dev/null > "skill-$tool.md"
+          done
           for tool in ox oxbox oxseed oxapply; do
-            "$prefix/bin/$tool" --skill 2>/dev/null > "skill-$tool.md"
             grep -q '^name: ox-review' "skill-$tool.md"
             grep -q "$prefix/share/oxbox/ox-review/scripts/preflight.py" \
               "skill-$tool.md"
@@ -351,9 +378,11 @@ jobs:
             throw "msiexec install failed: $($p.ExitCode)"
           }
           $prefix = Join-Path $env:LOCALAPPDATA "Programs\oxbox"
-          foreach ($tool in 'ox', 'oxbox', 'oxseed', 'oxapply') {
-            if (-not (Test-Path "$prefix\bin\$tool")) { throw "no $tool in the install" }
-            if (-not (Test-Path "$prefix\bin\$tool.cmd")) { throw "no $tool.cmd shim in the install" }
+          if (-not (Test-Path "$prefix\bin\oxbox")) { throw "no oxbox in the install" }
+          if (-not (Test-Path "$prefix\bin\oxbox.cmd")) { throw "no oxbox.cmd shim in the install" }
+          foreach ($tool in 'ox', 'oxseed', 'oxapply') {
+            if (-not (Test-Path "$prefix\libexec\bin\$tool")) { throw "no $tool in the install" }
+            if (Test-Path "$prefix\bin\$tool") { throw "$tool is in bin; the helpers live in libexec" }
           }
           if (-not (Test-Path "$prefix\doc\LICENSE")) { throw "the package shipped no LICENSE" }
           if (-not (Test-Path "$prefix\share\oxbox\ox-review\scripts\exposure.py")) {
@@ -365,22 +394,26 @@ jobs:
           # tools' VERSION, and the version job already refused a tag that
           # disagreed.
           $expected = & python "$env:GITHUB_WORKSPACE\ox" --version
-          $actual = & "$prefix\bin\ox.cmd" --version
+          $actual = & "$prefix\bin\oxbox.cmd" ask --version
           if ($actual -ne $expected) {
             throw "installed ox reports '$actual', this checkout says '$expected'"
+          }
+          $actual = & "$prefix\bin\oxbox.cmd" helper ox --version
+          if ($actual -ne $expected) {
+            throw "oxbox helper ox reports '$actual', this checkout says '$expected'"
           }
 
           $scratch = Join-Path $env:RUNNER_TEMP "smoke"
           New-Item -ItemType Directory -Force "$scratch\srcrepo" | Out-Null
           Set-Content "$scratch\srcrepo\thing.py" 'print("hi")'
           Set-Location $scratch
-          & "$prefix\bin\oxseed.cmd" "$scratch\srcrepo" thing.py
+          & "$prefix\bin\oxbox.cmd" seed "$scratch\srcrepo" thing.py
           if ($LASTEXITCODE -ne 0) { throw "oxseed failed: $LASTEXITCODE" }
           # No key needed, and it proves the log lands in the working
           # directory rather than beside the scripts under LocalAppData.
           # --model is explicit: no venue carries a default, and this
           # asserts where the log lands rather than how a model is chosen.
-          & "$prefix\bin\ox.cmd" --model smoke-test --mode ask --dry-run hello > $null
+          & "$prefix\bin\oxbox.cmd" ask --model smoke-test --mode ask --dry-run hello > $null
           if ($LASTEXITCODE -ne 0) { throw "ox dry run failed: $LASTEXITCODE" }
           if (-not (Get-ChildItem "$scratch\logs\*\meta.json")) {
             throw "the run logged nothing into the working directory"
@@ -398,8 +431,15 @@ jobs:
           # the substitution leaves mixed separators on Windows: a backslash
           # prefix followed by the document's own forward slashes.
           $first = $null
-          foreach ($tool in 'ox', 'oxbox', 'oxseed', 'oxapply') {
-            $text = (& "$prefix\bin\$tool.cmd" --skill) -join "`n"
+          $forms = @{
+            'oxbox' = @('--skill')
+            'ox' = @('helper', 'ox', '--skill')
+            'oxseed' = @('helper', 'oxseed', '--skill')
+            'oxapply' = @('helper', 'oxapply', '--skill')
+          }
+          foreach ($tool in 'oxbox', 'ox', 'oxseed', 'oxapply') {
+            $form = $forms[$tool]
+            $text = (& "$prefix\bin\oxbox.cmd" @form) -join "`n"
             if ($text -notmatch '(?m)^name: ox-review') {
               throw "$tool --skill did not print the runbook"
             }
@@ -426,7 +466,8 @@ jobs:
           Write-Host "== uninstalling"
           $p = Start-Process msiexec -Wait -PassThru -ArgumentList '/x', "`"$env:MSI_PATH`"", '/qn'
           if ($p.ExitCode -ne 0) { throw "msiexec uninstall failed: $($p.ExitCode)" }
-          if (Test-Path "$prefix\bin\ox") { throw "uninstall left the tools behind" }
+          if (Test-Path "$prefix\bin\oxbox") { throw "uninstall left the tools behind" }
+          if (Test-Path "$prefix\libexec\bin\ox") { throw "uninstall left the helpers behind" }
 
           # Explicitly, and this is the whole reason the step took four
           # attempts. GitHub's pwsh shell appends `exit $LASTEXITCODE` to

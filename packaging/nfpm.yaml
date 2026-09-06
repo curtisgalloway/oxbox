@@ -5,8 +5,9 @@
 # VERSION is injected as an environment variable by the workflow. Pure Python,
 # so the package is arch-independent (arch: all) and nothing is compiled.
 #
-# Layout matches what the tools expect when installed (see find_profile in
-# oxbox): executables on PATH, and shared data under /usr/share/oxbox — though
+# Layout matches what the tools expect when installed (see helper_dirs and
+# find_skill in oxbox): oxbox on PATH, the three helper scripts it runs in
+# /usr/libexec/oxbox/bin, and shared data under /usr/share/oxbox — though
 # the seatbelt profile is macOS-only, so the Linux .deb does not ship it; the
 # Linux jail is bubblewrap, listed as a hard dependency because without it
 # there is no jail and oxbox refuses to run.
@@ -29,30 +30,33 @@ homepage: https://github.com/curtisgalloway/oxbox
 license: Apache-2.0
 description: |
   Supervised harness for pointing an untrusted LLM at your code.
-  No tools, no shell, no network path back to your machine: ox talks to
-  the model (text in, text out, full audit log), oxseed builds a
-  disposable sandbox copy, oxapply quarantines its patches into the
-  sandbox, and oxbox executes the result under bubblewrap with no
-  network and no writes outside the sandbox.
+  No tools, no shell, no network path back to your machine: oxbox ask
+  talks to the model (text in, text out, full audit log), oxbox seed
+  builds a disposable sandbox copy, oxbox apply quarantines its patches
+  into the sandbox, and oxbox run executes the result under bubblewrap
+  with no network and no writes outside the sandbox.
 depends:
   - python3
   - bubblewrap
   - git
 contents:
-  - src: ox
-    dst: /usr/bin/ox
-    file_info:
-      mode: 0o755
   - src: oxbox
     dst: /usr/bin/oxbox
     file_info:
       mode: 0o755
+  # The helpers live off PATH. oxbox finds them at <prefix>/libexec/oxbox/bin
+  # from its own location (helper_dirs); `oxbox seed`, `oxbox ask` and
+  # `oxbox apply` run them, and `oxbox helper <name>` runs one directly.
+  - src: ox
+    dst: /usr/libexec/oxbox/bin/ox
+    file_info:
+      mode: 0o755
   - src: oxapply
-    dst: /usr/bin/oxapply
+    dst: /usr/libexec/oxbox/bin/oxapply
     file_info:
       mode: 0o755
   - src: oxseed
-    dst: /usr/bin/oxseed
+    dst: /usr/libexec/oxbox/bin/oxseed
     file_info:
       mode: 0o755
   # The ox-review agent skill. `ox --skill` prints it, and looks for it here

@@ -9,7 +9,7 @@ reproduced -- these are regression tests, not hypotheticals.
 
     python3 guardtest.py
 
-NOTE: re-seeds sandbox/work. Run ./oxseed --clean afterwards if you care.
+NOTE: re-seeds sandbox/work. Run ./oxbox seed --clean afterwards if you care.
 """
 
 import os
@@ -503,6 +503,87 @@ def main():
     survived = marker.is_file()
     report(code == 0 and survived, "oxseed --skill destroys nothing",
            f"exit={code} sandbox_intact={survived}")
+
+    print("\n=== the front door ===")
+    # The project is called oxbox, so oxbox is what a reader types first --
+    # and the first thing one typed was ox's --manifest, which the jail
+    # answered with "unexpected argument". Now it names the command that
+    # takes the flag, and exits 2 so a script can tell a usage error from a
+    # refusal.
+    done = subprocess.run(OXBOX + ["--manifest", "x"], capture_output=True,
+                          text=True)
+    report(done.returncode == 2 and "oxbox ask --manifest" in done.stderr,
+           "oxbox --manifest says the flag belongs to ox",
+           f"exit={done.returncode} stderr={done.stderr.strip()!r}")
+    done = subprocess.run(OXBOX + ["pytest", "-q"], capture_output=True, text=True)
+    report(done.returncode == 2 and "oxbox -- pytest" in done.stderr,
+           "oxbox <word> names the commands and the -- form",
+           f"exit={done.returncode} stderr={done.stderr.strip()!r}")
+
+    # Positive controls: each subcommand reaches its helper, and the helper
+    # is the one beside this oxbox, not whatever an old install left on
+    # PATH. --version is the cheapest question that proves which script
+    # answered.
+    versions = {}
+    for tool, argv in (("ox", OX), ("oxseed", OXSEED), ("oxapply", OXAPPLY)):
+        versions[tool] = subprocess.run(argv + ["--version"], capture_output=True,
+                                        text=True).stdout.strip()
+    for sub, tool in (("ask", "ox"), ("seed", "oxseed"), ("apply", "oxapply")):
+        done = subprocess.run(OXBOX + [sub, "--version"], capture_output=True,
+                              text=True)
+        report(done.returncode == 0 and done.stdout.strip() == versions[tool],
+               f"oxbox {sub} runs {tool}",
+               f"exit={done.returncode} stdout={done.stdout.strip()!r}")
+    done = subprocess.run(OXBOX + ["helper", "ox", "--version"],
+                          capture_output=True, text=True)
+    report(done.returncode == 0 and done.stdout.strip() == versions["ox"],
+           "oxbox helper ox runs ox", f"stdout={done.stdout.strip()!r}")
+    done = subprocess.run(OXBOX + ["helper"], capture_output=True, text=True)
+    listed = [line.split()[0] for line in done.stdout.splitlines() if line.strip()]
+    report(done.returncode == 0 and listed == ["ox", "oxseed", "oxapply"],
+           "oxbox helper lists the three helpers", f"stdout={done.stdout!r}")
+    expect_refused("oxbox helper refuses a name that is not a helper",
+                   OXBOX + ["helper", "python3", "-c", "pass"])
+
+    # The installed layouts, staged for real: oxbox in <prefix>/bin with the
+    # helpers in <prefix>/libexec/bin (Homebrew keg, macOS tarball, MSI) or
+    # <prefix>/libexec/oxbox/bin (the .deb), and the skill under
+    # <prefix>/share/oxbox. PATH is emptied so the only way to find ox is the
+    # layout; a lookup that quietly fell back to the checkout or to an
+    # installed copy would pass for the wrong reason. The release workflow
+    # proves the same thing against real packages, but only on a tag.
+    skill_source = HERE / ".claude" / "skills" / "ox-review" / "SKILL.md"
+    for label, helper_sub in (("keg", ("libexec", "bin")),
+                              ("fhs", ("libexec", "oxbox", "bin"))):
+        prefix = temp / ("prefix-" + label)
+        (prefix / "bin").mkdir(parents=True)
+        shutil.copy(HERE / "oxbox", prefix / "bin" / "oxbox")
+        helper_dir = prefix.joinpath(*helper_sub)
+        helper_dir.mkdir(parents=True)
+        shutil.copy(HERE / "ox", helper_dir / "ox")
+        skill_dir = prefix / "share" / "oxbox" / "ox-review"
+        skill_dir.mkdir(parents=True)
+        shutil.copy(skill_source, skill_dir / "SKILL.md")
+        empty = temp / "empty-path"
+        empty.mkdir(exist_ok=True)
+        env = dict(os.environ, PATH=str(empty))
+        staged = [sys.executable, str(prefix / "bin" / "oxbox")]
+        done = subprocess.run(staged + ["ask", "--version"], capture_output=True,
+                              text=True, env=env)
+        report(done.returncode == 0 and done.stdout.strip() == versions["ox"],
+               f"oxbox ask finds ox in the {label} layout with nothing on PATH",
+               f"exit={done.returncode} stderr={done.stderr.strip()!r}")
+        done = subprocess.run(staged + ["helper", "ox", "--skill"],
+                              capture_output=True, text=True, env=env)
+        report(done.returncode == 0 and str(skill_dir) in done.stderr,
+               f"a helper in the {label} layout finds the skill under share/",
+               f"exit={done.returncode} stderr={done.stderr.strip()!r}")
+        (helper_dir / "ox").unlink()
+        done = subprocess.run(staged + ["ask", "--version"], capture_output=True,
+                              text=True, env=env)
+        report(done.returncode == 3,
+               f"oxbox ask exits 3 when the {label} layout has no ox",
+               f"exit={done.returncode}")
 
     shutil.rmtree(temp, ignore_errors=True)
 

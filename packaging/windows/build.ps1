@@ -10,12 +10,15 @@
 # WIX7015 -- the Open Source Maintenance Fee EULA, whose fee applies only to
 # consumers generating revenue, which this is not).
 #
-# The staged layout is the same prefix the .deb and the macOS tarball install,
-# because find_skill knows exactly one rule: ..\share\oxbox from the script's
-# own directory. What is different on Windows is bin\, which holds each tool
-# twice -- the extensionless Python script, and a .cmd shim beside it, because
-# Windows cannot execute a shebang. The shim is what the PATH entry makes
-# typeable; the script is what it runs.
+# The staged layout is the same prefix the .deb and the macOS tarball install:
+# oxbox in bin\, the three helpers it runs in libexec\bin\ (helper_dirs finds
+# them at ..\libexec\bin from oxbox), and the skill under share\oxbox, which
+# find_skill resolves one, two or three levels up from whichever script asks.
+# What is different on Windows is bin\, which holds oxbox twice -- the
+# extensionless Python script, and a .cmd shim beside it, because Windows
+# cannot execute a shebang. The shim is what the PATH entry makes typeable;
+# the script is what it runs. The helpers need no shim: oxbox runs them
+# through its own interpreter.
 #
 # jail.sb is deliberately absent: there is no jail on native Windows and
 # oxbox refuses rather than pretending. It is packaged anyway, refusal and
@@ -48,14 +51,16 @@ $Stage = Join-Path $OutDir "stage"
 if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
 
 $BinDir = Join-Path $Stage "bin"
+$LibexecDir = Join-Path $Stage "libexec\bin"
 $SkillDir = Join-Path $Stage "share\oxbox\ox-review"
 $ScriptsDir = Join-Path $SkillDir "scripts"
 $DocDir = Join-Path $Stage "doc"
-foreach ($dir in @($BinDir, $ScriptsDir, $DocDir)) {
+foreach ($dir in @($BinDir, $LibexecDir, $ScriptsDir, $DocDir)) {
     New-Item -ItemType Directory -Force $dir | Out-Null
 }
 
-$Tools = @("ox", "oxbox", "oxapply", "oxseed")
+$Tools = @("oxbox")
+$Helpers = @("ox", "oxapply", "oxseed")
 
 # %~dp0 ends in a backslash, so "%~dp0ox" is the script beside this shim.
 # No parenthesised blocks anywhere: %errorlevel% inside one expands when the
@@ -92,6 +97,10 @@ foreach ($tool in $Tools) {
         (Join-Path $BinDir "$tool.cmd"),
         (($lines -join "`r`n") + "`r`n"),
         [System.Text.Encoding]::ASCII)
+}
+
+foreach ($helper in $Helpers) {
+    Copy-Item (Join-Path $Repo $helper) (Join-Path $LibexecDir $helper)
 }
 
 Copy-Item (Join-Path $Repo ".claude\skills\ox-review\SKILL.md") (Join-Path $SkillDir "SKILL.md")

@@ -42,11 +42,13 @@ Three things do the work:
 | `scripts/exposure.py` | Answers "can a stranger already clone this?" with a real unauthenticated probe. Called by preflight; run it alone to re-check. |
 | `scripts/oxreview.py` | Runs one review batch. Serializes every batch machine-wide and backs off on a busy pool. |
 
-`ox --skill` prints this document with the script paths of whichever
-installation you are standing in, so an agent that has these tools on `PATH` can
-find the runbook without being told where it lives. `oxbox`, `oxseed` and
-`oxapply` answer `--skill` with the same document, and all four list it in
-`--help`, so whichever one an agent reaches for first leads here.
+`oxbox --skill` prints this document with the script paths of whichever
+installation you are standing in, so an agent that has `oxbox` on `PATH` can
+find the runbook without being told where it lives. `oxbox` is the one command;
+`ox`, `oxseed` and `oxapply` are the scripts it runs for `oxbox ask`,
+`oxbox seed` and `oxbox apply`, and each answers `--skill` with the same
+document (`oxbox helper ox --skill`), so whichever one an agent reaches for
+first leads here.
 
 Run everything from the project root. oxbox anchors its state at the working
 directory: `logs/` and the queue live beside the code under review.
@@ -317,14 +319,14 @@ automated.
 
 The scripts are self-contained (Python 3.9+, standard library only, no
 third-party packages — the same floor the rest of oxbox holds to). An agent that
-only has the tools on `PATH` can work straight from `ox --skill` — or
-`oxbox`/`oxseed`/`oxapply --skill`, which print the same thing — whose commands
+only has `oxbox` on `PATH` can work straight from `oxbox --skill` — or
+`oxbox helper ox --skill`, which prints the same thing — whose commands
 already point at the installed scripts. To make Claude Code load this
 as a skill in another project, copy `.claude/skills/ox-review/` into that
 project's `.claude/skills/`, or into `~/.claude/skills/` to have it everywhere,
-then make sure `ox` is reachable:
-installed on `PATH`, named by `OX`, or an oxbox checkout pointed at by
-`OXBOX_HOME`. Two more variables make it work from any project with no
+then make sure ox is reachable: `oxbox` installed on `PATH` (the scripts run
+`oxbox ask`), the `ox` script itself named by `OX`, or an oxbox checkout
+pointed at by `OXBOX_HOME`. Two more variables make it work from any project with no
 per-project setup: `OXBOX_MANIFEST`, the current manifest as a file or https
 URL, and `OXBOX_ENV_FILE`, the 1Password `.env` holding the venue keys.
 

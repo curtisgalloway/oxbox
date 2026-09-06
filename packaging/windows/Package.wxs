@@ -53,6 +53,9 @@ Design notes:
       <Directory Id="ProgramsDir" Name="Programs">
         <Directory Id="INSTALLFOLDER" Name="oxbox">
           <Directory Id="BINFOLDER" Name="bin" />
+          <Directory Id="LibexecDir" Name="libexec">
+            <Directory Id="LibexecBinDir" Name="bin" />
+          </Directory>
           <Directory Id="ShareDir" Name="share">
             <Directory Id="ShareOxboxDir" Name="oxbox">
               <Directory Id="SkillDir" Name="ox-review">
@@ -66,19 +69,13 @@ Design notes:
     </StandardDirectory>
 
     <ComponentGroup Id="OxboxComponents">
-      <!-- The tools, and the PATH entry that makes them typeable. Both the
-           script and its shim live here: find_skill resolves
+      <!-- The front door, and the PATH entry that makes it typeable. Both
+           the script and its shim live here: find_skill resolves
            ..\share\oxbox\ox-review from the script's own directory, which is
            what makes this layout the same one the .deb and the tarball use. -->
       <Component Id="cmpBin" Directory="BINFOLDER" Guid="3CDF51ED-AB68-4987-84E7-0691E0A5E3D8">
-        <File Id="filOx" Name="ox" Source="$(var.StageDir)\bin\ox" />
-        <File Id="filOxCmd" Name="ox.cmd" Source="$(var.StageDir)\bin\ox.cmd" />
         <File Id="filOxbox" Name="oxbox" Source="$(var.StageDir)\bin\oxbox" />
         <File Id="filOxboxCmd" Name="oxbox.cmd" Source="$(var.StageDir)\bin\oxbox.cmd" />
-        <File Id="filOxseed" Name="oxseed" Source="$(var.StageDir)\bin\oxseed" />
-        <File Id="filOxseedCmd" Name="oxseed.cmd" Source="$(var.StageDir)\bin\oxseed.cmd" />
-        <File Id="filOxapply" Name="oxapply" Source="$(var.StageDir)\bin\oxapply" />
-        <File Id="filOxapplyCmd" Name="oxapply.cmd" Source="$(var.StageDir)\bin\oxapply.cmd" />
         <Environment Id="envPath" Name="PATH" Value="[BINFOLDER]" Action="set"
                      Part="last" System="no" Permanent="no" />
         <RegistryValue Root="HKCU" Key="Software\oxbox\msi" Name="bin"
@@ -88,6 +85,20 @@ Design notes:
         <!-- Only removed if empty; %LOCALAPPDATA%\Programs usually preexists
              and stays. Keeps ICE64 quiet. -->
         <RemoveFolder Id="rmProgramsDir" Directory="ProgramsDir" On="uninstall" />
+      </Component>
+
+      <!-- The helpers, off PATH. oxbox finds them at ..\libexec\bin from its
+           own directory (helper_dirs) and runs them through its interpreter,
+           so they need no shim; find_skill resolves ..\..\share\oxbox from
+           here. -->
+      <Component Id="cmpLibexec" Directory="LibexecBinDir" Guid="FAB339EE-44C8-4DD3-B70B-7F0B7A5C2048">
+        <File Id="filOx" Name="ox" Source="$(var.StageDir)\libexec\bin\ox" />
+        <File Id="filOxseed" Name="oxseed" Source="$(var.StageDir)\libexec\bin\oxseed" />
+        <File Id="filOxapply" Name="oxapply" Source="$(var.StageDir)\libexec\bin\oxapply" />
+        <RegistryValue Root="HKCU" Key="Software\oxbox\msi" Name="libexec"
+                       Value="1" Type="integer" KeyPath="yes" />
+        <RemoveFolder Id="rmLibexecBinDir" Directory="LibexecBinDir" On="uninstall" />
+        <RemoveFolder Id="rmLibexecDir" Directory="LibexecDir" On="uninstall" />
       </Component>
 
       <!-- The ox-review runbook. Without it all four tools refuse the skill

@@ -182,7 +182,7 @@ jobs:
           cp "$GITHUB_WORKSPACE/jailtest.py" sandbox/work/jailtest.py
           /usr/bin/oxbox jail -- /usr/bin/python3 jailtest.py
 
-      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: deb
           path: dist/*.deb
@@ -259,7 +259,7 @@ jobs:
           cp "$GITHUB_WORKSPACE/jailtest.py" sandbox/work/jailtest.py
           "$prefix/bin/oxbox" -- /usr/bin/python3 jailtest.py
 
-      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: macos-tarball
           path: dist/*.tar.gz
@@ -483,7 +483,7 @@ jobs:
           Write-Host "== ok"
           exit 0
 
-      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: msi
           path: dist/*.msi

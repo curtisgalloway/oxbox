@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+
+# One workspace, five executables, one shared crate. The executables are
+# separate packages rather than [[bin]] targets of one package because the
+# dependency tree is per package: `oxbox-jail`, `oxbox-sandbox`, `oxbox-patch`
+# and the `oxbox` dispatcher are standard-library only, and Cargo.lock has to
+# be able to show that. Only `oxbox-send` talks to the network, so only it
+# carries TLS, HTTP and JSON dependencies.
+
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.7.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/curtisgalloway/oxbox"
+
+[workspace.dependencies]
+oxbox-core = { path = "crates/oxbox-core" }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

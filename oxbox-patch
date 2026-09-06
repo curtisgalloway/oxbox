@@ -16,7 +16,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Where sandboxes live. Every sandbox is <root>/NAME, NAME defaulting to

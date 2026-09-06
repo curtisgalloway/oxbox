@@ -39,13 +39,13 @@ entirely. The README carries the dedicated-distro setup; keep the two in step.
 
 ## Containment layers
 
-1. **No hands.** `oxbox-ask` sends a plain chat completion with **no `tools` array**.
+1. **No hands.** `oxbox-send` sends a plain chat completion with **no `tools` array**.
    The model cannot run a command, read an unhanded file, or write to disk. Its
-   only output channel is text. If it ever emits `tool_calls` anyway, `oxbox-ask` logs
+   only output channel is text. If it ever emits `tool_calls` anyway, `oxbox-send` logs
    and warns.
 2. **Explicit context.** It sees only files named in `--files`. A secret scanner
    refuses to send anything matching common credential patterns.
-3. **Patch quarantine.** `oxbox-apply` applies diffs **only** into `sandbox/work`,
+3. **Patch quarantine.** `oxbox-patch` applies diffs **only** into `sandbox/work`,
    and refuses absolute paths or `..` traversal outright.
 4. **Execution jail.** `oxbox` runs code with **no network at all** and **no
    writes outside the sandbox** — seatbelt on macOS, bubblewrap on Linux, and a
@@ -58,16 +58,16 @@ entirely. The README carries the dedicated-distro setup; keep the two in step.
 ## Workflow
 
 `oxbox` is the one command; each step is a subcommand that execs the script
-of the same name (`oxbox sandbox` → `oxbox-sandbox`, `oxbox ask` →
-`oxbox-ask`, `oxbox apply` → `oxbox-apply`, `oxbox jail` → `oxbox-jail`),
+of the same name (`oxbox sandbox` → `oxbox-sandbox`, `oxbox send` →
+`oxbox-send`, `oxbox patch` → `oxbox-patch`, `oxbox jail` → `oxbox-jail`),
 and the bare `oxbox -- cmd` is still the jail. From a checkout, `./oxbox` in
 place of `oxbox`.
 
 ```bash
 oxbox sandbox --create /path/to/repo file1.py file2.py   # disposable copy + pristine commit
-op run --env-file .env -- oxbox ask --files file1.py "task"   # ask the model
+op run --env-file .env -- oxbox send --files file1.py "task"   # ask the model
 # a human/Claude reads logs/<ts>/content.md here
-oxbox apply --log logs/<ts>                        # sandbox only
+oxbox patch --log logs/<ts>                        # sandbox only
 oxbox jail -- .venv/bin/python -m pytest -q        # jailed, no network
 git -C sandbox/work diff HEAD                      # what actually changed
 oxbox sandbox --destroy                            # burn it down
@@ -96,15 +96,15 @@ executed inside it.
   it — only backing off. Serial requests with a 120-second retry floor
   clear it (measured: ~30 attempts across 18 batches, all cleared within
   three tries); concurrent requests trigger it reliably, so never fan out
-  against the shared pool. Timed retries belong in the caller, not in `oxbox-ask` —
+  against the shared pool. Timed retries belong in the caller, not in `oxbox-send` —
   exiting non-zero with the provider's error text intact is what makes the
   failure class diagnosable. (`--failover` is not a retry: it is one pass
   across *different* manifest entries, which is the polite move against a
   shared pool, not a second draw on the same one.) Do not "fix" a 429 by
   touching the privacy toggle; that is the 404's remedy and it is already
   right.
-- `oxbox-ask` exits non-zero on an API error, but a pipeline masks it: `oxbox ask … |
-  tail` reports `tail`'s exit status, not `oxbox-ask`'s. A script that must pipe
+- `oxbox-send` exits non-zero on an API error, but a pipeline masks it: `oxbox send … |
+  tail` reports `tail`'s exit status, not `oxbox-send`'s. A script that must pipe
   needs `set -o pipefail`; better is not to pipe — `--output` writes the
   answer to a file (removed first, so a failed run cannot leave a stale one)
   and `--status-file` writes a JSON summary (`ok`, `error`, `finish_reason`,
@@ -112,21 +112,21 @@ executed inside it.
   always written as `status.json` in the run's log directory.
 - Emits unified diffs with **zero trailing context**, ignoring an explicit
   instruction to include three lines. Such patches are rejected by both
-  `git apply` and GNU `patch`. `oxbox-apply` falls back to `--recount -C1` and
+  `git apply` and GNU `patch`. `oxbox-patch` falls back to `--recount -C1` and
   **warns loudly** when it has to, because a patch that only applies loosely
   deserves a closer read.
 
 ## Rules
 
-- Never point `oxbox-apply` at a real repository. It is sandbox-only by design;
+- Never point `oxbox-patch` at a real repository. It is sandbox-only by design;
   keep it that way.
 - Never run model-produced code outside `oxbox`.
-- **A key `oxbox ask` can send is a key the jail must not see.** `VENUES` in `oxbox-ask` and the
+- **A key `oxbox send` can send is a key the jail must not see.** `VENUES` in `oxbox-send` and the
   name list in `jailtest.py`'s `env_canary` move together — adding a venue
   without adding its key variable to that probe leaves the new credential
   outside the test that exists to catch exactly this.
 - **Never widen the destination without pinning the credential.** `--base-url`
-  requires `--api-key-env` on purpose: `oxbox-ask` sends the key as a Bearer token to
+  requires `--api-key-env` on purpose: `oxbox-send` sends the key as a Bearer token to
   whatever URL it is given, so a bare base-url flag over a hardcoded key is a
   credential-exfiltration path wearing a convenience flag. Named venues bind
   URL and key variable in one table entry; keep it that way.
@@ -138,7 +138,7 @@ executed inside it.
   table exists to close.
 - **A manifest named by URL is fetched under the venue request's rules.**
   https only, no redirects, and no credential — the fetch carries no
-  Authorization header and reads no key variable. The bytes `oxbox ask` used are
+  Authorization header and reads no key variable. The bytes `oxbox send` used are
   written to `manifest.json` in every attempt's log directory: `latest.json`
   moves with each issue and the survey reads runs back by manifest, so a
   digest alone would leave the audit trail pointing at a document that no
@@ -150,16 +150,16 @@ executed inside it.
   that silently switched targets would be corrupt data. `--failover` is one
   pass across permitted entries — no wrap-around, no waiting — and every
   attempt gets its own log directory and status entry.
-- Re-run ALL THREE suites after any change to `profiles/jail.sb`, `oxbox`, `oxbox-ask`,
+- Re-run ALL THREE suites after any change to `profiles/jail.sb`, `oxbox`, `oxbox-send`,
   or the validators: `python3 guardtest.py` (pre-jail refusals plus positive
   controls), `python3 wiretest.py` (what the request actually carries, against a
   local listener), and `./oxbox jail -- python3 jailtest.py` (in-jail probes). A jail
   you have not tested since editing is decoration.
-- **A wire test must drive `oxbox-ask`, never rebuild its logic.** The first version of
+- **A wire test must drive `oxbox-send`, never rebuild its logic.** The first version of
   the redirect check constructed an opener with `NoRedirects` itself, so it passed
-  even after `oxbox-ask` stopped using it — it asserted a property of the test. Every
+  even after `oxbox-send` stopped using it — it asserted a property of the test. Every
   assertion in `wiretest.py` has been mutation-checked: break the behavior in
-  `oxbox-ask` and confirm the test goes red before trusting it.
+  `oxbox-send` and confirm the test goes red before trusting it.
 - **A review fan-out stops at the queue.** `.claude/skills/ox-review` lets
   several subagents work one review, and every one of them sends through
   `oxreview.py`'s lock, so exactly one request is on the wire at a time. That
@@ -167,9 +167,9 @@ executed inside it.
   shared free pool are refused immediately while a serial queue with a
   120-second floor clears. Subagents are for reading and verifying findings;
   they buy nothing at the venue. Do not add a "just this once" bypass, and do
-  not let a batch call `oxbox-ask` directly.
+  not let a batch call `oxbox-send` directly.
 - **Ask before publishing someone's code.** The exposure gate in that skill is
-  not a formality: everything `oxbox-ask` sends is logged and shared with whoever owns
+  not a formality: everything `oxbox-send` sends is logged and shared with whoever owns
   the model, so a private repository is *published* by a review and nothing
   unpublishes it. The verdict comes from a real unauthenticated fetch rather
   than the shape of the hostname, because `github.example.com` is not
@@ -248,8 +248,8 @@ executed inside it.
   `oxbox -- cmd` form stays the jail so nothing that worked stops, and a
   helper's flag typed at `oxbox` (`oxbox --manifest`, the first thing a
   reader tried) is answered with the subcommand that takes it, exit 2. The
-  ox-review scripts find `oxbox ask` as `oxbox ask` when only `oxbox` is on PATH,
-  after trying a bare `oxbox-ask` — a bare `oxbox-ask` on PATH means an install from
+  ox-review scripts find `oxbox send` as `oxbox send` when only `oxbox` is on PATH,
+  after trying a bare `oxbox-send` — a bare `oxbox-send` on PATH means an install from
   before the rename, whose `oxbox` has no subcommands. guardtest stages both
   installed layouts with an emptied PATH; the release smoke tests prove the
   same against the real packages and assert the scripts are *not* in `bin`.
@@ -263,7 +263,7 @@ executed inside it.
 - **A packaged asset needs a smoke-test line, or it will be forgotten.**
   `oxbox --skill` reads a file the package has to ship, and the failure mode is
   silent until someone installs a package and asks for it. The release
-  workflow runs `--skill` against the installed `oxbox ask` and greps for the
+  workflow runs `--skill` against the installed `oxbox send` and greps for the
   rewritten script path, which fails both when the file is missing and when
   the path rewriting stops working. The Homebrew formula lives in
   `curtisgalloway/homebrew-tap` and needs the same `share/oxbox/ox-review`
@@ -311,7 +311,7 @@ executed inside it.
   already downloaded. The signing account is shared across projects; the
   onboarding runbook is `~/src/iac/mac-common/code-signing/README.md`.
 - **All three tools must agree on where the sandbox is.** `oxbox-sandbox`
-  creates it, `oxbox-apply` writes into it, `oxbox-jail` runs in it; they all derive it
+  creates it, `oxbox-patch` writes into it, `oxbox-jail` runs in it; they all derive it
   from the working directory. Changing the anchor in one without the others
   quietly splits the sandbox in two.
 - **The test suites assert against the checkout layout** (`guardtest`
@@ -321,7 +321,7 @@ executed inside it.
   package that breaks the jail cannot ship.
 - **The tag must match the tools.** Every tool carries `VERSION`; wiretest
   asserts the five agree, and the release workflow refuses a tag that
-  disagrees with `oxbox-ask --version`. Bump all five together.
+  disagrees with `oxbox-send --version`. Bump all five together.
 
 ## Cross-platform rules
 
@@ -338,8 +338,8 @@ executed inside it.
   no 3.10+ APIs: no `Path.write_text(newline=...)`, and `shutil.rmtree(onexc=)`
   stays behind its version check.
 - **Write patches and audit artifacts with explicit newlines.** Python's text
-  mode translates `\n` to `\r\n` on Windows. `oxbox-apply` writes its temp patch
-  with `newline=""` and `oxbox-ask` uses `write_lf`. Without that, git compares a CRLF
+  mode translates `\n` to `\r\n` on Windows. `oxbox-patch` writes its temp patch
+  with `newline=""` and `oxbox-send` uses `write_lf`. Without that, git compares a CRLF
   patch to an LF tree and rejects every patch with an error that reads like a
   malformed diff. Cost real time to find; only reproduces on Windows.
 - **End a `pwsh` CI step that asserts a non-zero exit with an explicit

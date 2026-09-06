@@ -1,7 +1,7 @@
 ---
 name: ox-review
 description: >-
-  Get a second-opinion code review from an outside model through `oxbox ask`,
+  Get a second-opinion code review from an outside model through `oxbox send`,
   fanned out across subagents that each verify the findings against the real
   source before reporting them. Use this whenever someone wants code reviewed by
   a model other than you — "have oxbox review this", "second opinion on my diff",
@@ -19,14 +19,14 @@ SPDX-FileCopyrightText: 2026 Curtis Galloway
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Reviewing code with oxbox ask
+# Reviewing code with oxbox send
 
-`oxbox-ask` sends source files to a model and returns findings as text. The model gets
+`oxbox-send` sends source files to a model and returns findings as text. The model gets
 no tools, no shell, and no path back to the machine — its only output is prose
 you read. That containment is what makes it safe to point an untrusted model at
 real code.
 
-What containment does **not** do is take the code back. The venues `oxbox-ask` talks to
+What containment does **not** do is take the code back. The venues `oxbox-send` talks to
 are evaluation deals: prompts and completions are logged and shared with whoever
 owns the model, and on OpenRouter a free cloaked listing only works with prompt
 logging switched *on*. Every byte sent is published to an unnamed third party,
@@ -38,16 +38,16 @@ Three things do the work:
 
 | | |
 |---|---|
-| `scripts/preflight.py` | Finds `oxbox ask`, picks the current manifest, asks `oxbox ask` where it would send, and runs the exposure gate. |
+| `scripts/preflight.py` | Finds `oxbox send`, picks the current manifest, asks `oxbox send` where it would send, and runs the exposure gate. |
 | `scripts/exposure.py` | Answers "can a stranger already clone this?" with a real unauthenticated probe. Called by preflight; run it alone to re-check. |
 | `scripts/oxreview.py` | Runs one review batch. Serializes every batch machine-wide and backs off on a busy pool. |
 
 `oxbox --skill` prints this document with the script paths of whichever
 installation you are standing in, so an agent that has `oxbox` on `PATH` can
 find the runbook without being told where it lives. `oxbox` is the one command;
-`oxbox-sandbox`, `oxbox-ask`, `oxbox-apply` and `oxbox-jail` are the scripts it
-runs for `oxbox sandbox`, `oxbox ask`, `oxbox apply` and `oxbox jail`, and each
-answers `--skill` with the same document (`oxbox helper ask --skill`), so
+`oxbox-sandbox`, `oxbox-send`, `oxbox-patch` and `oxbox-jail` are the scripts it
+runs for `oxbox sandbox`, `oxbox send`, `oxbox patch` and `oxbox jail`, and each
+answers `--skill` with the same document (`oxbox helper send --skill`), so
 whichever one an agent reaches for first leads here.
 
 Run everything from the project root. oxbox anchors its state at the working
@@ -61,25 +61,25 @@ python3 .claude/skills/ox-review/scripts/preflight.py
 
 Read the whole report; it is short and every section decides something.
 
-- **exit 0** — `oxbox ask` is ready and the project is publicly readable. Go to step 3.
-- **exit 10** — `oxbox ask` is ready but the exposure gate needs a human. Go to step 2.
-- **exit 1** — it cannot run. The report says why: no `oxbox ask`, no manifest, or no
+- **exit 0** — `oxbox send` is ready and the project is publicly readable. Go to step 3.
+- **exit 10** — `oxbox send` is ready but the exposure gate needs a human. Go to step 2.
+- **exit 1** — it cannot run. The report says why: no `oxbox send`, no manifest, or no
   manifest entry this run may use (usually a key that is not exported). Fix that
   with the user; do not work around it by hand-picking a venue.
 
 If no manifest is found, ask the user for the current one rather than falling
 back to a bare `--venue`/`--model`. The manifest is the record of *why* a
-destination was chosen, and `oxbox-ask` writes its sha256 into every run's `meta.json`
+destination was chosen, and `oxbox-send` writes its sha256 into every run's `meta.json`
 for exactly that reason. Point `--manifest` or `OXBOX_MANIFEST` at the issue's
 file, or at its https URL: the survey serves the current issue's manifest at
-<https://oxbox.ai/manifests/latest.json>, and `oxbox-ask` (0.5.0 or later) fetches it
+<https://oxbox.ai/manifests/latest.json>, and `oxbox-send` (0.5.0 or later) fetches it
 itself — https only, no redirects, no credential sent — and keeps the bytes it
 used as `manifest.json` in every run's log directory, so the audit trail
 survives the URL moving on to the next issue.
 
 If the venue keys live in 1Password, set `OXBOX_ENV_FILE` to the `.env` file
 holding the `op://` references (or pass `--env-file`). Both scripts then run
-`oxbox-ask` under `op run --env-file <file> --`, so the keys exist only inside `oxbox-ask`'s
+`oxbox-send` under `op run --env-file <file> --`, so the keys exist only inside `oxbox-send`'s
 own process and never in the agent's environment. Preflight names the file it
 will use under `== ox ==`.
 
@@ -136,11 +136,11 @@ git diff --name-only                        # uncommitted work
 ```
 
 Batch the files: at most **5 files or about 40 KB**, whichever comes first. Small
-batches beat one big call for a specific reason — `oxbox-ask` warns when an answer is
+batches beat one big call for a specific reason — `oxbox-send` warns when an answer is
 truncated at the token cap, and oxbox has watched a review get cut off four
 findings into fifteen. A batch that fits leaves the model room to finish.
 
-Keep secrets out of the payload. `oxbox-ask` has a scanner that refuses files matching
+Keep secrets out of the payload. `oxbox-send` has a scanner that refuses files matching
 credential patterns, and **`--force` exists to override it — never pass it.**
 `oxreview.py` does not offer the flag. If the scanner trips, that is the answer:
 drop the file.
@@ -158,7 +158,7 @@ queue behind each other at the venue and that is intended: the fan-out buys
 the others are reading source and checking claims, and none of the raw review
 dumps land in your context.
 
-Never call `oxbox-ask` directly from several agents, and never work around the queue.
+Never call `oxbox-send` directly from several agents, and never work around the queue.
 oxbox measured what happens: free cloaked listings share one upstream quota
 across everyone using them, a serial queue with a 120-second retry floor cleared
 every 429 within three attempts, and three concurrent requests were all refused
@@ -237,7 +237,7 @@ reviewed. A review with a silent hole in it is worse than a short one.
 
 Then stop. This skill produces findings, not changes. `--mode review` returns no
 patch by design, and model-produced patches belong in the sandbox flow —
-`oxbox-sandbox`, `oxbox-apply`, `oxbox-jail` — never applied to the real working tree. If the
+`oxbox-sandbox`, `oxbox-patch`, `oxbox-jail` — never applied to the real working tree. If the
 user wants fixes, either write them yourself from the confirmed findings, or run
 that flow deliberately.
 
@@ -251,7 +251,7 @@ that flow deliberately.
   <https://openrouter.ai/settings/privacy>, which is the same toggle that hands
   over your prompts. Never offer this as the fix for a 429; the setting is
   already correct there.
-- **Truncated answer.** `oxbox-ask` warns and `status.json` records it. Re-run that
+- **Truncated answer.** `oxbox-send` warns and `status.json` records it. Re-run that
   batch with fewer files rather than accepting a partial review as complete.
 
 ## Keeping the logs
@@ -287,7 +287,7 @@ logs/.oxsurvey-scraped.json
 Any run directory whose name **sorts above** `scraped_through` has not been read
 yet, and age does not override that. The comparison is a plain string
 comparison, not a timestamp parse — which is why `scraped_through` is written in
-the same shape `oxbox-ask` names directories, `%Y-%m-%dT%H-%M-%SZ`, with dashes in the
+the same shape `oxbox-send` names directories, `%Y-%m-%dT%H-%M-%SZ`, with dashes in the
 time and no colons.
 
 That detail carries more weight than it looks. While the two forms disagreed,
@@ -310,7 +310,7 @@ upwards to discover it exists.
 Nothing prunes automatically today — this is a rule for whoever prunes by hand,
 and for any tool that later does it for them. `OXBOX_LOG_RETENTION_DAYS` is the
 name reserved for that knob, in days, with `0` meaning keep everything; it is an
-environment variable rather than a config file because `oxbox-ask` has no config file
+environment variable rather than a config file because `oxbox-send` has no config file
 and one setting does not justify inventing one. Deletion is the only operation
 in this toolset with no undo, which is why it is documented here before it is
 automated.
@@ -320,12 +320,12 @@ automated.
 The scripts are self-contained (Python 3.9+, standard library only, no
 third-party packages — the same floor the rest of oxbox holds to). An agent that
 only has `oxbox` on `PATH` can work straight from `oxbox --skill` — or
-`oxbox helper ask --skill`, which prints the same thing — whose commands
+`oxbox helper send --skill`, which prints the same thing — whose commands
 already point at the installed scripts. To make Claude Code load this
 as a skill in another project, copy `.claude/skills/ox-review/` into that
 project's `.claude/skills/`, or into `~/.claude/skills/` to have it everywhere,
-then make sure `oxbox ask` is reachable: `oxbox` installed on `PATH` (the scripts run
-`oxbox ask`), the `oxbox-ask` script itself named by `OX`, or an oxbox checkout
+then make sure `oxbox send` is reachable: `oxbox` installed on `PATH` (the scripts run
+`oxbox send`), the `oxbox-send` script itself named by `OX`, or an oxbox checkout
 pointed at by `OXBOX_HOME`. Two more variables make it work from any project with no
 per-project setup: `OXBOX_MANIFEST`, the current manifest as a file or https
 URL, and `OXBOX_ENV_FILE`, the 1Password `.env` holding the venue keys.

@@ -42,7 +42,7 @@ install -m 0755 "$root/oxbox" "$stage/bin/oxbox"
 # The scripts live off PATH. oxbox finds them at ../libexec/bin from its own
 # location (helper_dirs); `oxbox <sub>` execs oxbox-<sub>, and
 # `oxbox helper <sub>` runs one directly.
-for tool in oxbox-sandbox oxbox-ask oxbox-apply oxbox-jail; do
+for tool in oxbox-sandbox oxbox-send oxbox-patch oxbox-jail; do
     install -m 0755 "$root/$tool" "$stage/libexec/bin/$tool"
 done
 

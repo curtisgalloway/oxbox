@@ -4,8 +4,8 @@
 """The one command: oxbox <subcommand>, handed to the script that does it.
 
     oxbox sandbox ...   -> oxbox-sandbox   build and tend the disposable copy
-    oxbox ask ...       -> oxbox-ask       send files to a model; text comes back
-    oxbox apply ...     -> oxbox-apply     apply its patch into the sandbox only
+    oxbox send ...      -> oxbox-send      send files to a model; text comes back
+    oxbox patch ...     -> oxbox-patch     apply its patch into the sandbox only
     oxbox jail -- cmd   -> oxbox-jail      run cmd with no network, no escape
 
 The four scripts live in a libexec directory rather than on PATH -- the
@@ -22,7 +22,7 @@ import sys
 
 VERSION = "0.6.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
-SUBCOMMANDS = ("sandbox", "ask", "apply", "jail")
+SUBCOMMANDS = ("sandbox", "send", "patch", "jail")
 USAGE = """\
 usage: oxbox <command> [args...]
        oxbox [--work DIR] [--allow-external-output] -- command args...
@@ -34,10 +34,10 @@ that does it; the bare form is the jail.
   sandbox --create REPO FILE...  copy files into a disposable ./sandbox
           --add | --remove FILE  tend the copy; --list, --read, --write it;
           --destroy              burn it down                  (oxbox-sandbox)
-  ask     [flags] "task"         send it to a model; nothing is applied
-                                                               (oxbox-ask)
-  apply   --log logs/<ts>        apply its patch into the sandbox only
-                                                               (oxbox-apply)
+  send    [flags] "task"         send it to a model; nothing is applied
+                                                               (oxbox-send)
+  patch   --log logs/<ts>        apply its patch into the sandbox only
+                                                               (oxbox-patch)
   jail    [flags] -- cmd...      run cmd with no network and no writes
                                  outside ./sandbox/work        (oxbox-jail)
   helper  [NAME] [args...]       list the scripts with the path each resolved
@@ -61,12 +61,12 @@ for _flag in ("--files", "--mode", "--venue", "--manifest", "--allow-paid",
               "--failover", "--base-url", "--api-key-env", "--model",
               "--effort", "--max-tokens", "--temperature", "--stdin",
               "--log-dir", "--output", "--status-file", "--force", "--dry-run"):
-    OWNED_FLAGS[_flag] = "ask"
+    OWNED_FLAGS[_flag] = "send"
 for _flag in ("--create", "--add", "--remove", "--destroy", "--list",
               "--read", "--write"):
     OWNED_FLAGS[_flag] = "sandbox"
 for _flag in ("--log", "--diff", "--commit"):
-    OWNED_FLAGS[_flag] = "apply"
+    OWNED_FLAGS[_flag] = "patch"
 # The jail's flags are accepted here too, ahead of `--`, because that is the
 # command line the jail has always taken.
 JAIL_FLAGS = ("--work", "--allow-external-output")
@@ -125,7 +125,7 @@ def run_helper(name, args):
     The script is run through this interpreter rather than its shebang, the
     way the test suites run the tools, so one that lost its exec bit (a
     Windows checkout, a copied file) still runs. The environment is passed
-    through untouched -- oxbox-ask needs its venue key, and oxbox-jail
+    through untouched -- oxbox-send needs its venue key, and oxbox-jail
     clears it for the jailed command itself -- and the exit status is the
     script's own.
     """
@@ -145,7 +145,7 @@ def run_helper(name, args):
 
 
 def helper_name(word):
-    """`oxbox helper ask` and `oxbox helper oxbox-ask` name the same script."""
+    """`oxbox helper send` and `oxbox helper oxbox-send` name the same script."""
     if word.startswith("oxbox-"):
         word = word[len("oxbox-"):]
     return "oxbox-" + word if word in SUBCOMMANDS else None

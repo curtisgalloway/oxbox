@@ -31,6 +31,15 @@ pub const SKILL_NAME: &str = "ox-review";
 /// rewrites it to wherever this installation actually keeps the skill.
 pub const SKILL_PATH_IN_TEXT: &str = ".claude/skills/ox-review";
 
+/// The runbook with LF endings whatever git checked out. `include_str!`
+/// embeds the file byte for byte, and a Windows checkout with
+/// `core.autocrlf` hands it over with CRLF -- which is exactly what the
+/// Python tools avoided by reading the file in text mode, and what guardtest
+/// asserts against: the document leaves as UTF-8 with LF on every platform.
+pub fn skill_text() -> String {
+    SKILL_MD.replace("\r\n", "\n")
+}
+
 /// The `sys.platform` name the Python tools used, kept because the jail hands
 /// it to jailtest as `OXBOX_PLATFORM` and the probes branch on it.
 pub const PLATFORM: &str = if cfg!(target_os = "macos") {
@@ -195,7 +204,7 @@ pub fn print_skill(prog: &str) -> i32 {
     };
     let path = directory.join("SKILL.md");
     eprintln!("{prog}: skill -> {}", path.display());
-    let body = SKILL_MD.replace(SKILL_PATH_IN_TEXT, &directory.to_string_lossy());
+    let body = skill_text().replace(SKILL_PATH_IN_TEXT, &directory.to_string_lossy());
     let mut out = io::stdout().lock();
     if out.write_all(body.as_bytes()).is_err() || out.flush().is_err() {
         return 1;
@@ -408,6 +417,12 @@ pub fn has_parent_traversal(rel: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_runbook_leaves_with_lf_endings() {
+        assert!(!skill_text().contains('\r'));
+        assert!(skill_text().starts_with("---\n"));
+    }
 
     #[test]
     fn names_are_one_component() {

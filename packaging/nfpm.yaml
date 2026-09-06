@@ -85,3 +85,7 @@ contents:
     dst: /usr/share/doc/oxbox/LICENSE
   - src: README.md
     dst: /usr/share/doc/oxbox/README.md
+  # Under docs/ beside the README, so the README's relative link to it
+  # resolves in the installed copy the same as on GitHub.
+  - src: docs/comparison.md
+    dst: /usr/share/doc/oxbox/docs/comparison.md

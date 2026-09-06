@@ -126,6 +126,7 @@ jobs:
             test ! -e "/usr/bin/$tool"
           done
           test -f /usr/share/doc/oxbox/LICENSE
+          test -f /usr/share/doc/oxbox/docs/comparison.md
           scratch="$RUNNER_TEMP/smoke"
           mkdir -p "$scratch/srcrepo"
           echo 'print("hi")' > "$scratch/srcrepo/thing.py"
@@ -226,6 +227,7 @@ jobs:
             test ! -e "$prefix/bin/$tool"
           done
           test -f "$prefix/share/doc/oxbox/LICENSE"
+          test -f "$prefix/share/doc/oxbox/docs/comparison.md"
           # The seatbelt profile, which the .deb has no reason to ship and a
           # macOS package has every reason to: without it oxbox refuses.
           test -f "$prefix/share/oxbox/jail.sb"
@@ -384,6 +386,7 @@ jobs:
             if (Test-Path "$prefix\bin\$tool") { throw "$tool is in bin; the scripts live in libexec" }
           }
           if (-not (Test-Path "$prefix\doc\LICENSE")) { throw "the package shipped no LICENSE" }
+          if (-not (Test-Path "$prefix\doc\docs\comparison.md")) { throw "the package shipped no comparison page" }
           if (-not (Test-Path "$prefix\share\oxbox\ox-review\scripts\exposure.py")) {
             throw "the package shipped an incomplete ox-review skill"
           }

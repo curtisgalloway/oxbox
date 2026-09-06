@@ -55,7 +55,8 @@ $LibexecDir = Join-Path $Stage "libexec\bin"
 $SkillDir = Join-Path $Stage "share\oxbox\ox-review"
 $ScriptsDir = Join-Path $SkillDir "scripts"
 $DocDir = Join-Path $Stage "doc"
-foreach ($dir in @($BinDir, $LibexecDir, $ScriptsDir, $DocDir)) {
+$DocDocsDir = Join-Path $DocDir "docs"
+foreach ($dir in @($BinDir, $LibexecDir, $ScriptsDir, $DocDocsDir)) {
     New-Item -ItemType Directory -Force $dir | Out-Null
 }
 
@@ -109,6 +110,8 @@ foreach ($script in @("preflight.py", "exposure.py", "oxreview.py")) {
 }
 Copy-Item (Join-Path $Repo "LICENSE") (Join-Path $DocDir "LICENSE")
 Copy-Item (Join-Path $Repo "README.md") (Join-Path $DocDir "README.md")
+# Under docs\ beside the README, so its relative link resolves when installed.
+Copy-Item (Join-Path $Repo "docs\comparison.md") (Join-Path $DocDocsDir "comparison.md")
 
 # -arch x86, for a package that contains no machine code at all. An x86 MSI
 # installs on x86, x64 and arm64 Windows alike; an x64 one narrows that for

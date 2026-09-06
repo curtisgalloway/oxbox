@@ -35,7 +35,7 @@ stage="${outdir}/${name}"
 
 rm -rf "$stage"
 mkdir -p "$stage/bin" "$stage/libexec/bin" "$stage/share/oxbox/ox-review/scripts" \
-    "$stage/share/doc/oxbox"
+    "$stage/share/doc/oxbox/docs"
 
 install -m 0755 "$root/oxbox" "$stage/bin/oxbox"
 
@@ -62,6 +62,8 @@ done
 install -m 0644 "$root/LICENSE" "$stage/share/doc/oxbox/LICENSE"
 install -m 0644 "$root/README.md" "$stage/share/doc/oxbox/README.md"
 install -m 0644 "$root/AGENTS.md" "$stage/share/doc/oxbox/AGENTS.md"
+# Under docs/ beside the README, so its relative link resolves when installed.
+install -m 0644 "$root/docs/comparison.md" "$stage/share/doc/oxbox/docs/comparison.md"
 
 # --uid/--uname are bsdtar spellings (GNU tar wants --owner) and this builds a
 # macOS artifact on macOS, so that is the tar we get. Recording root:wheel

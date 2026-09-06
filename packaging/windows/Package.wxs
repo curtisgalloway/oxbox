@@ -63,7 +63,9 @@ Design notes:
               </Directory>
             </Directory>
           </Directory>
-          <Directory Id="DocDir" Name="doc" />
+          <Directory Id="DocDir" Name="doc">
+            <Directory Id="DocDocsDir" Name="docs" />
+          </Directory>
         </Directory>
       </Directory>
     </StandardDirectory>
@@ -129,6 +131,15 @@ Design notes:
         <RegistryValue Root="HKCU" Key="Software\oxbox\msi" Name="doc"
                        Value="1" Type="integer" KeyPath="yes" />
         <RemoveFolder Id="rmDocDir" Directory="DocDir" On="uninstall" />
+      </Component>
+
+      <!-- The comparison page, under docs\ beside the README so the README's
+           relative link to it resolves in the installed copy. -->
+      <Component Id="cmpDocDocs" Directory="DocDocsDir" Guid="3306C52F-80BE-4789-9E5A-A890C9B85671">
+        <File Id="filComparison" Name="comparison.md" Source="$(var.StageDir)\doc\docs\comparison.md" />
+        <RegistryValue Root="HKCU" Key="Software\oxbox\msi" Name="doc-docs"
+                       Value="1" Type="integer" KeyPath="yes" />
+        <RemoveFolder Id="rmDocDocsDir" Directory="DocDocsDir" On="uninstall" />
       </Component>
     </ComponentGroup>
 

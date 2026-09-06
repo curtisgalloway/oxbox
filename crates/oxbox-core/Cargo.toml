@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "oxbox-core"
+description = "What the oxbox executables share: version, runbook, sandbox root, helper lookup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Deliberately empty. Everything here is standard library, so the four
+# executables that depend on nothing else stay standard-library only.
+[dependencies]

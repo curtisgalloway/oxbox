@@ -5,3 +5,6 @@ sandbox/
 __pycache__/
 *.pyc
 .venv/
+
+# Rust build output
+/target/

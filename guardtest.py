@@ -23,13 +23,30 @@ HERE = Path(__file__).resolve().parent
 SANDBOX = HERE / "sandbox"
 WORK = SANDBOX / "work"
 
-# Invoke via the interpreter rather than the shebang: Windows does not honor
-# shebang lines, and these tools must be testable there too.
-OX = [sys.executable, str(HERE / "oxbox-send")]
+# Two implementations, one suite. By default this drives the Python scripts
+# in the checkout, via the interpreter rather than the shebang (Windows does
+# not honor shebang lines). With OXBOX_UNDER_TEST naming a directory of built
+# executables -- a Cargo target dir, an unpacked package -- it drives those
+# instead, unchanged: the suite is the acceptance test for the port.
+UNDER_TEST = os.environ.get("OXBOX_UNDER_TEST")
+
+
+def tool_path(name):
+    if UNDER_TEST:
+        return Path(UNDER_TEST) / (name + (".exe" if sys.platform == "win32" else ""))
+    return HERE / name
+
+
+def tool(name):
+    """argv prefix that runs the named tool, in whichever implementation."""
+    return [str(tool_path(name))] if UNDER_TEST else [sys.executable, str(tool_path(name))]
+
+
+OX = tool("oxbox-send")
 # The front door: jail cases go through it, the way a user's do.
-OXBOX = [sys.executable, str(HERE / "oxbox")]
-OXSANDBOX = [sys.executable, str(HERE / "oxbox-sandbox")]
-OXAPPLY = [sys.executable, str(HERE / "oxbox-patch")]
+OXBOX = tool("oxbox")
+OXSANDBOX = tool("oxbox-sandbox")
+OXAPPLY = tool("oxbox-patch")
 
 passed = 0
 failed = 0
@@ -676,7 +693,7 @@ def main():
     versions = {}
     for tool, argv in (("oxbox-send", OX), ("oxbox-sandbox", OXSANDBOX),
                        ("oxbox-patch", OXAPPLY),
-                       ("oxbox-jail", [sys.executable, str(HERE / "oxbox-jail")])):
+                       ("oxbox-jail", tool("oxbox-jail"))):
         versions[tool] = subprocess.run(argv + ["--version"], capture_output=True,
                                         text=True).stdout.strip()
     for sub, tool in (("send", "oxbox-send"), ("sandbox", "oxbox-sandbox"),
@@ -710,17 +727,18 @@ def main():
                               ("fhs", ("libexec", "oxbox", "bin"))):
         prefix = temp / ("prefix-" + label)
         (prefix / "bin").mkdir(parents=True)
-        shutil.copy(HERE / "oxbox", prefix / "bin" / "oxbox")
+        shutil.copy(tool_path("oxbox"), prefix / "bin" / tool_path("oxbox").name)
         helper_dir = prefix.joinpath(*helper_sub)
         helper_dir.mkdir(parents=True)
-        shutil.copy(HERE / "oxbox-send", helper_dir / "oxbox-send")
+        shutil.copy(tool_path("oxbox-send"), helper_dir / tool_path("oxbox-send").name)
         skill_dir = prefix / "share" / "oxbox" / "ox-review"
         skill_dir.mkdir(parents=True)
         shutil.copy(skill_source, skill_dir / "SKILL.md")
         empty = temp / "empty-path"
         empty.mkdir(exist_ok=True)
         env = dict(os.environ, PATH=str(empty))
-        staged = [sys.executable, str(prefix / "bin" / "oxbox")]
+        staged_oxbox = prefix / "bin" / tool_path("oxbox").name
+        staged = [str(staged_oxbox)] if UNDER_TEST else [sys.executable, str(staged_oxbox)]
         done = subprocess.run(staged + ["send", "--version"], capture_output=True,
                               text=True, env=env)
         report(done.returncode == 0 and done.stdout.strip() == versions["oxbox-send"],
@@ -736,7 +754,7 @@ def main():
         report(done.returncode == 0 and os.path.realpath(skill_dir) in done.stderr,
                f"a helper in the {label} layout finds the skill under share/",
                f"exit={done.returncode} stderr={done.stderr.strip()!r}")
-        (helper_dir / "oxbox-send").unlink()
+        (helper_dir / tool_path("oxbox-send").name).unlink()
         done = subprocess.run(staged + ["send", "--version"], capture_output=True,
                               text=True, env=env)
         report(done.returncode == 3,

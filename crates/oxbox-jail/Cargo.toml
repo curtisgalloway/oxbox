@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "oxbox-jail"
+description = "Run a command with no network and no writes outside the sandbox (seatbelt or bubblewrap)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "oxbox-jail"
+path = "src/main.rs"
+
+# Standard library only, on purpose: this is the execution boundary, and it
+# should be readable in full with nothing to audit beneath it.
+[dependencies]
+oxbox-core.workspace = true

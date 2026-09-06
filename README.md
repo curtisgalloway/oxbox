@@ -414,6 +414,45 @@ keep saying what this run used.
 knows, and that venue's key variable actually set. Skipped entries are
 announced with their reasons, and the run's status record lists every one.
 
+### What a manifest contains
+
+The format is defined here, because `oxbox send` is the program that reads
+it; the survey publishes to it. A manifest is a JSON object with a short
+header and a ranked list:
+
+- `manifest_version` — an integer, `0` today. A document without an integer
+  here is refused as "not a recommendations manifest" (the survey ships other
+  manifest-shaped files, such as its corpus manifest, and this is the field
+  that tells them apart); a version newer than this `oxbox send` understands is
+  refused with a pointer to update.
+- `issue_date` — the survey issue the file belongs to, recorded with the run.
+- `defaults` — an object applying to every entry. Two keys are read,
+  `max_tokens` and `effort`; anything else is reported and ignored, and an
+  `effort` outside the ladder above is reported and dropped.
+- `recommendations` — a non-empty list, walked in order. Each entry carries:
+  - `venue` — which gateway serves it: `openrouter`, `zenmux`, `opencode` or
+    `requesty`. This is the only field that decides where a request goes, and
+    it must name a venue `oxbox send` already knows; an unknown venue skips
+    the entry.
+  - `model` — the id to send, exactly as that venue's catalog spells it.
+  - `cost` — `free`, `paid` or `unknown`. Omitted means `unknown`, and
+    anything but `free` is skipped unless you pass `--allow-paid`.
+  - `why` — the survey's one-line reason for the entry, in its words. Read
+    and kept with the entry; `oxbox send` does not act on it.
+  - `params` — optional per-entry overrides, the same two keys as `defaults`:
+    a lower `max_tokens` for a model whose completion cap is below the
+    default, or the `effort` level that model actually serves.
+  - `rank` — informational. Position in the list is authoritative, and a
+    `rank` that disagrees with it is reported.
+  - `base_url` — documentation for a human reader. `oxbox send` cross-checks it
+    against its own venue table and warns on disagreement, but never honors
+    it (see below).
+  - `pricing_usd_per_mtok` — documentation for a human reader; not read.
+
+An entry can also be skipped because its venue's key variable is not set,
+and every skip is announced with its reason and listed in the run's status
+record.
+
 Two usage models, chosen explicitly:
 
 - **Probe mode (the default).** One request, one destination, exactly what a

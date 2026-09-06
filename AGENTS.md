@@ -247,6 +247,12 @@ executed inside it.
   allows it, urllib does not do it, and a test that stores headers as sent
   and looks them up by the spelled name sees nothing. wiretest's `header()`
   is the case-insensitive lookup; use it.
+- **`include_str!` embeds what git checked out.** On GitHub's Windows runner
+  that is CRLF, because actions/checkout leaves `core.autocrlf` on, so the
+  embedded runbook arrived with `\r\n` and `--skill` printed it that way —
+  the exact failure the Python tools avoided by reading the file in text
+  mode. `oxbox_core::skill_text()` normalizes to LF and a unit test pins it;
+  brik did not show this because its checkout came from a tar archive.
 - **Windows temp paths are 8.3 short names on GitHub's runner** (`RUNNER~1`),
   and the binaries resolve their own location, so assertions on printed paths
   compare resolved with resolved.

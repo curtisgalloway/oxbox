@@ -133,7 +133,7 @@ $ python3 guardtest.py
 [PASS] oxbox-patch refuses traversal in rename headers
 [PASS] `oxbox send` refuses a key in the task argument
 ...
-guards hold: 84/84 passed, 0 skipped
+guards hold: 84/84 passed, 0 skipped   (75/75 + 4 skipped on Windows)
 ```
 
 Every case in it is a regression test for a defect that was actually found and
@@ -155,7 +155,7 @@ is still 3.9, so nothing here uses 3.10+ APIs).
 
 | Tested on | Result |
 |---|---|
-| CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 84/84 (Windows: the 3 symlink cases skip; its total is whatever the next CI run prints), wiretest 66/66 (Windows 65/65 + 1 skipped), jailtest 9/9 |
+| CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 84/84 (Windows 75/75 + 4 skipped), wiretest 66/66 (Windows 65/65 + 1 skipped), jailtest 9/9 |
 | macOS 26.6.2, seatbelt | jailtest 13/13 |
 | Debian 13 (trixie), bubblewrap 0.12.0, Python 3.13.5 | jailtest 14/14 |
 | WSL2 Ubuntu 24.04.2, bubblewrap 0.9.0, Python 3.12.3 | jailtest 10/10 |

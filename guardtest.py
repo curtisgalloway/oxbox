@@ -9,7 +9,7 @@ reproduced -- these are regression tests, not hypotheticals.
 
     python3 guardtest.py
 
-NOTE: re-seeds sandbox/work. Run ./oxbox seed --clean afterwards if you care.
+NOTE: re-seeds sandbox/work. Run ./oxbox sandbox --destroy afterwards if you care.
 """
 
 import os
@@ -517,9 +517,11 @@ def main():
 
     tend_src = temp / "tend-src"
     (tend_src / "pkg").mkdir(parents=True)
-    (tend_src / "a.py").write_text("a = 1\n", encoding="utf-8")
-    (tend_src / "pkg" / "b.py").write_text("b = 2\n", encoding="utf-8")
-    (tend_src / "c.py").write_text("c = 3\n", encoding="utf-8")
+    # Bytes, not text: on Windows text mode would put CRLF on disk, and the
+    # --read case below asserts the tool returns exactly what is there.
+    (tend_src / "a.py").write_bytes(b"a = 1\n")
+    (tend_src / "pkg" / "b.py").write_bytes(b"b = 2\n")
+    (tend_src / "c.py").write_bytes(b"c = 3\n")
     expect_allowed("sandbox --create seeds a tree",
                    OXSANDBOX + ["--create", str(tend_src), "a.py", "pkg"])
     done = tend(["--list"])
@@ -618,12 +620,15 @@ def main():
     report(states == {"alt": "modified", "work": "clean"},
            "--status tells a patched sandbox from a clean one", repr(states))
     # And from oxbox-jail: --sandbox alt is inside the configured root, while
-    # the checkout's own ./sandbox/work is now outside it and refused.
+    # the checkout's own ./sandbox/work is now outside it and refused. The
+    # directory has to exist for the refusal to be about the root rather than
+    # about a missing path -- and oxbox-patch's refusal below needs it too,
+    # on Windows, where the jail cases skip.
+    WORK.mkdir(parents=True, exist_ok=True)
     if jail_supported:
         done = rooted(OXBOX + ["--sandbox", "alt", "--", sys.executable, "-c", "pass"], env_env)
         report(done.returncode == 0, "oxbox-jail --sandbox runs in the configured root",
                f"exit={done.returncode} stderr={done.stderr.strip()!r}")
-        WORK.mkdir(parents=True, exist_ok=True)
         done = rooted(OXBOX + ["--work", str(WORK), "--", sys.executable, "-c", "pass"], env_env)
         report(done.returncode == 78 and "OXBOX_SANDBOX_ROOT" in done.stderr,
                "oxbox-jail refuses a work dir outside the configured root, naming the setting",

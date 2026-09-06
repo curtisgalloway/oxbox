@@ -174,7 +174,7 @@ on ext4 rather than under /mnt/c, so the work dir never becomes a Windows
 share. The README carries the full recipe and what it does and does not buy.
 
 The rest of the toolkit runs natively on Windows: oxbox send (talk to the
-model), oxbox seed (build a sandbox copy), and oxbox patch (quarantined patch
+model), oxbox sandbox (build a disposable copy), and oxbox patch (quarantined patch
 application). Only executing the model's output needs the jail.
 """
 

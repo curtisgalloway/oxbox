@@ -60,7 +60,7 @@ foreach ($dir in @($BinDir, $LibexecDir, $ScriptsDir, $DocDir)) {
 }
 
 $Tools = @("oxbox")
-$Helpers = @("oxbox-sandbox", "oxbox-ask", "oxbox-apply", "oxbox-jail")
+$Helpers = @("oxbox-sandbox", "oxbox-send", "oxbox-patch", "oxbox-jail")
 
 # %~dp0 ends in a backslash, so "%~dp0ox" is the script beside this shim.
 # No parenthesised blocks anywhere: %errorlevel% inside one expands when the

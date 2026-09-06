@@ -93,8 +93,8 @@ Design notes:
            here. -->
       <Component Id="cmpLibexec" Directory="LibexecBinDir" Guid="FAB339EE-44C8-4DD3-B70B-7F0B7A5C2048">
         <File Id="filOxSandbox" Name="oxbox-sandbox" Source="$(var.StageDir)\libexec\bin\oxbox-sandbox" />
-        <File Id="filOxAsk" Name="oxbox-ask" Source="$(var.StageDir)\libexec\bin\oxbox-ask" />
-        <File Id="filOxApply" Name="oxbox-apply" Source="$(var.StageDir)\libexec\bin\oxbox-apply" />
+        <File Id="filOxSend" Name="oxbox-send" Source="$(var.StageDir)\libexec\bin\oxbox-send" />
+        <File Id="filOxPatch" Name="oxbox-patch" Source="$(var.StageDir)\libexec\bin\oxbox-patch" />
         <File Id="filOxJail" Name="oxbox-jail" Source="$(var.StageDir)\libexec\bin\oxbox-jail" />
         <RegistryValue Root="HKCU" Key="Software\oxbox\msi" Name="libexec"
                        Value="1" Type="integer" KeyPath="yes" />

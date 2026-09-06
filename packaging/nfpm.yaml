@@ -30,9 +30,9 @@ homepage: https://github.com/curtisgalloway/oxbox
 license: Apache-2.0
 description: |
   Supervised harness for pointing an untrusted LLM at your code.
-  No tools, no shell, no network path back to your machine: oxbox ask
+  No tools, no shell, no network path back to your machine: oxbox send
   talks to the model (text in, text out, full audit log), oxbox sandbox
-  builds a disposable copy, oxbox apply quarantines its patches into the
+  builds a disposable copy, oxbox patch quarantines its patches into the
   sandbox, and oxbox jail executes the result under bubblewrap with no
   network and no writes outside the sandbox.
 depends:
@@ -51,12 +51,12 @@ contents:
     dst: /usr/libexec/oxbox/bin/oxbox-sandbox
     file_info:
       mode: 0o755
-  - src: oxbox-ask
-    dst: /usr/libexec/oxbox/bin/oxbox-ask
+  - src: oxbox-send
+    dst: /usr/libexec/oxbox/bin/oxbox-send
     file_info:
       mode: 0o755
-  - src: oxbox-apply
-    dst: /usr/libexec/oxbox/bin/oxbox-apply
+  - src: oxbox-patch
+    dst: /usr/libexec/oxbox/bin/oxbox-patch
     file_info:
       mode: 0o755
   - src: oxbox-jail

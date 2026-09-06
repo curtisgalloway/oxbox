@@ -40,23 +40,23 @@ absence of anything you could call a contract. Price changes the invoice, not
 the counterparty — and a review that costs pennies is *easier* to fire off
 without thinking about where the code just went, which is the whole hazard.
 `--allow-paid` is how you opt into those deliberately, and an entry whose cost
-a manifest does not state counts as paid rather than free, because `oxbox ask` does not
+a manifest does not state counts as paid rather than free, because `oxbox send` does not
 spend on the strength of an absence.
 
 **There is no default model.** The listings worth pointing this at change week
-to week, so `oxbox-ask` names none of its own and asks you to choose: `--model` for a
+to week, so `oxbox-send` names none of its own and asks you to choose: `--model` for a
 model you picked, or `--manifest` for the current issue of
 [the Oxbox Survey](https://oxbox.ai), which publishes what is worth trying and
 the runs behind each recommendation. Point `--venue` at wherever it lives:
 
 ```bash
-oxbox ask --venue zenmux   --model z-ai/glm-5.3-free   --mode review --files x.py "..."
-oxbox ask --venue opencode --model x-preview-f-free    --mode review --files x.py "..."
-oxbox ask --venue requesty --model mistral/leanstral-1-5 --mode review --files x.py "..."
+oxbox send --venue zenmux   --model z-ai/glm-5.3-free   --mode review --files x.py "..."
+oxbox send --venue opencode --model x-preview-f-free    --mode review --files x.py "..."
+oxbox send --venue requesty --model mistral/leanstral-1-5 --mode review --files x.py "..."
 ```
 
 **Each venue carries its own API key variable** — `OPENROUTER_API_KEY`,
-`ZENMUX_API_KEY`, `OPENCODE_ZEN_API_KEY`, `REQUESTY_API_KEY` — and `oxbox-ask` reads
+`ZENMUX_API_KEY`, `OPENCODE_ZEN_API_KEY`, `REQUESTY_API_KEY` — and `oxbox-send` reads
 only the one belonging to the venue you asked for. That pairing is the security
 property: a single `--base-url` flag over one hardcoded key would mean a
 mistyped host receives your OpenRouter credential. An unlisted endpoint is still
@@ -77,17 +77,17 @@ supervising agent) reads that text before any of it executes.
 ## The five layers
 
 `oxbox` is the one command. Each step of the workflow is a subcommand —
-`oxbox sandbox`, `oxbox ask`, `oxbox apply`, `oxbox jail` — handed to a
-script of the same name (`oxbox-sandbox`, `oxbox-ask`, `oxbox-apply`,
+`oxbox sandbox`, `oxbox send`, `oxbox patch`, `oxbox jail` — handed to a
+script of the same name (`oxbox-sandbox`, `oxbox-send`, `oxbox-patch`,
 `oxbox-jail`) that does that one job and nothing else, so a process listing
 says which piece is running. The layers below are named by the script that
 enforces them.
 
 | Layer | Mechanism |
 |---|---|
-| **No hands** | `oxbox-ask` sends a chat completion with **no `tools` array**. The model cannot run, read, or write anything. If it emits `tool_calls` regardless, `oxbox-ask` logs and warns. |
+| **No hands** | `oxbox-send` sends a chat completion with **no `tools` array**. The model cannot run, read, or write anything. If it emits `tool_calls` regardless, `oxbox-send` logs and warns. |
 | **Explicit context** | It sees only files passed to `--files`. A credential scanner refuses to send anything matching common key patterns. |
-| **Patch quarantine** | `oxbox-apply` applies diffs **only** into `sandbox/work`, and rejects absolute paths and `..` traversal outright. |
+| **Patch quarantine** | `oxbox-patch` applies diffs **only** into `sandbox/work`, and rejects absolute paths and `..` traversal outright. |
 | **Execution jail** | `oxbox` runs code with **no network** and **no writes outside the sandbox** — seatbelt on macOS, bubblewrap on Linux — with the environment cleared so no inherited secret crosses in. It refuses to start if stdout/stderr point at a file outside the sandbox. |
 | **Audit trail** | Every call writes `logs/<timestamp>/` with the exact request, raw response, extracted content, and metadata. The API key is never logged. |
 
@@ -130,8 +130,8 @@ $ python3 guardtest.py
 [PASS] oxbox-sandbox refuses parent traversal
 [PASS] oxbox refuses --work outside sandbox/
 [PASS] oxbox refuses stdout redirected outside the sandbox
-[PASS] oxbox-apply refuses traversal in rename headers
-[PASS] `oxbox ask` refuses a key in the task argument
+[PASS] oxbox-patch refuses traversal in rename headers
+[PASS] `oxbox send` refuses a key in the task argument
 ...
 guards hold: 68/68 passed, 0 skipped
 ```
@@ -193,8 +193,8 @@ session: the launcher exits 0 and silently does nothing. It and Sandboxie were
 both evaluated and declined; `AGENTS.md` records the reasoning, the hardware it
 was measured on, and what would reopen either.
 
-The rest of the toolkit is fully native on Windows — `oxbox-ask`, `oxbox-sandbox` and
-`oxbox-apply` are pure Python. You can talk to the model, scan for secrets, and
+The rest of the toolkit is fully native on Windows — `oxbox-send`, `oxbox-sandbox` and
+`oxbox-patch` are pure Python. You can talk to the model, scan for secrets, and
 quarantine its patches. Only *executing* its output needs the jail.
 
 That much ships as a signed per-user MSI on the
@@ -306,7 +306,7 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
 Either way, the tools operate on the **working directory**: `oxbox sandbox`
-builds `./sandbox/`, `oxbox ask` logs to `./logs/`, and `oxbox jail` runs in
+builds `./sandbox/`, `oxbox send` logs to `./logs/`, and `oxbox jail` runs in
 `./sandbox/work` — so stand in the project directory you are working from (a
 source checkout run from its root behaves the same as always, with `./oxbox`
 in place of `oxbox`). The test suites assert against the checkout layout, so
@@ -318,7 +318,7 @@ tools came from a package.
 `libexec/bin`, the `.deb`'s `/usr/libexec/oxbox/bin`, the MSI's `libexec\bin`
 — and `oxbox` finds them from its own location, so there is one way to run
 everything and one `--help` to read. `oxbox helper` lists them with the path
-each resolved to, and `oxbox helper ask ...` runs one directly. Type a
+each resolved to, and `oxbox helper send ...` runs one directly. Type a
 subcommand's flag at `oxbox` by mistake (`oxbox --manifest ...`) and it
 answers with the subcommand that takes it.
 
@@ -337,13 +337,13 @@ oxbox sandbox --create /path/to/repo src/thing.py tests/test_thing.py
 
 # 2. ask the model (nothing is applied). Name one, or take this week's
 #    pick from the survey with --manifest; there is no default.
-oxbox ask --manifest https://oxbox.ai/manifests/latest.json \
+oxbox send --manifest https://oxbox.ai/manifests/latest.json \
      --files src/thing.py "fix the off-by-one in parse()"
 
 # 3. READ logs/<timestamp>/content.md yourself. this is the point.
 
 # 4. apply into the sandbox only
-oxbox apply --log logs/<timestamp>
+oxbox patch --log logs/<timestamp>
 
 # 5. run the result with no network, no escape
 oxbox jail -- .venv/bin/python -m pytest -q
@@ -367,19 +367,19 @@ are the levels venues serve, and **no model serves all of them**: Gemini 3.x
 Flash accepts `low`, `medium` and `high` and calls `medium` its own default,
 OpenAI's reasoning models add `xhigh`, and `max` is carried by around one
 model in eight — Claude Sonnet 5 and GLM 5.3 Flash among them. Asking a model
-for a level it does not serve is answered by the venue, not by `oxbox ask`, so the
+for a level it does not serve is answered by the venue, not by `oxbox send`, so the
 level a model actually takes belongs in the manifest entry beside its token
 cap (below) rather than in a table here that goes stale every issue.
 
 ## Survey manifests
 
 The Oxbox Survey publishes a machine-readable manifest with each issue — an
-ordered list of that week's recommended models. `--manifest` points `oxbox ask` at the
+ordered list of that week's recommended models. `--manifest` points `oxbox send` at the
 file instead of transcribing venue and model by hand:
 
 ```bash
-oxbox ask --manifest oxbox-manifest-2026-09-01.json --files x.py --mode review "..."
-oxbox ask --manifest https://oxbox.ai/manifests/latest.json --files x.py --mode review "..."
+oxbox send --manifest oxbox-manifest-2026-09-01.json --files x.py --mode review "..."
+oxbox send --manifest https://oxbox.ai/manifests/latest.json --files x.py --mode review "..."
 ```
 
 A manifest is a file or an `https://` URL. The survey serves each issue's
@@ -387,12 +387,12 @@ manifest at a dated URL and the current one as `latest.json`, so the second
 form is "this week's pick" with no download step. The fetch follows the same
 rules as the venue request: https only, no redirects, and no credential — the
 request carries no Authorization header and reads no key variable. The bytes
-`oxbox ask` used are written into the run's log directory as `manifest.json`, because
+`oxbox send` used are written into the run's log directory as `manifest.json`, because
 `latest.json` will say something else next issue and the audit trail has to
 keep saying what this run used.
 
-`oxbox ask` takes the first *permitted* entry: cost confirmed `free` unless you pass
-`--allow-paid` (an entry of unknown cost counts as paid), a venue this `oxbox ask`
+`oxbox send` takes the first *permitted* entry: cost confirmed `free` unless you pass
+`--allow-paid` (an entry of unknown cost counts as paid), a venue this `oxbox send`
 knows, and that venue's key variable actually set. Skipped entries are
 announced with their reasons, and the run's status record lists every one.
 
@@ -402,7 +402,7 @@ Two usage models, chosen explicitly:
   survey measurement needs. If the chosen entry fails, the run fails.
 - **`--failover`.** For everyday use — you want an answer, not a data point.
   On a failure after the request is sent (429, 5xx, network error, empty
-  response), `oxbox ask` moves to the next permitted entry. One pass, no waiting:
+  response), `oxbox send` moves to the next permitted entry. One pass, no waiting:
   waiting out a busy pool on a timer is still the caller's job. Each attempt
   is announced on stderr and gets its own log directory, and the status
   record carries the full attempt list.
@@ -412,14 +412,14 @@ Two usage models, chosen explicitly:
   and which key variables you export bound it.
 
 The manifest chooses provider and model — **never where a credential goes**.
-`venue` must name an entry in `oxbox ask`'s own table; the URL and key variable come
-from there, and a `base_url` in the file is documentation that `oxbox ask`
+`venue` must name an entry in `oxbox send`'s own table; the URL and key variable come
+from there, and a `base_url` in the file is documentation that `oxbox send`
 cross-checks and refuses to honor. A tampered manifest cannot re-aim a key.
 Precedence: explicit flags beat the entry's `params`, which beat the
 manifest's `defaults`, which beat the built-ins. `params` and `defaults`
 both carry `max_tokens` and `effort` — the two facts that are properties of
 the model rather than of the request, and that the survey has measured and
-`oxbox ask` has not. An `effort` `oxbox ask` does not recognize is reported and ignored
+`oxbox send` has not. An `effort` `oxbox send` does not recognize is reported and ignored
 rather than forwarded, because a manifest is an outside document.
 Each attempt's `meta.json` records the manifest's sha256 and the entry
 used, because an audit trail should say why the destination was chosen,
@@ -432,15 +432,15 @@ oxbox --skill       # print the runbook, with this installation's paths
 ```
 
 `oxbox skill` is the same thing, and the four scripts answer `--skill` too
-(`oxbox helper ask --skill`), so an agent that reached for any of them first
+(`oxbox helper send --skill`), so an agent that reached for any of them first
 still finds it.
 
 `.claude/skills/ox-review/` is a Claude Code skill that hands the whole review
 loop to an agent: it picks the current manifest, batches the files, fans the
 work out across subagents, and merges what comes back. Copy the directory into
 another project's `.claude/skills/` to use it there; the scripts are stdlib-only
-Python 3.9+ like everything else here, and they find `oxbox-ask` through `oxbox` on
-`PATH` (as `oxbox ask`), directly via `OX`, or in the checkout named by
+Python 3.9+ like everything else here, and they find `oxbox-send` through `oxbox` on
+`PATH` (as `oxbox send`), directly via `OX`, or in the checkout named by
 `OXBOX_HOME`. `OXBOX_MANIFEST` names the current
 manifest — a file or the survey's https URL — and `OXBOX_ENV_FILE` the
 1Password `.env` holding the venue keys, so one environment serves every
@@ -466,7 +466,7 @@ request is in flight and backs off on the 120-second floor. Batches pipeline;
 requests do not overlap.
 
 ```bash
-python3 .claude/skills/ox-review/scripts/preflight.py   # oxbox ask, manifest, gate
+python3 .claude/skills/ox-review/scripts/preflight.py   # oxbox send, manifest, gate
 python3 .claude/skills/ox-review/scripts/oxreview.py \
     --manifest oxbox-manifest-2026-08-27.json \
     --label auth --out .ox-review/auth --file src/auth.py \
@@ -518,7 +518,7 @@ hardcoded default any more.
 - **Malformed diffs.** It emitted a hunk with zero trailing context
   (`@@ -1,4 +1,7 @@` where a real diff has `@@ -1,7 +1,10 @@`), ignoring an
   explicit instruction to include three lines. Both `git apply` and GNU `patch`
-  reject such a patch. `oxbox-apply` falls back to `--recount -C1` and warns when it
+  reject such a patch. `oxbox-patch` falls back to `--recount -C1` and warns when it
   has to, because a patch that only applies loosely deserves a second read.
 - The fix itself was correct and minimal — byte-identical to a hand-written
   reference patch once applied.
@@ -547,11 +547,11 @@ hardcoded default any more.
   404's advice (go enable prompt logging) is the wrong move here and sends
   you to a settings page that is already correct.
 
-  Worth planning around if you script `oxbox-ask`: a long review can simply be
+  Worth planning around if you script `oxbox-send`: a long review can simply be
   unavailable for a while, and the model you are evaluating is exactly the
   kind least likely to have capacity when you want it. Note also that
-  `oxbox-ask` exits non-zero on an API error, but a pipeline hides that
-  (`oxbox ask … | tail` reports `tail`'s status). If you must pipe, use
+  `oxbox-send` exits non-zero on an API error, but a pipeline hides that
+  (`oxbox send … | tail` reports `tail`'s status). If you must pipe, use
   `set -o pipefail`; better, skip the pipeline: `--output review.md` writes
   the answer to a file, and `--status-file status.json` writes a run summary
   (`ok`, `error`, `finish_reason`, token counts, `truncated`, `venue_cost`)

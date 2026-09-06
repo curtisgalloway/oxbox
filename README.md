@@ -50,9 +50,9 @@ model you picked, or `--manifest` for the current issue of
 the runs behind each recommendation. Point `--venue` at wherever it lives:
 
 ```bash
-./ox --venue zenmux   --model z-ai/glm-5.3-free   --mode review --files x.py "..."
-./ox --venue opencode --model x-preview-f-free    --mode review --files x.py "..."
-./ox --venue requesty --model mistral/leanstral-1-5 --mode review --files x.py "..."
+oxbox ask --venue zenmux   --model z-ai/glm-5.3-free   --mode review --files x.py "..."
+oxbox ask --venue opencode --model x-preview-f-free    --mode review --files x.py "..."
+oxbox ask --venue requesty --model mistral/leanstral-1-5 --mode review --files x.py "..."
 ```
 
 **Each venue carries its own API key variable** — `OPENROUTER_API_KEY`,
@@ -76,6 +76,12 @@ supervising agent) reads that text before any of it executes.
 
 ## The five layers
 
+`oxbox` is the one command. Each step of the workflow is a subcommand —
+`oxbox seed`, `oxbox ask`, `oxbox apply`, `oxbox run` — and the first three
+are handed to a helper script (`oxseed`, `ox`, `oxapply`) that does that one
+job and nothing else; the fourth is the jail, which `oxbox` has always been.
+The layers below are named by the script that enforces them.
+
 | Layer | Mechanism |
 |---|---|
 | **No hands** | `ox` sends a chat completion with **no `tools` array**. The model cannot run, read, or write anything. If it emits `tool_calls` regardless, `ox` logs and warns. |
@@ -90,7 +96,7 @@ history, `.env`, `/etc/shadow`, `stat()` as a metadata oracle, and environment
 inheritance. The sensitive-path list is platform-aware and computed outside:
 
 ```
-$ ./oxbox -- python3 jailtest.py
+$ oxbox run -- python3 jailtest.py
 [PASS] network: outbound TCP to 1.1.1.1:443  (PermissionError)
 [PASS] network: DNS resolution               (gaierror)
 [PASS] fs read: ~/.ssh                       (PermissionError)
@@ -285,7 +291,7 @@ sudo apt install ./oxbox_<version>_all.deb
 
 ```powershell
 # Windows: the signed per-user MSI from the latest GitHub Release.
-# No elevation, and it puts the tools on PATH. Needs Python 3.9+.
+# No elevation, and it puts oxbox on PATH. Needs Python 3.9+.
 winget install Python.Python.3.13
 msiexec /i oxbox-<version>.msi /qn
 ```
@@ -298,12 +304,23 @@ cd oxbox
 export OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-Either way, the tools operate on the **working directory**: `oxseed` builds
-`./sandbox/`, `ox` logs to `./logs/`, and `oxbox` jails into `./sandbox/work`
-— so stand in the project directory you are working from (a source checkout
-run from its root behaves the same as always). The test suites assert against
-the checkout layout, so verifying the jail on a new machine is a git-clone
-operation even when the tools came from a package.
+Either way, the tools operate on the **working directory**: `oxbox seed`
+builds `./sandbox/`, `oxbox ask` logs to `./logs/`, and `oxbox run` jails into
+`./sandbox/work` — so stand in the project directory you are working from (a
+source checkout run from its root behaves the same as always, with `./oxbox`
+in place of `oxbox`). The test suites assert against the checkout layout, so
+verifying the jail on a new machine is a git-clone operation even when the
+tools came from a package.
+
+**Only `oxbox` is on `PATH`.** A package installs the three helper scripts
+into a `libexec` directory beside it — the Homebrew keg's and the tarball's
+`libexec/bin`, the `.deb`'s `/usr/libexec/oxbox/bin`, the MSI's `libexec\bin`
+— and `oxbox` finds them from its own location, so there is one way to run
+everything and one `--help` to read. `oxbox helper` lists them with the path
+each resolved to, and `oxbox helper ox ...` runs one directly with its own
+flags, for the rare case where the subcommand is in the way. Type a helper's
+flag at `oxbox` by mistake (`oxbox --manifest ...`) and it answers with the
+subcommand that takes it.
 
 If you use 1Password, copy `.env.example` to `.env`, point it at your item, and
 prefix commands with `op run --env-file .env --`. Any method that puts
@@ -315,26 +332,26 @@ agent driving a review never holds the key in its own environment.
 
 ```bash
 # 1. disposable copy of the files you're willing to expose
-./oxseed /path/to/repo src/thing.py tests/test_thing.py
+oxbox seed /path/to/repo src/thing.py tests/test_thing.py
 
 # 2. ask the model (nothing is applied). Name one, or take this week's
 #    pick from the survey with --manifest; there is no default.
-./ox --manifest https://oxbox.ai/manifests/latest.json \
+oxbox ask --manifest https://oxbox.ai/manifests/latest.json \
      --files src/thing.py "fix the off-by-one in parse()"
 
 # 3. READ logs/<timestamp>/content.md yourself. this is the point.
 
 # 4. apply into the sandbox only
-./oxapply --log logs/<timestamp>
+oxbox apply --log logs/<timestamp>
 
 # 5. run the result with no network, no escape
-./oxbox -- .venv/bin/python -m pytest -q
+oxbox run -- .venv/bin/python -m pytest -q
 
 # 6. see exactly what changed
 git -C sandbox/work diff HEAD
 
 # 7. burn it down
-./oxseed --clean
+oxbox seed --clean
 ```
 
 Install dependencies **outside** the jail (it has no network), then execute
@@ -360,8 +377,8 @@ ordered list of that week's recommended models. `--manifest` points ox at the
 file instead of transcribing venue and model by hand:
 
 ```bash
-./ox --manifest oxbox-manifest-2026-09-01.json --files x.py --mode review "..."
-./ox --manifest https://oxbox.ai/manifests/latest.json --files x.py --mode review "..."
+oxbox ask --manifest oxbox-manifest-2026-09-01.json --files x.py --mode review "..."
+oxbox ask --manifest https://oxbox.ai/manifests/latest.json --files x.py --mode review "..."
 ```
 
 A manifest is a file or an `https://` URL. The survey serves each issue's
@@ -410,18 +427,20 @@ not just what it was.
 ## Driving a review from an agent
 
 ```bash
-ox --skill          # print the runbook, with this installation's paths
+oxbox --skill       # print the runbook, with this installation's paths
 ```
 
-All four tools answer `--skill`, and it is in each one's `--help`, so an agent
-that reached for `oxseed` or `oxbox` first still finds it.
+`oxbox skill` is the same thing, and the three helper scripts answer `--skill`
+too (`oxbox helper ox --skill`), so an agent that reached for any of them
+first still finds it.
 
 `.claude/skills/ox-review/` is a Claude Code skill that hands the whole review
 loop to an agent: it picks the current manifest, batches the files, fans the
 work out across subagents, and merges what comes back. Copy the directory into
 another project's `.claude/skills/` to use it there; the scripts are stdlib-only
-Python 3.9+ like everything else here, and they find `ox` on `PATH`, via `OX`,
-or in the checkout named by `OXBOX_HOME`. `OXBOX_MANIFEST` names the current
+Python 3.9+ like everything else here, and they find `ox` through `oxbox` on
+`PATH` (as `oxbox ask`), directly via `OX`, or in the checkout named by
+`OXBOX_HOME`. `OXBOX_MANIFEST` names the current
 manifest — a file or the survey's https URL — and `OXBOX_ENV_FILE` the
 1Password `.env` holding the venue keys, so one environment serves every
 project.
@@ -531,7 +550,7 @@ hardcoded default any more.
   unavailable for a while, and the model you are evaluating is exactly the
   kind least likely to have capacity when you want it. Note also that
   `ox` exits non-zero on an API error, but a pipeline hides that
-  (`./ox … | tail` reports `tail`'s status). If you must pipe, use
+  (`oxbox ask … | tail` reports `tail`'s status). If you must pipe, use
   `set -o pipefail`; better, skip the pipeline: `--output review.md` writes
   the answer to a file, and `--status-file status.json` writes a run summary
   (`ok`, `error`, `finish_reason`, token counts, `truncated`, `venue_cost`)

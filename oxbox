@@ -11,19 +11,59 @@ Backends:
 Refusing is the point. A harness that appears to sandbox but doesn't is worse
 than none, because you would trust it. There is no "best effort" mode.
 
-Usage: ./oxbox [--work DIR] [--allow-external-output] -- command args...
+Usage: oxbox [--work DIR] [--allow-external-output] -- command args...
+       oxbox run [--work DIR] [--allow-external-output] -- command args...
+
+oxbox is also the front door to the other three tools: `oxbox seed`,
+`oxbox ask` and `oxbox apply` hand off to oxseed, ox and oxapply, which live
+in a libexec directory rather than on PATH. See helper_dirs.
 """
 
 import os
 import shutil
 import socket
 import stat
+import subprocess
 import sys
 
 VERSION = "0.6.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 USAGE = """\
-usage: oxbox [--work DIR] [--allow-external-output] -- command args...
+usage: oxbox <command> [args...]
+       oxbox [--work DIR] [--allow-external-output] -- command args...
+
+A supervised harness for pointing an untrusted LLM at your code: one command
+in front of four tools. Each step is a subcommand, handed to the tool that
+does it; the bare form is the jail.
+
+  seed   <repo> <file>...   copy files into a disposable ./sandbox      (oxseed)
+  ask    [flags] "task"     send them to a model; nothing is applied    (ox)
+  apply  --log logs/<ts>    apply its patch into the sandbox only       (oxapply)
+  run    [flags] -- cmd...  run cmd jailed: no network, no writes
+                            outside ./sandbox/work                     (oxbox)
+  helper [NAME] [args...]   list the helper scripts, or run one directly
+  skill                     print the ox-review agent skill
+
+Every subcommand answers --help. The jail's flags, with or without `run`:
+
+  --work DIR                the directory the command may write to; must be
+                            inside ./sandbox (default: ./sandbox/work)
+  --allow-external-output   permit stdout/stderr already redirected outside
+                            the sandbox; refused by default, because an
+                            inherited descriptor writes straight past the jail
+
+  --skill                   print the ox-review agent skill and exit
+  --version                 print the version and exit
+  --help                    print this and exit
+
+exit status: a subcommand's own, passed through unchanged; 2 for a usage
+error here; 3 when a helper script cannot be found; 78 when the jail refuses
+(no backend on this platform, or a work dir or output file outside the
+sandbox).
+"""
+RUN_USAGE = """\
+usage: oxbox run [--work DIR] [--allow-external-output] -- command args...
+       oxbox     [--work DIR] [--allow-external-output] -- command args...
 
 Run a command in a jail with no network and no writes outside the work dir.
 
@@ -32,9 +72,10 @@ Run a command in a jail with no network and no writes outside the work dir.
   --allow-external-output   permit stdout/stderr already redirected outside
                             the sandbox; refused by default, because an
                             inherited descriptor writes straight past the jail
-  --skill                   print the ox-review agent skill and exit
-  --version                 print the version and exit
   --help                    print this and exit
+
+exit status: the command's own; 78 when the jail refuses (no backend on this
+platform, or a work dir or output file outside the sandbox).
 """
 # The project root is the working directory, not the script's directory: an
 # installed oxbox lives in /usr/bin, and the sandbox belongs to whatever
@@ -89,7 +130,7 @@ not the full Hyper-V that Windows Sandbox requires:
     wsl --install -d Ubuntu
     wsl
     sudo apt install bubblewrap
-    ./oxbox -- python3 jailtest.py
+    oxbox run -- python3 jailtest.py
 
 Better, give it a distro of its own, so an escape from the jail lands somewhere
 holding nothing of yours:
@@ -102,9 +143,9 @@ Then, inside it, cut the two routes back to Windows in /etc/wsl.conf --
 on ext4 rather than under /mnt/c, so the work dir never becomes a Windows
 share. The README carries the full recipe and what it does and does not buy.
 
-The rest of the toolkit runs natively on Windows: ox (talk to the model),
-oxseed (build a sandbox copy), and oxapply (quarantined patch application).
-Only executing the model's output needs the jail.
+The rest of the toolkit runs natively on Windows: oxbox ask (talk to the
+model), oxbox seed (build a sandbox copy), and oxbox apply (quarantined patch
+application). Only executing the model's output needs the jail.
 """
 
 
@@ -250,9 +291,11 @@ def find_skill():
 
     Same two-location rule as oxbox's seatbelt profile: a source checkout
     carries it at .claude/skills/ox-review next to the script, where Claude
-    Code finds it on its own; a package installs the script into <prefix>/bin
-    and the skill into <prefix>/share/oxbox/ox-review. Code assets anchor at
-    the script — only state anchors at the working directory.
+    Code finds it on its own; a package installs oxbox into <prefix>/bin, the
+    helpers into <prefix>/libexec/bin (the .deb: <prefix>/libexec/oxbox/bin)
+    and the skill into <prefix>/share/oxbox/ox-review -- one, two or three
+    levels up from the script. Code assets anchor at the script — only state
+    anchors at the working directory.
 
     All four tools carry this, the way all four carry VERSION: each is a
     standalone script, so sharing it would mean shipping a module and a
@@ -262,6 +305,8 @@ def find_skill():
     candidates = [
         os.path.join(HERE, ".claude", "skills", SKILL_NAME),
         os.path.normpath(os.path.join(HERE, "..", "share", "oxbox", SKILL_NAME)),
+        os.path.normpath(os.path.join(HERE, "..", "..", "share", "oxbox", SKILL_NAME)),
+        os.path.normpath(os.path.join(HERE, "..", "..", "..", "share", "oxbox", SKILL_NAME)),
     ]
     for directory in candidates:
         if os.path.isfile(os.path.join(directory, "SKILL.md")):
@@ -301,14 +346,139 @@ def print_skill():
     sys.stdout.buffer.flush()
 
 
+# The front door. oxbox is the one command on PATH; the other three tools are
+# helper scripts it runs for you, kept in a private libexec directory the way
+# paniolo keeps its helpers. Each workflow step is a subcommand, and the bare
+# form (`oxbox -- cmd`) is still the jail, so nothing that worked stops.
+HELPER_NAMES = ("ox", "oxseed", "oxapply")
+SUBCOMMANDS = {"seed": "oxseed", "ask": "ox", "apply": "oxapply"}
+# Flags that belong to a helper, so `oxbox --manifest` can say whose it is
+# instead of "unexpected argument". The project is called oxbox, so oxbox is
+# what a reader types first; the first thing one typed was --manifest.
+HELPER_FLAGS = {}
+for _flag in ("--files", "--mode", "--venue", "--manifest", "--allow-paid",
+              "--failover", "--base-url", "--api-key-env", "--model",
+              "--effort", "--max-tokens", "--temperature", "--stdin",
+              "--log-dir", "--output", "--status-file", "--force", "--dry-run"):
+    HELPER_FLAGS[_flag] = "ask"
+HELPER_FLAGS["--clean"] = "seed"
+for _flag in ("--log", "--diff", "--commit"):
+    HELPER_FLAGS[_flag] = "apply"
+
+
+def helper_dirs():
+    """Where the helper scripts live, in resolution order.
+
+    1. Beside this script, symlinks resolved: a source checkout, where all
+       four tools sit in the repo root. An installed oxbox lives in
+       <prefix>/bin, which holds no helpers, so this is harmless there.
+    2. <prefix>/libexec/bin, <prefix> being the parent of that directory:
+       the Homebrew keg, the macOS tarball and the Windows MSI. Homebrew
+       links bin/ and share/ into its prefix but never libexec/, which is
+       why the symlink has to be resolved before walking up.
+    3. <prefix>/libexec/oxbox/bin, the FHS spelling the .deb uses
+       (/usr/libexec/oxbox/bin).
+    4. /usr/libexec/oxbox/bin outright, so a relocated oxbox still finds a
+       system package's helpers.
+
+    find_helper falls back to PATH after these, for an install from before
+    the helpers left it. Never the working directory: the project you are
+    standing in is untrusted input, not a place to load code from.
+    """
+    real_here = os.path.dirname(os.path.realpath(__file__))
+    prefix = os.path.dirname(real_here)
+    candidates = [
+        real_here,
+        os.path.join(prefix, "libexec", "bin"),
+        os.path.join(prefix, "libexec", "oxbox", "bin"),
+        os.path.join(os.sep, "usr", "libexec", "oxbox", "bin"),
+    ]
+    dirs = []
+    for directory in candidates:
+        if directory not in dirs:
+            dirs.append(directory)
+    return dirs
+
+
+def find_helper(name):
+    """The helper script's path, or None."""
+    for directory in helper_dirs():
+        path = os.path.join(directory, name)
+        if os.path.isfile(path):
+            return path
+    found = shutil.which(name)
+    if found and found.lower().endswith(".cmd"):
+        # A pre-libexec Windows install: the shim is what PATH finds, and the
+        # script it runs sits beside it.
+        script = found[:-4]
+        found = script if os.path.isfile(script) else None
+    return found
+
+
+def run_helper(name, args):
+    """Hand off to a helper script: in place on POSIX, as a child on Windows.
+
+    The helper is run through this interpreter rather than its shebang, the
+    way the test suites run the tools, so a script that lost its exec bit
+    (a Windows checkout, a copied file) still runs. The environment is
+    passed through untouched -- ox needs its venue key -- and the exit
+    status is the helper's own.
+    """
+    path = find_helper(name)
+    if path is None:
+        sys.stderr.write("oxbox: helper %s not found; looked in:\n" % name
+                         + "".join("oxbox:   %s\n" % d for d in helper_dirs())
+                         + "oxbox:   and on PATH\n")
+        return 3
+    argv = [sys.executable or "python3", path] + list(args)
+    if sys.platform == "win32":
+        return subprocess.call(argv)
+    try:
+        os.execv(argv[0], argv)
+    except OSError as error:
+        sys.exit("oxbox: failed to start %s: %s" % (path, error))
+
+
+def list_helpers():
+    """`oxbox helper` with no name: each helper and where it was found."""
+    missing = 0
+    for name in HELPER_NAMES:
+        path = find_helper(name)
+        if path is None:
+            missing += 1
+        print("%-8s %s" % (name, path or "(not found)"))
+    return 3 if missing else 0
+
+
 def main():
     args = sys.argv[1:]
+    if args and args[0] in SUBCOMMANDS:
+        return run_helper(SUBCOMMANDS[args[0]], args[1:])
+    if args and args[0] == "helper":
+        if len(args) == 1:
+            return list_helpers()
+        if args[1] not in HELPER_NAMES:
+            sys.stderr.write("oxbox: no helper named %r; the helpers are %s\n"
+                             % (args[1], ", ".join(HELPER_NAMES)))
+            return 2
+        return run_helper(args[1], args[2:])
+    if args and args[0] == "skill":
+        print_skill()
+        return 0
+    under_run = bool(args) and args[0] == "run"
+    if under_run:
+        args = args[1:]
+    return jail(args, under_run)
+
+
+def jail(args, under_run):
+    """The jail: `oxbox run ...`, or the bare `oxbox ...` it has always been."""
     work = DEFAULT_WORK
     allow_external = False
 
     while args:
         if args[0] in ("--help", "-h"):
-            sys.stdout.write(USAGE)
+            sys.stdout.write(RUN_USAGE if under_run else USAGE)
             return 0
         if args[0] == "--version":
             print("oxbox %s" % VERSION)
@@ -318,21 +488,39 @@ def main():
             return 0
         if args[0] == "--work":
             if len(args) < 2:
-                sys.exit("oxbox: --work needs a directory")
+                sys.stderr.write("oxbox: --work needs a directory\n")
+                return 2
             work, args = args[1], args[2:]
         elif args[0] == "--allow-external-output":
             allow_external, args = True, args[1:]
         elif args[0] == "--":
             args = args[1:]
             break
+        elif args[0].startswith("-"):
+            flag = args[0].split("=", 1)[0]
+            owner = HELPER_FLAGS.get(flag)
+            if owner:
+                sys.stderr.write(
+                    "oxbox: %s is a flag of %s, not of the jail; use:\n"
+                    "oxbox:   oxbox %s %s ...\n"
+                    % (flag, SUBCOMMANDS[owner], owner, " ".join(args[:2])
+                       if len(args) > 1 and not args[1].startswith("-") else flag))
+            else:
+                sys.stderr.write("oxbox: unknown flag %s (see oxbox --help)\n" % flag)
+            return 2
         else:
-            sys.exit(f"oxbox: unexpected argument: {args[0]}")
+            sys.stderr.write(
+                "oxbox: unknown command %r; the commands are %s\n"
+                "oxbox: to jail a command, put it after --:  oxbox -- %s ...\n"
+                % (args[0], ", ".join(list(SUBCOMMANDS) + ["run", "helper", "skill"]),
+                   args[0]))
+            return 2
 
     command = args
     if not command:
-        sys.stderr.write("oxbox: no command given (use: ./oxbox -- pytest -q)\n")
-        sys.stderr.write(USAGE)
-        return 1
+        sys.stderr.write("oxbox: no command given (use: oxbox run -- pytest -q)\n")
+        sys.stderr.write(RUN_USAGE if under_run else USAGE)
+        return 2
 
     if sys.platform == "win32":
         sys.stderr.write(WINDOWS_HELP)

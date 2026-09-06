@@ -6,11 +6,12 @@
 #
 #   packaging/macos-tarball.sh <version> <outdir>
 #
-# The layout is a prefix -- bin/ beside share/ -- because that is the only
-# thing find_profile and find_skill know how to resolve: both look one level
-# up from the script for share/oxbox. Unpack it anywhere and run bin/ox in
-# place, or copy the contents over /usr/local; either way the seatbelt profile
-# and the ox-review skill are where the tools expect them. It mirrors what the
+# The layout is a prefix -- bin/ beside libexec/ and share/ -- because that
+# is what the tools know how to resolve: oxbox looks for its helpers one
+# level up in libexec/bin, and find_profile and find_skill look up from the
+# script for share/oxbox. Unpack it anywhere and run bin/oxbox in place, or
+# copy the contents over /usr/local; either way the helpers, the seatbelt
+# profile and the ox-review skill are where the tools expect them. It mirrors what the
 # Homebrew formula installs, on purpose: brew is the maintained macOS channel
 # and this is the same thing for people who do not use it, so a layout bug
 # here is a layout bug there.
@@ -33,10 +34,16 @@ name="oxbox-${version}-macos"
 stage="${outdir}/${name}"
 
 rm -rf "$stage"
-mkdir -p "$stage/bin" "$stage/share/oxbox/ox-review/scripts" "$stage/share/doc/oxbox"
+mkdir -p "$stage/bin" "$stage/libexec/bin" "$stage/share/oxbox/ox-review/scripts" \
+    "$stage/share/doc/oxbox"
 
-for tool in ox oxbox oxapply oxseed; do
-    install -m 0755 "$root/$tool" "$stage/bin/$tool"
+install -m 0755 "$root/oxbox" "$stage/bin/oxbox"
+
+# The helpers live off PATH. oxbox finds them at ../libexec/bin from its own
+# location (helper_dirs); `oxbox seed`, `oxbox ask` and `oxbox apply` run
+# them, and `oxbox helper <name>` runs one directly.
+for tool in ox oxapply oxseed; do
+    install -m 0755 "$root/$tool" "$stage/libexec/bin/$tool"
 done
 
 # The seatbelt profile. The .deb omits it (Linux jails with bubblewrap); on

@@ -263,9 +263,11 @@ def find_skill():
 
     Same two-location rule as oxbox's seatbelt profile: a source checkout
     carries it at .claude/skills/ox-review next to the script, where Claude
-    Code finds it on its own; a package installs the script into <prefix>/bin
-    and the skill into <prefix>/share/oxbox/ox-review. Code assets anchor at
-    the script — only state anchors at the working directory.
+    Code finds it on its own; a package installs oxbox into <prefix>/bin, the
+    helpers into <prefix>/libexec/bin (the .deb: <prefix>/libexec/oxbox/bin)
+    and the skill into <prefix>/share/oxbox/ox-review -- one, two or three
+    levels up from the script. Code assets anchor at the script — only state
+    anchors at the working directory.
 
     All four tools carry this, the way all four carry VERSION: each is a
     standalone script, so sharing it would mean shipping a module and a
@@ -275,6 +277,8 @@ def find_skill():
     candidates = [
         os.path.join(HERE, ".claude", "skills", SKILL_NAME),
         os.path.normpath(os.path.join(HERE, "..", "share", "oxbox", SKILL_NAME)),
+        os.path.normpath(os.path.join(HERE, "..", "..", "share", "oxbox", SKILL_NAME)),
+        os.path.normpath(os.path.join(HERE, "..", "..", "..", "share", "oxbox", SKILL_NAME)),
     ]
     for directory in candidates:
         if os.path.isfile(os.path.join(directory, "SKILL.md")):
@@ -932,7 +936,7 @@ def run(status):
 
     if not args.manifest and not os.environ.get(entries[0]["key_env"]) \
             and not args.dry_run:
-        sys.exit("ox: %s not set (run under: op run --env-file .env -- ./ox ...)"
+        sys.exit("ox: %s not set (run under: op run --env-file .env -- oxbox ask ...)"
                  % entries[0]["key_env"])
 
     paths = [p.strip() for p in args.files.split(",") if p.strip()]

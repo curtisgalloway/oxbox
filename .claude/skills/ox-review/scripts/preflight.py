@@ -133,6 +133,14 @@ def find_ox(explicit):
     found = shutil.which("ox")
     if found:
         return as_command(found)
+    # The installed layout: only oxbox is on PATH, and `oxbox ask` runs the
+    # ox it ships with from its libexec directory. A bare `ox` on PATH is
+    # tried first because it means an install from before that move, whose
+    # oxbox has no subcommands.
+    front_door = shutil.which("oxbox")
+    if front_door:
+        command, path = as_command(front_door)
+        return command + ["ask"], path + " ask"
     for base in (Path.cwd(), Path(os.environ.get("OXBOX_HOME") or Path.cwd())):
         if (base / "ox").exists():
             return as_command(base / "ox")

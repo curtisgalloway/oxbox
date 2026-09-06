@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Self-test for the jail. Run it INSIDE the jail:
 
-    ./oxbox -- python3 jailtest.py
+    ./oxbox run -- python3 jailtest.py
 
 Every probe asserts a containment property. Anything reported FAIL means the
 jail leaks and model-generated code must not be run in it.

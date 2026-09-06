@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "oxbox"
+description = "The one command: oxbox <subcommand>, handed to the executable that does it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "oxbox"
+path = "src/main.rs"
+
+# Standard library only, on purpose.
+[dependencies]
+oxbox-core.workspace = true

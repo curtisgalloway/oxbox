@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "oxbox-patch"
+description = "Extract a diff from a model's answer and apply it only inside the sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "oxbox-patch"
+path = "src/main.rs"
+
+# Standard library only, on purpose: this is the patch quarantine.
+[dependencies]
+oxbox-core.workspace = true

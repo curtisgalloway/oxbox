@@ -3,11 +3,32 @@
 version = 4
 
 [[package]]
+name = "oxbox"
+version = "0.7.0"
+dependencies = [
+ "oxbox-core",
+]
+
+[[package]]
 name = "oxbox-core"
 version = "0.7.0"
 
 [[package]]
 name = "oxbox-jail"
+version = "0.7.0"
+dependencies = [
+ "oxbox-core",
+]
+
+[[package]]
+name = "oxbox-patch"
+version = "0.7.0"
+dependencies = [
+ "oxbox-core",
+]
+
+[[package]]
+name = "oxbox-sandbox"
 version = "0.7.0"
 dependencies = [
  "oxbox-core",

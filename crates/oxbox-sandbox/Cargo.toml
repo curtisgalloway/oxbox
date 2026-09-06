@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "oxbox-sandbox"
+description = "Build and tend disposable sandbox trees: a copy of chosen files, made a git repo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "oxbox-sandbox"
+path = "src/main.rs"
+
+# Standard library only, on purpose.
+[dependencies]
+oxbox-core.workspace = true

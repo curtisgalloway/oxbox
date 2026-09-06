@@ -1,0 +1,487 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+"""Build and tend a disposable sandbox tree: a copy of chosen files from a
+real repo, made a git repo so patches can be applied and diffed without ever
+touching the original.
+
+Usage: oxbox sandbox --create /path/to/repo file1 [file2 ...]
+       oxbox sandbox --add file1 [file2 ...]
+       oxbox sandbox --remove file1 [file2 ...]
+       oxbox sandbox --list
+       oxbox sandbox --read file
+       oxbox sandbox --write file   < content
+       oxbox sandbox --destroy
+
+This is the script `oxbox sandbox` runs. It lives in a libexec directory
+rather than on PATH; oxbox finds it from its own location.
+"""
+
+import argparse
+import os
+import shutil
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+VERSION = "0.6.0"
+HERE = os.path.dirname(os.path.abspath(__file__))
+USAGE = """\
+usage: oxbox sandbox --create /path/to/repo file1 [file2 ...]
+       oxbox sandbox --add file1 [file2 ...]
+       oxbox sandbox --remove file1 [file2 ...]
+       oxbox sandbox --list
+       oxbox sandbox --read file
+       oxbox sandbox --write file   < content
+       oxbox sandbox --destroy
+
+Build and tend a disposable ./sandbox tree: a copy of chosen files from a
+real repo, made a git repo so patches can be applied and diffed without ever
+touching the original.
+
+Baseline operations commit, so `git -C sandbox/work diff HEAD` keeps meaning
+"what changed since the operator set the baseline":
+  --create REPO FILE...   wipe the sandbox and copy FILEs from REPO into it,
+                          recording REPO as the source for --add
+  --add FILE...           copy more files from the recorded source
+  --remove FILE...        delete files from the sandbox
+  --destroy               remove ./sandbox entirely
+
+Working-tree operations do not commit; they read and edit the tree as the
+model's patch would:
+  --list                  print every file in the sandbox, one per line
+  --read FILE             print a sandbox file to stdout, bytes unchanged
+  --write FILE            replace a sandbox file with stdin, bytes unchanged
+
+  --skill                 print the ox-review agent skill and exit
+  --version               print the version and exit
+  --help                  print this and exit
+
+Paths are relative to the sandbox; anything absolute, traversing upward,
+through a symlink, or into .git is refused. exit status: 0; 1 when --list
+finds nothing; 2 for a usage error; 3 when there is no sandbox, no recorded
+source, or a named file does not exist; 78 for a refused path.
+"""
+# The sandbox lives under the working directory, not the script's: an
+# installed oxseed lives in /usr/bin, and the project you are seeding for is
+# wherever you are standing. A source checkout run from its root is unchanged.
+SANDBOX = Path.cwd() / "sandbox"
+WORK = SANDBOX / "work"
+# Where --create copied from, so --add can copy more from the same place. It
+# sits beside work/, not inside it: the jail writes only into the work dir,
+# so nothing that ran in it can redirect the next --add at a directory of
+# its choosing. (An operator who passes `--work sandbox` to the jail gives
+# that up, along with the rest of the sandbox/work distinction.)
+SOURCE_RECORD = SANDBOX / ".source"
+
+
+def refuse(message):
+    sys.stderr.write(f"oxbox-sandbox: {message}\n")
+    sys.exit(78)
+
+
+def rmtree_force(path):
+    """shutil.rmtree, but able to remove git's read-only object files.
+
+    Git marks objects in .git/objects read-only. On Windows that makes
+    os.unlink fail with WinError 5 (Access is denied), so re-seeding an
+    existing sandbox blows up half-deleted. POSIX does not care -- permission
+    to unlink comes from the directory there -- which is why this only ever
+    shows up on Windows.
+    """
+    def handler(func, target, _exc):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+        except OSError:
+            pass
+        func(target)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=handler)
+    else:
+        shutil.rmtree(path, onerror=lambda f, p, _e: handler(f, p, None))
+
+
+def validate(source, rel):
+    """Reject anything that would land outside the sandbox.
+
+    The traversal class oxapply refuses in patches applies just as much to seed
+    arguments, which would otherwise copy straight past the boundary.
+    """
+    path = Path(rel)
+    # Path.is_absolute() is not enough on Windows: "/etc/hosts" has a root but
+    # no drive, so it reports False there and would slip through to be treated
+    # as a relative name. Check the textual forms too -- POSIX root, Windows
+    # root, UNC, drive letter, and home expansion.
+    rooted = (
+        path.is_absolute()
+        or rel.startswith(("~", "/", "\\"))
+        or (len(rel) > 1 and rel[1] == ":")
+    )
+    if rooted:
+        refuse(f"REFUSING absolute path: {rel}")
+    if ".." in path.parts or ".." in rel.replace("\\", "/").split("/"):
+        refuse(f"REFUSING parent traversal: {rel}")
+
+    full = source / rel
+    if not full.exists() and not full.is_symlink():
+        sys.stderr.write(f"oxbox-sandbox: missing in source: {rel}\n")
+        sys.exit(3)
+
+    # A copied symlink aimed at ~/.ssh or /etc would put a live handle to the
+    # outside inside the work tree, for anything that touches it outside the jail.
+    if full.is_symlink():
+        refuse(f"REFUSING symlink: {rel} -> {os.readlink(full)}")
+
+    # The named path is not the only place a link can hide. An intermediate
+    # component does the same job: seeding "gate/creds.txt" where gate is a
+    # link to /elsewhere passes every check above, because `full` is itself
+    # neither a symlink nor a directory, and copy2 reads straight through it.
+    # Resolving the whole chain and requiring it to stay under the source root
+    # is the check that closes that, and every variant like it.
+    try:
+        root = source.resolve(strict=True)
+        resolved = full.resolve(strict=True)
+    except OSError as error:
+        refuse(f"REFUSING unresolvable path: {rel} ({error})")
+    if resolved != root and root not in resolved.parents:
+        refuse(f"REFUSING path resolving outside the source: {rel} -> {resolved}")
+
+    if full.is_dir():
+        for walk_root, dirs, files in os.walk(full):
+            # dirs matters as much as files, and leaving it out was the bug.
+            # os.walk does not descend into a symlinked directory, so one never
+            # appears in `files` and the old check could not see it -- while
+            # copytree(symlinks=False) below dereferences it happily and copies
+            # the target's contents into the sandbox. Checked with a fixture:
+            # pkg/link -> ../secret put secret/key.txt inside sandbox/work.
+            for name in dirs + files:
+                if Path(walk_root, name).is_symlink():
+                    refuse(f"REFUSING {rel}: contains symlink {name}")
+
+
+def git(*args):
+    subprocess.run(["git", "-C", str(WORK), *args], check=True)
+
+
+SKILL_NAME = "ox-review"
+# The path the runbook uses to name its own scripts. It is written for a
+# checkout, where the skill sits where Claude Code looks for it; --skill
+# rewrites it to wherever this tool actually found the skill.
+SKILL_PATH_IN_TEXT = ".claude/skills/" + SKILL_NAME
+
+
+def find_skill():
+    """The ox-review runbook, wherever this tool is installed.
+
+    Same two-location rule as oxbox's seatbelt profile: a source checkout
+    carries it at .claude/skills/ox-review next to the script, where Claude
+    Code finds it on its own; a package installs oxbox into <prefix>/bin, the
+    helpers into <prefix>/libexec/bin (the .deb: <prefix>/libexec/oxbox/bin)
+    and the skill into <prefix>/share/oxbox/ox-review -- one, two or three
+    levels up from the script. Code assets anchor at the script — only state
+    anchors at the working directory.
+
+    All four tools carry this, the way all four carry VERSION: each is a
+    standalone script, so sharing it would mean shipping a module and a
+    sys.path to find it on. wiretest asserts the four print the same bytes,
+    which is what keeps four copies of one document from drifting.
+    """
+    candidates = [
+        os.path.join(HERE, ".claude", "skills", SKILL_NAME),
+        os.path.normpath(os.path.join(HERE, "..", "share", "oxbox", SKILL_NAME)),
+        os.path.normpath(os.path.join(HERE, "..", "..", "share", "oxbox", SKILL_NAME)),
+        os.path.normpath(os.path.join(HERE, "..", "..", "..", "share", "oxbox", SKILL_NAME)),
+    ]
+    for directory in candidates:
+        if os.path.isfile(os.path.join(directory, "SKILL.md")):
+            return directory
+    sys.exit("oxbox-sandbox: the %s skill was not found; looked in:\n" % SKILL_NAME
+             + "\n".join("oxbox-sandbox:   " + path for path in candidates)
+             + "\noxbox-sandbox: a Homebrew install may predate the skill; reinstall or "
+               "read it at https://github.com/curtisgalloway/oxbox")
+
+
+def print_skill():
+    """Print the runbook, with the paths this installation actually uses.
+
+    An agent finds this through --help, so the copy it reads has to be
+    runnable where it is standing. The text names its scripts by their
+    checkout path; an installed tool keeps them under a prefix instead, and a
+    runbook whose commands do not exist is worse than no runbook. Provenance
+    goes to stderr and the document to stdout, the same split these tools use
+    everywhere else, so piping this into a file yields the document alone.
+    """
+    directory = find_skill()
+    path = os.path.join(directory, "SKILL.md")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError as error:
+        sys.exit("oxbox-sandbox: cannot read %s: %s" % (path, error))
+    sys.stderr.write("oxbox-sandbox: skill -> %s\n" % path)
+    # The document is UTF-8 with LF endings on disk and has to leave that way.
+    # Windows' sys.stdout would encode it in the locale codepage instead --
+    # cp1252 renders SKILL.md's em dashes as 0x97 -- and translate every \n to
+    # \r\n on the way out, so `--skill > runbook.md` there produced a file no
+    # UTF-8 reader could open. Same hazard write_lf exists for, one stream over.
+    body = text.replace(SKILL_PATH_IN_TEXT, directory).encode("utf-8")
+    sys.stdout.flush()
+    sys.stdout.buffer.write(body)
+    sys.stdout.buffer.flush()
+
+
+def work_path(rel, must_exist=True):
+    """A path inside the work tree, or a refusal.
+
+    The same textual rules as validate(), because the same tricks apply: an
+    absolute path, a parent traversal or a drive letter would name something
+    outside the sandbox, and a symlink component would reach outside it
+    through a link the model's patch could have created. .git is refused
+    because it is the baseline's bookkeeping, not a sandbox file.
+    """
+    path = Path(rel)
+    rooted = (
+        path.is_absolute()
+        or rel.startswith(("~", "/", "\\"))
+        or (len(rel) > 1 and rel[1] == ":")
+    )
+    if rooted:
+        refuse(f"REFUSING absolute path: {rel}")
+    parts = rel.replace("\\", "/").split("/")
+    if ".." in path.parts or ".." in parts:
+        refuse(f"REFUSING parent traversal: {rel}")
+    if parts and parts[0] == ".git":
+        refuse(f"REFUSING a path inside .git: {rel}")
+    full = WORK / rel
+    if must_exist and not full.exists():
+        sys.stderr.write(f"oxbox-sandbox: no such file in the sandbox: {rel}\n")
+        sys.exit(3)
+    # Resolve every existing component and require the result to stay under
+    # the work tree -- a symlink anywhere on the way would put it elsewhere.
+    probe = full
+    while not probe.exists() and probe != WORK:
+        probe = probe.parent
+    try:
+        root = WORK.resolve(strict=True)
+        resolved = probe.resolve(strict=True)
+    except OSError as error:
+        refuse(f"REFUSING unresolvable path: {rel} ({error})")
+    if resolved != root and root not in resolved.parents:
+        refuse(f"REFUSING path resolving outside the sandbox: {rel} -> {resolved}")
+    return full
+
+
+def require_sandbox():
+    if not (WORK / ".git").is_dir():
+        sys.stderr.write("oxbox-sandbox: no sandbox here; create one with "
+                         "oxbox sandbox --create /path/to/repo file...\n")
+        sys.exit(3)
+
+
+def copy_in(source, relatives):
+    """Copy validated files from the source repo into the work tree."""
+    for rel in relatives:
+        destination = WORK / rel
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        origin = source / rel
+        if origin.is_dir():
+            if destination.exists():
+                rmtree_force(destination)
+            shutil.copytree(origin, destination, symlinks=False)
+        else:
+            shutil.copy2(origin, destination)
+        sys.stderr.write(f"oxbox-sandbox: seeded {rel}\n")
+
+
+def commit(message, paths=None):
+    """Record a baseline change: everything after --create, or only the named
+    paths after --add and --remove, so an uncommitted --write (or the model's
+    applied patch) elsewhere in the tree stays out of the baseline."""
+    if paths:
+        git("add", "-A", "--", *paths)
+    else:
+        git("add", "-A")
+    git("-c", "user.email=seed@sandbox.invalid", "-c", "user.name=oxbox-sandbox",
+        "commit", "-q", "--allow-empty", "-m", message)
+
+
+def op_create(repo, relatives):
+    if not relatives:
+        sys.stderr.write("oxbox-sandbox: --create needs the repo and at least one file\n")
+        return 2
+    source = Path(repo).resolve()
+    if not source.is_dir():
+        sys.stderr.write(f"oxbox-sandbox: not a directory: {repo}\n")
+        return 3
+
+    # Validate everything BEFORE destroying anything: refusing partway through
+    # would still have wiped the existing sandbox on the way to saying no.
+    for rel in relatives:
+        validate(source, rel)
+
+    if WORK.exists():
+        rmtree_force(WORK)
+    WORK.mkdir(parents=True)
+    SOURCE_RECORD.write_text(str(source) + "\n", encoding="utf-8")
+
+    copy_in(source, relatives)
+    git("init", "-q")
+    commit(f"pristine seed from {source}")
+
+    sys.stderr.write(f"oxbox-sandbox: work={WORK} (pristine commit recorded)\n")
+    sys.stderr.write(f"oxbox-sandbox: source untouched: {source}\n")
+    return 0
+
+
+def op_add(relatives):
+    require_sandbox()
+    if not relatives:
+        sys.stderr.write("oxbox-sandbox: --add needs at least one file\n")
+        return 2
+    try:
+        source = Path(SOURCE_RECORD.read_text(encoding="utf-8").strip())
+    except OSError:
+        sys.stderr.write("oxbox-sandbox: no recorded source; this sandbox predates "
+                         "--add, so --create it again\n")
+        return 3
+    if not source.is_dir():
+        sys.stderr.write(f"oxbox-sandbox: recorded source is not a directory: {source}\n")
+        return 3
+    for rel in relatives:
+        validate(source, rel)
+    copy_in(source, relatives)
+    commit("seed " + " ".join(relatives), relatives)
+    sys.stderr.write(f"oxbox-sandbox: added from {source} (baseline commit recorded)\n")
+    return 0
+
+
+def op_remove(relatives):
+    require_sandbox()
+    if not relatives:
+        sys.stderr.write("oxbox-sandbox: --remove needs at least one file\n")
+        return 2
+    targets = [work_path(rel) for rel in relatives]
+    for rel, full in zip(relatives, targets):
+        if full.is_dir():
+            rmtree_force(full)
+        else:
+            full.unlink()
+        sys.stderr.write(f"oxbox-sandbox: removed {rel}\n")
+    commit("remove " + " ".join(relatives), relatives)
+    sys.stderr.write("oxbox-sandbox: baseline commit recorded\n")
+    return 0
+
+
+def op_destroy():
+    if SANDBOX.exists():
+        rmtree_force(SANDBOX)
+    sys.stderr.write("oxbox-sandbox: sandbox removed\n")
+    return 0
+
+
+def op_list():
+    require_sandbox()
+    found = []
+    for walk_root, dirs, files in os.walk(WORK):
+        dirs[:] = sorted(d for d in dirs if d not in (".git", ".oxtmp"))
+        for name in files:
+            found.append(Path(walk_root, name).relative_to(WORK).as_posix())
+    for rel in sorted(found):
+        print(rel)
+    return 0 if found else 1
+
+
+def op_read(relatives):
+    require_sandbox()
+    if len(relatives) != 1:
+        sys.stderr.write("oxbox-sandbox: --read takes exactly one file\n")
+        return 2
+    full = work_path(relatives[0])
+    if full.is_dir():
+        sys.stderr.write(f"oxbox-sandbox: {relatives[0]} is a directory; --list shows it\n")
+        return 2
+    # Bytes through, unchanged: text mode would re-encode and, on Windows,
+    # rewrite line endings, the same hazard print_skill guards against.
+    with open(full, "rb") as handle:
+        data = handle.read()
+    sys.stdout.flush()
+    sys.stdout.buffer.write(data)
+    sys.stdout.buffer.flush()
+    return 0
+
+
+def op_write(relatives):
+    require_sandbox()
+    if len(relatives) != 1:
+        sys.stderr.write("oxbox-sandbox: --write takes exactly one file\n")
+        return 2
+    if sys.stdin.isatty():
+        sys.stderr.write("oxbox-sandbox: --write reads the content from stdin; "
+                         "redirect or pipe it in\n")
+        return 2
+    full = work_path(relatives[0], must_exist=False)
+    if full.is_dir():
+        sys.stderr.write(f"oxbox-sandbox: {relatives[0]} is a directory\n")
+        return 2
+    data = sys.stdin.buffer.read()
+    full.parent.mkdir(parents=True, exist_ok=True)
+    with open(full, "wb") as handle:
+        handle.write(data)
+    sys.stderr.write(f"oxbox-sandbox: wrote {len(data)} bytes to {relatives[0]} "
+                     "(not committed; git diff HEAD shows it)\n")
+    return 0
+
+
+class SkillAction(argparse.Action):
+    def __init__(self, option_strings, dest, **kwargs):
+        super().__init__(option_strings, dest, nargs=0, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        print_skill()
+        parser.exit()
+
+
+class HelpAction(argparse.Action):
+    def __init__(self, option_strings, dest, **kwargs):
+        super().__init__(option_strings, dest, nargs=0, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        sys.stdout.write(USAGE)
+        parser.exit()
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="oxbox sandbox", add_help=False,
+                                     usage=argparse.SUPPRESS)
+    parser.add_argument("--help", "-h", action=HelpAction)
+    parser.add_argument("--version", action="version",
+                        version="oxbox-sandbox %s" % VERSION)
+    parser.add_argument("--skill", action=SkillAction)
+    ops = parser.add_mutually_exclusive_group(required=True)
+    for name in ("create", "add", "remove", "destroy", "list", "read", "write"):
+        ops.add_argument("--" + name, action="store_const", const=name, dest="op")
+    parser.add_argument("paths", nargs="*")
+    args = parser.parse_args()
+
+    if args.op == "create":
+        return op_create(args.paths[0] if args.paths else "", args.paths[1:])
+    if args.op == "add":
+        return op_add(args.paths)
+    if args.op == "remove":
+        return op_remove(args.paths)
+    if args.op == "read":
+        return op_read(args.paths)
+    if args.op == "write":
+        return op_write(args.paths)
+    if args.paths:
+        sys.stderr.write("oxbox-sandbox: --%s takes no paths\n" % args.op)
+        return 2
+    if args.op == "destroy":
+        return op_destroy()
+    return op_list()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

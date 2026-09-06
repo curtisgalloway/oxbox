@@ -142,8 +142,8 @@ def find_ox(explicit):
         command, path = as_command(front_door)
         return command + ["ask"], path + " ask"
     for base in (Path.cwd(), Path(os.environ.get("OXBOX_HOME") or Path.cwd())):
-        if (base / "ox").exists():
-            return as_command(base / "ox")
+        if (base / "oxbox-ask").exists():
+            return as_command(base / "oxbox-ask")
     return None, None
 
 

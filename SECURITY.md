@@ -31,8 +31,8 @@ The layers that are supposed to hold:
 
 - **Escaping the jail.** Any read, write, or `stat()` outside the work dir from
   code running under `oxbox`; any network egress at all — TCP, UDP, DNS.
-- **Escaping the quarantine.** Any patch that makes `oxapply` write outside
-  `sandbox/work`, or any argument that makes `oxseed` copy from outside the
+- **Escaping the quarantine.** Any patch that makes `oxbox-apply` write outside
+  `sandbox/work`, or any argument that makes `oxbox-sandbox` copy from outside the
   source tree — absolute paths, traversal, symlinks, extended diff headers.
 - **Secrets reaching the provider.** Any content that lands in the request
   payload without passing the scanner. The scan lives in `build_context`; a

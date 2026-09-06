@@ -217,34 +217,34 @@ def build_context(paths, force, task=""):
     for raw in paths:
         path = Path(raw)
         if not path.is_file():
-            sys.exit(f"ox: not a file: {raw}")
+            sys.exit(f"oxbox-ask: not a file: {raw}")
         try:
             body = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
-            sys.exit(f"ox: not a text file: {raw}")
+            sys.exit(f"oxbox-ask: not a text file: {raw}")
         except OSError as error:
             # is_file() passing does not mean readable: a mode-000 file,
             # a dangling mount, a device that went away. This used to be
             # the shortest path to an uncaught traceback in the whole tool.
-            sys.exit(f"ox: cannot read {raw}: {error}")
+            sys.exit(f"oxbox-ask: cannot read {raw}: {error}")
         total += len(body.encode("utf-8"))
         findings.extend(scan_for_secrets(body, raw))
         suffix = path.suffix.lstrip(".") or "text"
         blocks.append(f"### File: {raw}\n```{suffix}\n{body}\n```")
 
     if findings and not force:
-        sys.stderr.write("ox: refusing to send; possible secrets detected:\n")
+        sys.stderr.write("oxbox-ask: refusing to send; possible secrets detected:\n")
         for finding in findings:
             sys.stderr.write(f"  {finding}\n")
         sys.stderr.write(
-            "ox: this model logs prompts and shares them with the provider.\n"
-            "ox: remove the secrets, or re-run with --force if these are false positives.\n"
+            "oxbox-ask: this model logs prompts and shares them with the provider.\n"
+            "oxbox-ask: remove the secrets, or re-run with --force if these are false positives.\n"
         )
         sys.exit(2)
 
     if total > MAX_PAYLOAD_BYTES and not force:
         sys.exit(
-            f"ox: refusing to send {total} bytes of context "
+            f"oxbox-ask: refusing to send {total} bytes of context "
             f"(limit {MAX_PAYLOAD_BYTES}); narrow --files or pass --force"
         )
 
@@ -283,9 +283,9 @@ def find_skill():
     for directory in candidates:
         if os.path.isfile(os.path.join(directory, "SKILL.md")):
             return directory
-    sys.exit("ox: the %s skill was not found; looked in:\n" % SKILL_NAME
-             + "\n".join("ox:   " + path for path in candidates)
-             + "\nox: a Homebrew install may predate the skill; reinstall or "
+    sys.exit("oxbox-ask: the %s skill was not found; looked in:\n" % SKILL_NAME
+             + "\n".join("oxbox-ask:   " + path for path in candidates)
+             + "\noxbox-ask: a Homebrew install may predate the skill; reinstall or "
                "read it at https://github.com/curtisgalloway/oxbox")
 
 
@@ -305,8 +305,8 @@ def print_skill():
         with open(path, encoding="utf-8") as handle:
             text = handle.read()
     except OSError as error:
-        sys.exit("ox: cannot read %s: %s" % (path, error))
-    sys.stderr.write("ox: skill -> %s\n" % path)
+        sys.exit("oxbox-ask: cannot read %s: %s" % (path, error))
+    sys.stderr.write("oxbox-ask: skill -> %s\n" % path)
     # The document is UTF-8 with LF endings on disk and has to leave that way.
     # Windows' sys.stdout would encode it in the locale codepage instead --
     # cp1252 renders SKILL.md's em dashes as 0x97 -- and translate every \n to
@@ -338,7 +338,7 @@ def fetch_manifest(url):
     next week and the audit trail has to.
     """
     if not url.startswith("https://"):
-        sys.exit("ox: --manifest URL must be https:// (got %r); a manifest "
+        sys.exit("oxbox-ask: --manifest URL must be https:// (got %r); a manifest "
                  "chooses where the payload goes, so it must not arrive in "
                  "cleartext" % url)
     request = urllib.request.Request(url, headers={
@@ -352,17 +352,17 @@ def fetch_manifest(url):
     except urllib.error.HTTPError as error:
         if 300 <= error.code < 400:
             target = error.headers.get("Location") if error.headers else None
-            sys.exit("ox: manifest %s redirected (HTTP %d to %s); a manifest is "
+            sys.exit("oxbox-ask: manifest %s redirected (HTTP %d to %s); a manifest is "
                      "read from where it was named or not at all"
                      % (url, error.code, target or "an unnamed location"))
-        sys.exit("ox: manifest %s: HTTP %d" % (url, error.code))
+        sys.exit("oxbox-ask: manifest %s: HTTP %d" % (url, error.code))
     except (OSError, ValueError) as error:
-        sys.exit("ox: cannot fetch manifest %s: %s"
+        sys.exit("oxbox-ask: cannot fetch manifest %s: %s"
                  % (url, getattr(error, "reason", None) or error))
     if len(raw) > MANIFEST_MAX_BYTES:
-        sys.exit("ox: manifest %s is larger than %d bytes, which no manifest is"
+        sys.exit("oxbox-ask: manifest %s is larger than %d bytes, which no manifest is"
                  % (url, MANIFEST_MAX_BYTES))
-    sys.stderr.write("ox: fetched manifest %s (%d bytes)\n" % (url, len(raw)))
+    sys.stderr.write("oxbox-ask: fetched manifest %s (%d bytes)\n" % (url, len(raw)))
     return raw
 
 
@@ -376,7 +376,7 @@ def manifest_effort(value, where):
     """
     if value in EFFORTS:
         return value
-    sys.stderr.write("ox: ignoring unrecognized effort %r in %s (known: %s)\n"
+    sys.stderr.write("oxbox-ask: ignoring unrecognized effort %r in %s (known: %s)\n"
                      % (value, where, ", ".join(EFFORTS)))
     return None
 
@@ -403,12 +403,12 @@ def load_manifest(path, allow_paid):
         try:
             raw = Path(path).read_bytes()
         except OSError as error:
-            sys.exit("ox: cannot read manifest %s: %s" % (path, error))
+            sys.exit("oxbox-ask: cannot read manifest %s: %s" % (path, error))
     digest = hashlib.sha256(raw).hexdigest()
     try:
         data = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as error:
-        sys.exit("ox: manifest %s is not valid JSON: %s" % (path, error))
+        sys.exit("oxbox-ask: manifest %s is not valid JSON: %s" % (path, error))
 
     version = data.get("manifest_version")
     # Two unrelated failures used to share one message, and the one that
@@ -421,10 +421,10 @@ def load_manifest(path, allow_paid):
     # skew that does not exist. bool is checked first because it is an int
     # in Python and a manifest_version of true would otherwise pass.
     if isinstance(version, bool) or not isinstance(version, int):
-        sys.exit("ox: %s is not a recommendations manifest: manifest_version "
+        sys.exit("oxbox-ask: %s is not a recommendations manifest: manifest_version "
                  "must be an integer, found %r" % (path, version))
     if version > MANIFEST_VERSION:
-        sys.exit("ox: manifest version %d is newer than this ox understands "
+        sys.exit("oxbox-ask: manifest version %d is newer than this ox understands "
                  "(%d); update ox, or use an older manifest"
                  % (version, MANIFEST_VERSION))
 
@@ -435,12 +435,12 @@ def load_manifest(path, allow_paid):
     # no diagnosis at all, which is the one thing the status file exists for.
     defaults = data.get("defaults")
     if defaults is not None and not isinstance(defaults, dict):
-        sys.stderr.write("ox: manifest defaults is not an object; ignoring it\n")
+        sys.stderr.write("oxbox-ask: manifest defaults is not an object; ignoring it\n")
         defaults = None
     defaults = defaults or {}
     unknown = sorted(set(defaults) - {"max_tokens", "effort"})
     if unknown:
-        sys.stderr.write("ox: ignoring unrecognized manifest defaults: %s\n"
+        sys.stderr.write("oxbox-ask: ignoring unrecognized manifest defaults: %s\n"
                          % ", ".join(unknown))
     if "effort" in defaults:
         defaults = dict(defaults, effort=manifest_effort(defaults["effort"],
@@ -448,12 +448,12 @@ def load_manifest(path, allow_paid):
 
     recs = data.get("recommendations")
     if not isinstance(recs, list) or not recs:
-        sys.exit("ox: manifest %s has no recommendations" % path)
+        sys.exit("oxbox-ask: manifest %s has no recommendations" % path)
 
     entries = []
     for index, rec in enumerate(recs):
         if not isinstance(rec, dict):
-            sys.exit("ox: manifest %s recommendation %d is not an object"
+            sys.exit("oxbox-ask: manifest %s recommendation %d is not an object"
                      % (path, index + 1))
         params = rec.get("params") if isinstance(rec.get("params"), dict) else {}
         if "effort" in params:
@@ -475,7 +475,7 @@ def load_manifest(path, allow_paid):
         }
         rank = rec.get("rank")
         if rank not in (None, index + 1):
-            sys.stderr.write("ox: manifest rank %r disagrees with position %d; "
+            sys.stderr.write("oxbox-ask: manifest rank %r disagrees with position %d; "
                              "position is authoritative\n" % (rank, index + 1))
         spec = VENUES.get(entry["venue"])
         if spec is None:
@@ -492,7 +492,7 @@ def load_manifest(path, allow_paid):
             base = (rec.get("base_url") or "").rstrip("/")
             if base and entry["url"] != base and not entry["url"].startswith(base + "/"):
                 sys.stderr.write(
-                    "ox: WARNING: manifest base_url %r for venue %s disagrees "
+                    "oxbox-ask: WARNING: manifest base_url %r for venue %s disagrees "
                     "with ox's table (%s); the table wins — a manifest never "
                     "chooses where a credential goes\n"
                     % (rec.get("base_url"), entry["venue"], entry["url"]))
@@ -542,7 +542,7 @@ def write_log(path, text):
     try:
         write_lf(path, text)
     except OSError as error:
-        sys.stderr.write("ox: could not write %s: %s\n" % (path.name, error))
+        sys.stderr.write("oxbox-ask: could not write %s: %s\n" % (path.name, error))
 
 
 def write_status(status):
@@ -564,7 +564,7 @@ def write_status(status):
         try:
             write_lf(target, json.dumps(record, indent=2))
         except OSError as error:
-            sys.stderr.write("ox: could not write status to %s: %s\n" % (target, error))
+            sys.stderr.write("oxbox-ask: could not write status to %s: %s\n" % (target, error))
 
 
 def send_and_parse(api_url, api_key, payload, log_dir):
@@ -607,7 +607,7 @@ def send_and_parse(api_url, api_key, payload, log_dir):
                       "non-JSON response body\n%s\n\n%s"
                       % (error, raw[:2000].decode("utf-8", "replace")))
             raise AttemptFailed(
-                "ox: provider returned a non-JSON body (%s); raw bytes in %s"
+                "oxbox-ask: provider returned a non-JSON body (%s); raw bytes in %s"
                 % (error, log_dir / "error.txt"))
     except urllib.error.HTTPError as error:
         # error.read() can itself raise: a provider that announces a
@@ -620,26 +620,26 @@ def send_and_parse(api_url, api_key, payload, log_dir):
         except Exception as read_error:
             detail = "<response body unreadable: %r>" % (read_error,)
         write_log(log_dir / "error.txt", f"{error.code}\n{detail}")
-        raise AttemptFailed(f"ox: HTTP {error.code}: {detail[:500]}")
+        raise AttemptFailed(f"oxbox-ask: HTTP {error.code}: {detail[:500]}")
     except urllib.error.URLError as error:
-        raise AttemptFailed(f"ox: network error: {error.reason}")
+        raise AttemptFailed(f"oxbox-ask: network error: {error.reason}")
     except (TimeoutError, socket.timeout) as error:
         # A timeout while reading the body is not a URLError, so nothing above
         # caught it. socket.timeout is a distinct class before 3.10 and an
         # alias for TimeoutError after; naming both covers the supported range.
-        raise AttemptFailed("ox: timed out after %ds reading the response (%s)"
+        raise AttemptFailed("oxbox-ask: timed out after %ds reading the response (%s)"
                             % (TIMEOUT_SECONDS, error))
 
     write_log(log_dir / "response.json", json.dumps(body, indent=2))
 
     if "error" in body and body["error"]:
-        raise AttemptFailed(f"ox: api error: {json.dumps(body['error'])[:500]}")
+        raise AttemptFailed(f"oxbox-ask: api error: {json.dumps(body['error'])[:500]}")
 
     choices = body.get("choices") or []
     # Some providers return an empty choices list on a content filter. That
     # is a real response, not a crash, and the log already holds the raw body.
     if not choices:
-        raise AttemptFailed("ox: provider returned no choices "
+        raise AttemptFailed("oxbox-ask: provider returned no choices "
                             "(see response.json in the log)")
     choice = choices[0]
     message = choice.get("message", {}) or {}
@@ -652,13 +652,13 @@ def send_and_parse(api_url, api_key, payload, log_dir):
 
     if message.get("tool_calls"):
         sys.stderr.write(
-            "ox: WARNING: model emitted tool_calls despite no tools being offered; "
+            "oxbox-ask: WARNING: model emitted tool_calls despite no tools being offered; "
             "logged but ignored\n"
         )
 
     usage = body.get("usage", {}) or {}
     sys.stderr.write(
-        f"ox: finish={choice.get('finish_reason')} "
+        f"oxbox-ask: finish={choice.get('finish_reason')} "
         f"prompt_tokens={usage.get('prompt_tokens')} "
         f"completion_tokens={usage.get('completion_tokens')} "
         f"reasoning_chars={len(reasoning)}\n"
@@ -677,8 +677,8 @@ def send_and_parse(api_url, api_key, payload, log_dir):
                       % (usage["completion_tokens_details"]["reasoning_tokens"],
                          usage.get("completion_tokens")))
         raise AttemptFailed(
-            "ox: model returned no content (finish=%s)%s\n"
-            "ox: the raw response and any reasoning are in %s"
+            "oxbox-ask: model returned no content (finish=%s)%s\n"
+            "oxbox-ask: the raw response and any reasoning are in %s"
             % (choice.get("finish_reason"), detail, log_dir)
         )
 
@@ -744,7 +744,7 @@ def main():
         # written first.
         status["ok"] = False
         status["exit_code"] = 1
-        status["error"] = "ox: unhandled %s: %s" % (type(exc).__name__, exc)
+        status["error"] = "oxbox-ask: unhandled %s: %s" % (type(exc).__name__, exc)
         write_status(status)
         raise
     status["ok"] = True
@@ -754,11 +754,11 @@ def main():
 
 def run(status):
     parser = argparse.ArgumentParser(
-        prog="ox",
+        prog="oxbox ask",
         description="Send a task to an untrusted model. No tools, full audit log.",
     )
     parser.add_argument("task", nargs="?", help="the task or question (or use --stdin)")
-    parser.add_argument("--version", action="version", version="ox %s" % VERSION)
+    parser.add_argument("--version", action="version", version="oxbox-ask %s" % VERSION)
     parser.add_argument("--files", default="",
                         help="comma-separated files to include as context")
     parser.add_argument("--mode", choices=sorted(SYSTEM_PROMPTS), default="diff",
@@ -865,11 +865,11 @@ def run(status):
         try:
             os.remove(args.output)
         except OSError as error:
-            sys.exit("ox: cannot clear --output %s: %s" % (args.output, error))
+            sys.exit("oxbox-ask: cannot clear --output %s: %s" % (args.output, error))
 
     task = sys.stdin.read() if args.stdin else args.task
     if not task or not task.strip():
-        sys.exit("ox: no task given")
+        sys.exit("oxbox-ask: no task given")
 
     # Resolve destination and credential together. They are never chosen
     # independently: an unlisted host requires you to name the variable whose
@@ -877,7 +877,7 @@ def run(status):
     # table, so no credential travels somewhere by default.
     manifest_info = None
     if args.failover and not args.manifest:
-        sys.exit("ox: --failover requires --manifest; a single destination "
+        sys.exit("oxbox-ask: --failover requires --manifest; a single destination "
                  "has nothing to fail over to")
     if args.manifest:
         # The manifest chooses provider and model; every other destination
@@ -886,36 +886,36 @@ def run(status):
                             (args.base_url, "--base-url"),
                             (args.api_key_env, "--api-key-env")):
             if value:
-                sys.exit("ox: %s conflicts with --manifest; the manifest "
+                sys.exit("oxbox-ask: %s conflicts with --manifest; the manifest "
                          "chooses the destination" % name)
         entries, manifest_info = load_manifest(args.manifest, args.allow_paid)
         status["manifest"] = {"path": manifest_info["path"],
                               "sha256": manifest_info["sha256"]}
     elif args.base_url:
         if not args.api_key_env:
-            sys.exit("ox: --base-url requires --api-key-env, so a key is never "
+            sys.exit("oxbox-ask: --base-url requires --api-key-env, so a key is never "
                      "sent to an unlisted host by accident")
         # https only. A plaintext endpoint puts the Bearer token on the wire in
         # cleartext, which defeats the point of pairing it with a host at all.
         # Validated here rather than at request time so a bad URL is a clean
         # error instead of a ValueError traceback after the logs are written.
         if not args.base_url.startswith("https://"):
-            sys.exit("ox: --base-url must be an https:// URL (got %r); a "
+            sys.exit("oxbox-ask: --base-url must be an https:// URL (got %r); a "
                      "credential must not travel in cleartext" % args.base_url)
         if not args.model:
-            sys.exit("ox: --model is required for venue 'custom' (no default)")
+            sys.exit("oxbox-ask: --model is required for venue 'custom' (no default)")
         entries = [{"position": 1, "venue": "custom", "model": args.model,
                     "cost": None, "why": "", "params": {}, "skip": None,
                     "url": args.base_url, "key_env": args.api_key_env}]
     else:
         if args.api_key_env:
-            sys.exit("ox: --api-key-env only applies with --base-url; "
+            sys.exit("oxbox-ask: --api-key-env only applies with --base-url; "
                      "a named venue already carries its own key variable")
         venue = args.venue or DEFAULT_VENUE
         model = args.model or VENUES[venue]["default_model"]
         if not model:
             sys.exit(
-                "ox: no model chosen, and %r has no default.\n"
+                "oxbox-ask: no model chosen, and %r has no default.\n"
                 "\n"
                 "ox names no model of its own: the free and cloaked listings\n"
                 "worth pointing it at change week to week, and a default that\n"
@@ -936,7 +936,7 @@ def run(status):
 
     if not args.manifest and not os.environ.get(entries[0]["key_env"]) \
             and not args.dry_run:
-        sys.exit("ox: %s not set (run under: op run --env-file .env -- oxbox ask ...)"
+        sys.exit("oxbox-ask: %s not set (run under: op run --env-file .env -- oxbox ask ...)"
                  % entries[0]["key_env"])
 
     paths = [p.strip() for p in args.files.split(",") if p.strip()]
@@ -952,7 +952,7 @@ def run(status):
                                             entry["venue"], entry["model"])
                  if manifest_info else "%s/%s" % (entry["venue"], entry["model"]))
         if entry["skip"]:
-            sys.stderr.write("ox: %s skipped: %s\n" % (label, entry["skip"]))
+            sys.stderr.write("oxbox-ask: %s skipped: %s\n" % (label, entry["skip"]))
             attempts.append({"position": entry["position"],
                              "venue": entry["venue"], "model": entry["model"],
                              "skipped": entry["skip"]})
@@ -1031,17 +1031,17 @@ def run(status):
         write_lf(log_dir / "request.json", json.dumps(payload, indent=2))
         write_lf(log_dir / "meta.json", json.dumps(meta, indent=2))
 
-        sys.stderr.write(f"ox: log -> {log_dir}\n")
+        sys.stderr.write(f"oxbox-ask: log -> {log_dir}\n")
         if manifest_info:
             why = " — %s" % entry["why"] if entry["why"] else ""
-            sys.stderr.write("ox: %s%s\n" % (label, why))
-        sys.stderr.write("ox: venue=%s model=%s mode=%s effort=%s "
+            sys.stderr.write("oxbox-ask: %s%s\n" % (label, why))
+        sys.stderr.write("oxbox-ask: venue=%s model=%s mode=%s effort=%s "
                          "context=%dB files=%d\n"
                          % (entry["venue"], entry["model"], args.mode,
                             effort, total_bytes, len(paths)))
 
         if args.dry_run:
-            sys.stderr.write("ox: dry run, nothing sent\n")
+            sys.stderr.write("oxbox-ask: dry run, nothing sent\n")
             print(json.dumps(payload, indent=2))
             return
 
@@ -1057,7 +1057,7 @@ def run(status):
                 status["attempts"] = attempts
             if not args.failover:
                 sys.exit(str(failure))
-            sys.stderr.write("%s\nox: %s failed; trying the next entry\n"
+            sys.stderr.write("%s\noxbox-ask: %s failed; trying the next entry\n"
                              % (failure, label))
             continue
 
@@ -1101,7 +1101,7 @@ def run(status):
             lines.append("  [%s] %s/%s: %s"
                          % (item.get("position"), item.get("venue"),
                             item.get("model"), reason.splitlines()[0]))
-        sys.exit("ox: no manifest entry produced an answer:\n" + "\n".join(lines))
+        sys.exit("oxbox-ask: no manifest entry produced an answer:\n" + "\n".join(lines))
     content = chosen
 
     # Truncation with content is quieter than truncation without: the answer
@@ -1112,12 +1112,12 @@ def run(status):
     # check `truncated` in the status record instead.
     if status["truncated"]:
         sys.stderr.write(
-            "ox: WARNING: output truncated at the max_tokens cap "
+            "oxbox-ask: WARNING: output truncated at the max_tokens cap "
             "(finish=length); raise --max-tokens\n"
         )
     elif status["truncated"] is None:
         sys.stderr.write(
-            "ox: WARNING: the provider reported no finish reason, so whether "
+            "oxbox-ask: WARNING: the provider reported no finish reason, so whether "
             "this answer is complete is unknown; check the tail before "
             "trusting it\n"
         )
@@ -1125,7 +1125,7 @@ def run(status):
     if args.output:
         # Match stdout byte-for-byte: print() appends the trailing newline.
         write_lf(args.output, content if content.endswith("\n") else content + "\n")
-        sys.stderr.write("ox: answer -> %s\n" % args.output)
+        sys.stderr.write("oxbox-ask: answer -> %s\n" % args.output)
     else:
         print(content)
 

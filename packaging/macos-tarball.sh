@@ -39,10 +39,10 @@ mkdir -p "$stage/bin" "$stage/libexec/bin" "$stage/share/oxbox/ox-review/scripts
 
 install -m 0755 "$root/oxbox" "$stage/bin/oxbox"
 
-# The helpers live off PATH. oxbox finds them at ../libexec/bin from its own
-# location (helper_dirs); `oxbox seed`, `oxbox ask` and `oxbox apply` run
-# them, and `oxbox helper <name>` runs one directly.
-for tool in ox oxapply oxseed; do
+# The scripts live off PATH. oxbox finds them at ../libexec/bin from its own
+# location (helper_dirs); `oxbox <sub>` execs oxbox-<sub>, and
+# `oxbox helper <sub>` runs one directly.
+for tool in oxbox-sandbox oxbox-ask oxbox-apply oxbox-jail; do
     install -m 0755 "$root/$tool" "$stage/libexec/bin/$tool"
 done
 

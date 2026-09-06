@@ -27,7 +27,29 @@ import http.server
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-OX = [sys.executable, str(HERE / "oxbox-send")]
+
+# Two implementations, one suite. By default this drives the Python scripts
+# in the checkout; with OXBOX_UNDER_TEST naming a directory of built
+# executables it drives those instead. The Python source is still read as the
+# reference (load_ox, the VERSION check), and the binary's behavior is held
+# to it. The binary has to be built with the `test-overrides` feature, which
+# compiles in the same knobs this suite patches into a copy of the Python
+# source: venue URLs aimed at a loopback listener, the https guards relaxed,
+# the manifest size cap lowered.
+UNDER_TEST = os.environ.get("OXBOX_UNDER_TEST")
+
+
+def tool_path(name):
+    if UNDER_TEST:
+        return Path(UNDER_TEST) / (name + (".exe" if sys.platform == "win32" else ""))
+    return HERE / name
+
+
+def tool_argv(name):
+    return [str(tool_path(name))] if UNDER_TEST else [sys.executable, str(tool_path(name))]
+
+
+OX = tool_argv("oxbox-send")
 
 FAILURES = []
 PASSES = 0
@@ -48,6 +70,16 @@ def skip(label, why):
     global SKIPPED
     SKIPPED += 1
     print("[SKIP] %s (%s)" % (label, why))
+
+
+def header(headers, name):
+    """Case-insensitive lookup. Header names are case-insensitive on the
+    wire, and the two implementations spell them differently: urllib sends
+    them as written, the Rust client lowercases them."""
+    for key, value in (headers or {}).items():
+        if key.lower() == name.lower():
+            return value
+    return None
 
 
 def serve(handler):
@@ -129,6 +161,53 @@ def run_ox(argv, env=None, timeout=60):
                           timeout=timeout, env=environ)
 
 
+def rewired_ox(tmp, name, allow_http=False, venue_urls=None, manifest_cap=None):
+    """An ox with its wiring changed for a loopback listener.
+
+    Returns (argv, env): for the Python reference, a copy of the source with
+    the named lines rewritten and an empty env; under OXBOX_UNDER_TEST, the
+    binary and the OXBOX_TEST_* variables its test-overrides feature reads.
+    Either way the guards are relaxed only here, in a copy or a test build --
+    the real program keeps them, and separate cases assert that.
+    """
+    if UNDER_TEST:
+        env = {}
+        if allow_http:
+            env["OXBOX_TEST_ALLOW_HTTP"] = "1"
+        if venue_urls:
+            env["OXBOX_TEST_VENUE_URLS"] = json.dumps(venue_urls)
+        if manifest_cap is not None:
+            env["OXBOX_TEST_MANIFEST_MAX_BYTES"] = str(manifest_cap)
+        return list(OX), env
+    source = (HERE / "oxbox-send").read_text(encoding="utf-8")
+    if allow_http:
+        source = source.replace('if not args.base_url.startswith("https://"):', "if False:")
+        source = source.replace('if not url.startswith("https://"):', "if False:")
+    for venue, url in (venue_urls or {}).items():
+        source = source.replace(REFERENCE_URLS[venue], url)
+    if manifest_cap is not None:
+        source = source.replace("MANIFEST_MAX_BYTES = 1_048_576",
+                                "MANIFEST_MAX_BYTES = %d" % manifest_cap)
+    patched = tmp / name
+    patched.write_text(source, encoding="utf-8")
+    return [sys.executable, str(patched)], {}
+
+
+REFERENCE_URLS = {
+    "openrouter": "https://openrouter.ai/api/v1/chat/completions",
+    "opencode": "https://opencode.ai/zen/v1/chat/completions",
+}
+
+
+def run_rewired(rewired, argv, env=None, cwd=None):
+    command, overrides = rewired
+    environ = dict(os.environ)
+    environ.update(overrides)
+    environ.update(env or {})
+    return subprocess.run(command + argv, capture_output=True, text=True,
+                          timeout=60, env=environ, cwd=cwd)
+
+
 def send_to_local(store, tmp, extra_argv=None, **kwargs):
     """Drive ox at a local listener, bypassing only the https scheme guard.
 
@@ -137,15 +216,11 @@ def send_to_local(store, tmp, extra_argv=None, **kwargs):
     """
     server = serve(capture_handler(store, **kwargs))
     url = "http://127.0.0.1:%d/v1/chat/completions" % server.server_address[1]
-    patched = tmp / "ox_local"
-    source = (HERE / "oxbox-send").read_text(encoding="utf-8")
-    source = source.replace('if not args.base_url.startswith("https://"):', "if False:")
-    patched.write_text(source, encoding="utf-8")
-    argv = [sys.executable, str(patched), "--base-url", url,
+    rewired = rewired_ox(tmp, "ox_local", allow_http=True)
+    argv = ["--base-url", url,
             "--api-key-env", "OX_TEST_KEY", "--model", "test-model",
             "--log-dir", str(tmp / "logs")] + (extra_argv or ["--mode", "ask", "hello"])
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=60,
-                            env=dict(os.environ, OX_TEST_KEY="sk-test-canary"))
+    result = run_rewired(rewired, argv, env={"OX_TEST_KEY": "sk-test-canary"})
     server.shutdown()
     return result
 
@@ -181,7 +256,7 @@ def main():
     # block someone edited in one file only.
     skills = {}
     for tool in ("oxbox", "oxbox-send", "oxbox-patch", "oxbox-sandbox", "oxbox-jail"):
-        done = subprocess.run([sys.executable, str(HERE / tool), "--skill"],
+        done = subprocess.run(tool_argv(tool) + ["--skill"],
                               capture_output=True, text=True, timeout=30)
         skills[tool] = (done.returncode, done.stdout)
     codes = {tool: code for tool, (code, _) in skills.items()}
@@ -196,7 +271,7 @@ def main():
     # tool you actually ran or an error message points at the wrong program.
     prefixes = {}
     for tool in ("oxbox", "oxbox-send", "oxbox-patch", "oxbox-sandbox", "oxbox-jail"):
-        done = subprocess.run([sys.executable, str(HERE / tool), "--skill"],
+        done = subprocess.run(tool_argv(tool) + ["--skill"],
                               capture_output=True, text=True, timeout=30)
         prefixes[tool] = done.stderr.startswith("%s: skill -> " % tool)
     report(all(prefixes.values()),
@@ -249,15 +324,15 @@ def main():
     report("functions" not in payload and "tool_choice" not in payload,
            "no `functions` or `tool_choice` either")
 
-    report(headers.get("Authorization") == "Bearer sk-test-canary",
+    report(header(headers, "Authorization") == "Bearer sk-test-canary",
            "Authorization carries the value of the named env var",
-           repr(headers.get("Authorization")))
-    report(headers.get("Content-Type") == "application/json",
+           repr(header(headers, "Authorization")))
+    report(header(headers, "Content-Type") == "application/json",
            "Content-Type is application/json")
 
     # urllib defaults to Python-urllib/3.x, which OpenCode Zen's Cloudflare
     # rejects with 403 before routing. That shipped once; it does not again.
-    agent = headers.get("User-Agent", "")
+    agent = header(headers, "User-Agent") or ""
     report(agent == ox["USER_AGENT"] and "Python-urllib" not in agent,
            "User-Agent is ox's own, not urllib's default", repr(agent))
 
@@ -346,22 +421,17 @@ def main():
             pass
 
     redirector = serve(Redirector)
-    patched = tmp / "ox_local"
-    source = (HERE / "oxbox-send").read_text(encoding="utf-8")
-    source = source.replace('if not args.base_url.startswith("https://"):', "if False:")
-    patched.write_text(source, encoding="utf-8")
-    result = subprocess.run(
-        [sys.executable, str(patched),
-         "--base-url", "http://127.0.0.1:%d/v1" % redirector.server_address[1],
+    result = run_rewired(
+        rewired_ox(tmp, "ox_local", allow_http=True),
+        ["--base-url", "http://127.0.0.1:%d/v1" % redirector.server_address[1],
          "--api-key-env", "OX_TEST_KEY", "--model", "m", "--mode", "ask",
          "--log-dir", str(tmp / "redirlogs"), "task"],
-        capture_output=True, text=True, timeout=60,
-        env=dict(os.environ, OX_TEST_KEY="sk-test-canary"))
+        env={"OX_TEST_KEY": "sk-test-canary"})
 
     got = leaked.get("headers") or {}
-    report("Authorization" not in got,
+    report(header(got, "Authorization") is None,
            "ox does not forward Authorization across a redirect",
-           "leaked: %r" % got.get("Authorization"))
+           "leaked: %r" % header(got, "Authorization"))
     report("pwned" not in result.stdout,
            "ox does not print a redirect target's content as the model's answer")
     report(result.returncode != 0 and "Traceback" not in result.stderr,
@@ -439,10 +509,14 @@ def main():
                      "--status-file", str(crash_status), "hello"],
                     env={"OPENROUTER_API_KEY": "sk-unused"})
     crashed = json.loads(crash_status.read_text()) if crash_status.exists() else {}
+    # Python reaches this through its catch-all ("unhandled OSError: ...");
+    # the Rust port diagnoses the failed mkdir by name. Either way the record
+    # says the run failed and why, which is the property.
+    crash_error = crashed.get("error") or ""
     report(result.returncode != 0
            and crashed.get("ok") is False
            and crashed.get("exit_code") == 1
-           and "unhandled" in (crashed.get("error") or ""),
+           and ("unhandled" in crash_error or "log directory" in crash_error),
            "an unplanned exception still writes the status record",
            repr((crashed.get("exit_code"), (crashed.get("error") or "")[:44])))
 
@@ -566,15 +640,13 @@ def main():
         body=json.dumps({"error": {"message": "rate-limited", "code": 429}}).encode()))
     solid = {}
     solid_server = serve(capture_handler(solid))
-    source = (HERE / "oxbox-send").read_text(encoding="utf-8")
-    source = source.replace(
-        "https://openrouter.ai/api/v1/chat/completions",
-        "http://127.0.0.1:%d/or/v1/chat/completions" % flaky_server.server_address[1])
-    source = source.replace(
-        "https://opencode.ai/zen/v1/chat/completions",
-        "http://127.0.0.1:%d/oc/v1/chat/completions" % solid_server.server_address[1])
-    patched = tmp / "ox_manifest"
-    patched.write_text(source, encoding="utf-8")
+    local_venues = {
+        "openrouter": "http://127.0.0.1:%d/or/v1/chat/completions" % flaky_server.server_address[1],
+        "opencode": "http://127.0.0.1:%d/oc/v1/chat/completions" % solid_server.server_address[1],
+    }
+    # Venue URLs rewired to the listeners; the https guards stay in force,
+    # which is what the plaintext-manifest case below relies on.
+    manifest_ox = rewired_ox(tmp, "ox_manifest", venue_urls=local_venues)
 
     manifest = tmp / "manifest.json"
     manifest.write_text(json.dumps({
@@ -596,22 +668,20 @@ def main():
                 OPENCODE_ZEN_API_KEY=canary_key("opencode"))
     sfile = tmp / "manifest-status.json"
 
-    result = subprocess.run(
-        [sys.executable, str(patched), "--manifest", str(manifest),
+    result = run_rewired(manifest_ox, ["--manifest", str(manifest),
          "--failover", "--mode", "ask", "--status-file", str(sfile),
-         "--log-dir", str(tmp / "mlogs"), "hello"],
-        capture_output=True, text=True, timeout=60, env=menv)
+         "--log-dir", str(tmp / "mlogs"), "hello"], env=menv)
     stat = json.loads(sfile.read_text()) if sfile.exists() else {}
     report(result.returncode == 0 and result.stdout.strip() == "ok",
            "--failover lands on the first working entry",
            "exit=%s stderr=%r" % (result.returncode, result.stderr[-160:]))
-    report((flaky.get("headers") or {}).get("Authorization")
+    report(header(flaky.get("headers"), "Authorization")
            == "Bearer " + canary_key("openrouter")
-           and (solid.get("headers") or {}).get("Authorization")
+           and header(solid.get("headers"), "Authorization")
            == "Bearer " + canary_key("opencode"),
            "each attempt carries its own venue's key, never another's",
-           "%r / %r" % ((flaky.get("headers") or {}).get("Authorization"),
-                        (solid.get("headers") or {}).get("Authorization")))
+           "%r / %r" % (header(flaky.get("headers"), "Authorization"),
+                        header(solid.get("headers"), "Authorization")))
     flaky_payload = json.loads(flaky.get("body") or b"{}")
     solid_payload = json.loads(solid.get("body") or b"{}")
     report(flaky_payload.get("max_tokens") == 4242
@@ -644,37 +714,29 @@ def main():
     # Probe mode is the default: the first permitted entry's failure is the
     # run's failure, and no other venue is contacted.
     solid.clear()
-    result = subprocess.run(
-        [sys.executable, str(patched), "--manifest", str(manifest),
+    result = run_rewired(manifest_ox, ["--manifest", str(manifest),
          "--mode", "ask", "--status-file", str(sfile),
-         "--log-dir", str(tmp / "mlogs"), "hello"],
-        capture_output=True, text=True, timeout=60, env=menv)
+         "--log-dir", str(tmp / "mlogs"), "hello"], env=menv)
     report(result.returncode != 0 and "HTTP 429" in result.stderr and not solid,
            "without --failover the first permitted entry's failure stops the run",
            "exit=%s contacted=%r" % (result.returncode, bool(solid)))
 
-    result = subprocess.run(
-        [sys.executable, str(patched), "--manifest", str(manifest),
+    result = run_rewired(manifest_ox, ["--manifest", str(manifest),
          "--model", "m", "--mode", "ask",
-         "--log-dir", str(tmp / "mlogs"), "hello"],
-        capture_output=True, text=True, timeout=60, env=menv)
+         "--log-dir", str(tmp / "mlogs"), "hello"], env=menv)
     report(result.returncode != 0 and "conflicts" in result.stderr,
            "--model conflicts with --manifest instead of silently mixing")
 
-    result = subprocess.run(
-        [sys.executable, str(patched), "--failover", "--mode", "ask",
-         "--log-dir", str(tmp / "mlogs"), "hello"],
-        capture_output=True, text=True, timeout=60, env=menv)
+    result = run_rewired(manifest_ox, ["--failover", "--mode", "ask",
+         "--log-dir", str(tmp / "mlogs"), "hello"], env=menv)
     report(result.returncode != 0 and "requires --manifest" in result.stderr,
            "--failover without --manifest is refused")
 
     newer = tmp / "manifest-v99.json"
     newer.write_text(json.dumps({"manifest_version": 99,
                                  "recommendations": [{}]}), encoding="utf-8")
-    result = subprocess.run(
-        [sys.executable, str(patched), "--manifest", str(newer),
-         "--mode", "ask", "--log-dir", str(tmp / "mlogs"), "hello"],
-        capture_output=True, text=True, timeout=60, env=menv)
+    result = run_rewired(manifest_ox, ["--manifest", str(newer),
+         "--mode", "ask", "--log-dir", str(tmp / "mlogs"), "hello"], env=menv)
     report(result.returncode != 0 and "newer than this ox understands" in result.stderr,
            "a manifest from the future is refused, not misread")
 
@@ -688,10 +750,8 @@ def main():
         "defaults": {"mode": "review", "effort": "high"},
         "projects": [{"id": "oxbox", "tasks": [{"id": "t1"}]}],
     }), encoding="utf-8")
-    result = subprocess.run(
-        [sys.executable, str(patched), "--manifest", str(not_a_manifest),
-         "--mode", "ask", "--log-dir", str(tmp / "mlogs"), "hello"],
-        capture_output=True, text=True, timeout=60, env=menv)
+    result = run_rewired(manifest_ox, ["--manifest", str(not_a_manifest),
+         "--mode", "ask", "--log-dir", str(tmp / "mlogs"), "hello"], env=menv)
     report(result.returncode != 0
            and "is not a recommendations manifest" in result.stderr
            and "newer than this ox understands" not in result.stderr,
@@ -704,10 +764,8 @@ def main():
         "recommendations": [{"rank": 1, "venue": "openrouter",
                              "model": "top-paid", "cost": "paid"}],
     }), encoding="utf-8")
-    result = subprocess.run(
-        [sys.executable, str(patched), "--manifest", str(paid_only),
-         "--mode", "ask", "--log-dir", str(tmp / "mlogs"), "hello"],
-        capture_output=True, text=True, timeout=60, env=menv)
+    result = run_rewired(manifest_ox, ["--manifest", str(paid_only),
+         "--mode", "ask", "--log-dir", str(tmp / "mlogs"), "hello"], env=menv)
     # Match the summary's own per-entry line, not the reason text: ox also
     # prints a progress line per attempt, and both strings the old
     # assertion looked for appear there. Gutting the summary block left it
@@ -739,29 +797,25 @@ def main():
     manifest_url = ("http://127.0.0.1:%d/manifests/latest.json"
                     % manifest_server.server_address[1])
 
-    result = subprocess.run(
-        [sys.executable, str(patched), "--manifest", manifest_url,
-         "--mode", "ask", "--log-dir", str(tmp / "ulogs"), "hello"],
-        capture_output=True, text=True, timeout=60, env=menv)
+    result = run_rewired(manifest_ox, ["--manifest", manifest_url,
+         "--mode", "ask", "--log-dir", str(tmp / "ulogs"), "hello"], env=menv)
     report(result.returncode != 0 and "https://" in result.stderr and not served,
            "a plaintext manifest URL is refused before anything is fetched",
            "exit=%s served=%r stderr=%r" % (result.returncode, bool(served),
                                              result.stderr[-160:]))
 
-    # As with send_to_local: relax only the scheme guard, in a copy, so the
-    # loopback listener can stand in for the survey's https host.
+    # As with send_to_local: relax only the scheme guard, in a copy or a test
+    # build, so the loopback listener can stand in for the survey's https host.
+    reference = (HERE / "oxbox-send").read_text(encoding="utf-8")
     guard = 'if not url.startswith("https://"):'
-    report(source.count(guard) == 1, "the manifest scheme guard is one line, patchable")
-    url_patched = tmp / "ox_manifest_url"
-    url_patched.write_text(source.replace(guard, "if False:"), encoding="utf-8")
+    report(reference.count(guard) == 1, "the manifest scheme guard is one line, patchable")
+    url_ox = rewired_ox(tmp, "ox_manifest_url", allow_http=True, venue_urls=local_venues)
 
     solid.clear()
     ufile = tmp / "url-status.json"
-    result = subprocess.run(
-        [sys.executable, str(url_patched), "--manifest", manifest_url,
+    result = run_rewired(url_ox, ["--manifest", manifest_url,
          "--mode", "ask", "--status-file", str(ufile),
-         "--log-dir", str(tmp / "ulogs"), "hello"],
-        capture_output=True, text=True, timeout=60, env=menv)
+         "--log-dir", str(tmp / "ulogs"), "hello"], env=menv)
     stat = json.loads(ufile.read_text()) if ufile.exists() else {}
     report(result.returncode == 0 and result.stdout.strip() == "ok"
            and stat.get("model") == "solid-free",
@@ -795,11 +849,9 @@ def main():
             pass
 
     bouncer = serve(Bouncer)
-    result = subprocess.run(
-        [sys.executable, str(url_patched), "--manifest",
+    result = run_rewired(url_ox, ["--manifest",
          "http://127.0.0.1:%d/moved.json" % bouncer.server_address[1],
-         "--mode", "ask", "--log-dir", str(tmp / "ulogs"), "hello"],
-        capture_output=True, text=True, timeout=60, env=menv)
+         "--mode", "ask", "--log-dir", str(tmp / "ulogs"), "hello"], env=menv)
     report(result.returncode != 0 and "redirected" in result.stderr
            and "Traceback" not in result.stderr,
            "a redirecting manifest URL is refused, not followed",
@@ -807,26 +859,21 @@ def main():
 
     missing = serve(capture_handler({}, status=404, body=b"not here",
                                     headers={"Content-Type": "text/plain"}))
-    result = subprocess.run(
-        [sys.executable, str(url_patched), "--manifest",
+    result = run_rewired(url_ox, ["--manifest",
          "http://127.0.0.1:%d/manifests/gone.json" % missing.server_address[1],
-         "--mode", "ask", "--log-dir", str(tmp / "ulogs"), "hello"],
-        capture_output=True, text=True, timeout=60, env=menv)
+         "--mode", "ask", "--log-dir", str(tmp / "ulogs"), "hello"], env=menv)
     report(result.returncode != 0 and "HTTP 404" in result.stderr
            and "Traceback" not in result.stderr,
            "a missing manifest URL fails in one line, not a traceback",
            "exit=%s stderr=%r" % (result.returncode, result.stderr[-160:]))
 
     cap = "MANIFEST_MAX_BYTES = 1_048_576"
-    report(source.count(cap) == 1, "the manifest size cap is one line, patchable")
-    small_patched = tmp / "ox_manifest_small"
-    small_patched.write_text(
-        source.replace(guard, "if False:").replace(cap, "MANIFEST_MAX_BYTES = 32"),
-        encoding="utf-8")
-    result = subprocess.run(
-        [sys.executable, str(small_patched), "--manifest", manifest_url,
-         "--mode", "ask", "--log-dir", str(tmp / "ulogs"), "hello"],
-        capture_output=True, text=True, timeout=60, env=menv)
+    report(reference.count(cap) == 1, "the manifest size cap is one line, patchable")
+    small_ox = rewired_ox(tmp, "ox_manifest_small", allow_http=True,
+                          venue_urls=local_venues, manifest_cap=32)
+    result = run_rewired(small_ox, ["--manifest", manifest_url,
+                                    "--mode", "ask", "--log-dir", str(tmp / "ulogs"), "hello"],
+                         env=menv)
     report(result.returncode != 0 and "larger than" in result.stderr,
            "a manifest body past the size cap is refused",
            "exit=%s stderr=%r" % (result.returncode, result.stderr[-160:]))
@@ -846,12 +893,10 @@ def main():
         store = {}
         server = serve(capture_handler(store))
         url = "http://127.0.0.1:%d/v1" % server.server_address[1]
-        patched = tmp / "ox_local"
-        subprocess.run([sys.executable, str(patched), "--base-url", url,
-                        "--api-key-env", "OX_TEST_KEY", "--model", "m",
-                        "--mode", "ask", "--log-dir", str(logs), task],
-                       capture_output=True, text=True, timeout=60,
-                       env=dict(os.environ, OX_TEST_KEY="sk-test-canary"))
+        run_rewired(rewired_ox(tmp, "ox_local", allow_http=True),
+                    ["--base-url", url, "--api-key-env", "OX_TEST_KEY", "--model", "m",
+                     "--mode", "ask", "--log-dir", str(logs), task],
+                    env={"OX_TEST_KEY": "sk-test-canary"})
         server.shutdown()
     dirs = [d for d in logs.iterdir() if d.is_dir()]
     stamps = set(d.name for d in dirs)

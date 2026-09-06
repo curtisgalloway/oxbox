@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "oxbox-send"
+description = "Send files and a task to an untrusted model: text in, text out, no tools, full audit log"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "oxbox-send"
+path = "src/main.rs"
+
+# The one executable that talks to the network, and so the one that carries
+# dependencies. Everything it needs beyond the standard library is listed
+# here and nowhere else in the workspace.
+[dependencies]
+fancy-regex = "0.14"
+oxbox-core.workspace = true
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
+
+[features]
+# wiretest drives a copy of the Python oxbox-send with its venue URLs and
+# scheme guards rewritten to point at a loopback listener. This feature is
+# the same trick for a binary: it compiles in OXBOX_TEST_VENUE_URLS,
+# OXBOX_TEST_ALLOW_HTTP and OXBOX_TEST_MANIFEST_MAX_BYTES. A release build
+# does not have it, and ignores those variables.
+test-overrides = []

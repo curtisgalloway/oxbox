@@ -76,6 +76,14 @@ supervising agent) reads that text before any of it executes.
 
 ## The five layers
 
+This is the point where oxbox is usually mistaken for a sandbox for coding
+agents, or for a coding agent. It is neither: those tools fence a trusted
+agent's actions, and oxbox gives an untrusted model no actions at all. How
+that plays out against `srt`, OpenHands, Codex CLI, Docker Sandboxes,
+microsandbox and Cleanroom, including the one layer where oxbox is the
+narrower tool, is a page of its own: [How oxbox compares](docs/comparison.md).
+
+
 `oxbox` is the one command. Each step of the workflow is a subcommand —
 `oxbox sandbox`, `oxbox send`, `oxbox patch`, `oxbox jail` — handed to a
 script of the same name (`oxbox-sandbox`, `oxbox-send`, `oxbox-patch`,

@@ -37,16 +37,16 @@ def tool_path(name):
     return HERE / name
 
 
-def tool(name):
+def tool_argv(name):
     """argv prefix that runs the named tool, in whichever implementation."""
     return [str(tool_path(name))] if UNDER_TEST else [sys.executable, str(tool_path(name))]
 
 
-OX = tool("oxbox-send")
+OX = tool_argv("oxbox-send")
 # The front door: jail cases go through it, the way a user's do.
-OXBOX = tool("oxbox")
-OXSANDBOX = tool("oxbox-sandbox")
-OXAPPLY = tool("oxbox-patch")
+OXBOX = tool_argv("oxbox")
+OXSANDBOX = tool_argv("oxbox-sandbox")
+OXAPPLY = tool_argv("oxbox-patch")
 
 passed = 0
 failed = 0
@@ -693,7 +693,7 @@ def main():
     versions = {}
     for tool, argv in (("oxbox-send", OX), ("oxbox-sandbox", OXSANDBOX),
                        ("oxbox-patch", OXAPPLY),
-                       ("oxbox-jail", tool("oxbox-jail"))):
+                       ("oxbox-jail", tool_argv("oxbox-jail"))):
         versions[tool] = subprocess.run(argv + ["--version"], capture_output=True,
                                         text=True).stdout.strip()
     for sub, tool in (("send", "oxbox-send"), ("sandbox", "oxbox-sandbox"),

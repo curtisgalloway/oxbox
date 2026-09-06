@@ -414,6 +414,9 @@ def main():
     report("venue_cost" in stat and stat.get("venue_cost") is None,
            "a venue that reports no cost leaves venue_cost null, not zero",
            repr(stat.get("venue_cost")))
+    report("route" in stat and stat.get("route") is None,
+           "a venue that names no upstream provider leaves route null",
+           repr(stat.get("route")))
     report(stat.get("ok") is True and stat.get("exit_code") == 0
            and stat.get("finish_reason") == "stop",
            "--status-file records a successful run",
@@ -477,19 +480,42 @@ def main():
     # from a catalog afterwards. It is the venue's claim and is passed
     # through unconverted: assert the value survives, not that it is
     # right, because ox is in no position to know that.
+    # It also names the upstream provider it routed to, in a top-level
+    # "provider". The cost is the price of that route -- the survey saw the
+    # same model billed at double the card price when OpenRouter routed it
+    # to a different provider -- so the two are recorded side by side.
     priced = json.dumps({
+        "provider": "SiliconFlow",
         "choices": [{"finish_reason": "stop",
                      "message": {"content": "ok", "role": "assistant"}}],
         "usage": {"prompt_tokens": 11793, "completion_tokens": 3375,
                   "cost": 0.021501},
     }).encode()
     cost_status = tmp / "cost-status.json"
-    send_to_local({}, tmp, body=priced, extra_argv=[
+    result = send_to_local({}, tmp, body=priced, extra_argv=[
         "--mode", "ask", "--status-file", str(cost_status), "hello"])
     cstat = json.loads(cost_status.read_text()) if cost_status.exists() else {}
     report(cstat.get("venue_cost") == 0.021501,
            "the venue's own reported cost is recorded verbatim",
            repr(cstat.get("venue_cost")))
+    report(cstat.get("route") == "SiliconFlow" and "route=SiliconFlow" in result.stderr,
+           "the upstream provider the venue routed to is recorded and announced",
+           repr((cstat.get("route"), result.stderr[-120:])))
+    # A provider field that is not a string is not a route; do not record
+    # a dict or a number as one.
+    odd = json.dumps({
+        "provider": {"name": "Somewhere"},
+        "choices": [{"finish_reason": "stop",
+                     "message": {"content": "ok", "role": "assistant"}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+    }).encode()
+    odd_status = tmp / "odd-status.json"
+    send_to_local({}, tmp, body=odd, extra_argv=[
+        "--mode", "ask", "--status-file", str(odd_status), "hello"])
+    ostat = json.loads(odd_status.read_text()) if odd_status.exists() else {}
+    report(ostat.get("ok") is True and ostat.get("route") is None,
+           "a non-string provider field is left null rather than recorded",
+           repr(ostat.get("route")))
 
     # Failure: pre-seed both files with a previous run's leftovers, then fail
     # with empty content. The stale answer must be gone — a script must never

@@ -985,7 +985,8 @@ mod tests {
         assert!(sandbox.work.join(".git").is_dir());
         assert_eq!(
             fs::read_to_string(&sandbox.source_record).unwrap().trim(),
-            fs::canonicalize(&src).unwrap().to_string_lossy()
+            core::canonicalize_lenient(&src).to_string_lossy(),
+            "the record holds the resolved source, without a Windows verbatim prefix"
         );
 
         let (result, out) = run_op(&sandbox, "list", false, &[], b"");

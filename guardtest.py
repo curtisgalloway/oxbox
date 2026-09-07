@@ -14,6 +14,7 @@ NOTE: re-seeds sandbox/work. Run ./oxbox sandbox --destroy afterwards if you car
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -571,6 +572,33 @@ def main():
                    OXSANDBOX + ["--remove", str(tend_src / "a.py")])
     report(tend(["--write", ".git/config"], stdin=b"x").returncode == 78,
            "sandbox --write refuses a path inside .git")
+    report(tend(["--write", "./.git/hooks/pre-commit"], stdin=b"x").returncode == 78,
+           "sandbox --write refuses .git behind a ./ prefix")
+    report(tend(["--write", ".GIT/hooks/pre-commit"], stdin=b"x").returncode == 78,
+           "sandbox --write refuses .git in any letter case")
+    if sys.platform == "win32":
+        skip("sandbox cleanup never chmods through a symlink",
+             "creating symlinks needs a privilege on Windows")
+    else:
+        # What jailed code can leave behind: a read-only directory that makes
+        # the first removal fail, and links aimed at a file outside. The
+        # cleanup must still succeed, and the file outside must keep its mode.
+        victim = temp / "victim.txt"
+        victim.write_bytes(b"outside\n")
+        victim.chmod(0o644)
+        locked = WORK / "locked"
+        locked.mkdir()
+        (locked / "f").write_bytes(b"x")
+        os.symlink(str(victim), str(locked / "link"))
+        os.symlink(str(victim), str(WORK / "link"))
+        locked.chmod(0o555)
+        code = run(OXSANDBOX + ["--destroy"])
+        mode = stat.S_IMODE(victim.stat().st_mode)
+        report(code == 0 and mode == 0o644 and not WORK.exists(),
+               "sandbox cleanup never chmods through a symlink",
+               f"exit={code} mode={mode:o} work_exists={WORK.exists()}")
+        expect_allowed("sandbox --create rebuilds the tree after the cleanup",
+                       OXSANDBOX + ["--create", str(tend_src), "a.py", "pkg"])
     report(tend(["--read", "nope.py"]).returncode == 3,
            "sandbox --read exits 3 for a file that is not there")
     report(tend(["--list", "--destroy"]).returncode == 2,

@@ -331,10 +331,14 @@ fn load_patch(options: &Options) -> Result<String, Fail> {
                 &format!("cannot read {}: {error}", content_path.display()),
             )
         })?;
-        return extract(&text).ok_or_else(|| Fail::diag(1, "no diff block found in the response"));
+        return extract(&core::normalize_newlines(&text))
+            .ok_or_else(|| Fail::diag(1, "no diff block found in the response"));
     }
     let diff = options.diff.as_ref().expect("one source is required");
+    // Text, not bytes: a diff saved by a Windows editor carries CRLF, and
+    // the sandbox tree it applies to was seeded from an LF checkout.
     fs::read_to_string(diff)
+        .map(|text| core::normalize_newlines(&text))
         .map_err(|error| Fail::diag(1, &format!("cannot read {}: {error}", diff.display())))
 }
 
@@ -927,6 +931,26 @@ mod tests {
             let fail = run(&options).unwrap_err();
             assert_eq!(fail.code, 3);
             assert!(fail.text.contains("does not apply"), "{}", fail.text);
+        });
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_crlf_diff_applies_like_an_lf_one() {
+        let dir = scratch("crlf");
+        let root = dir.join("root");
+        let work = seeded(&root, "work");
+        let crlf = dir.join("crlf.patch");
+        fs::write(&crlf, VALID.replace('\n', "\r\n")).unwrap();
+        with_root(&root, || {
+            let options = Options {
+                diff: Some(crlf.clone()),
+                ..Options::default()
+            };
+            run(&options).unwrap();
+            let text = fs::read_to_string(work.join("mod.py")).unwrap();
+            assert!(text.contains("return 2"), "{text}");
+            assert!(!text.contains('\r'), "the tree stays LF");
         });
         fs::remove_dir_all(&dir).unwrap();
     }

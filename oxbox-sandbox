@@ -162,10 +162,18 @@ def rmtree_force(path):
     shows up on Windows.
     """
     def handler(func, target, _exc):
-        try:
-            os.chmod(target, stat.S_IWRITE)
-        except OSError:
-            pass
+        # Never chmod through a symlink: jailed code can plant one aimed at
+        # any file the operator owns, and chmod follows links. A real entry
+        # gets owner-write on itself and on its directory (POSIX grants
+        # unlink from the directory), then the failed step is retried.
+        if not os.path.islink(target):
+            for candidate in (os.path.dirname(target), target):
+                if os.path.islink(candidate):
+                    continue
+                try:
+                    os.chmod(candidate, os.lstat(candidate).st_mode | stat.S_IWUSR)
+                except OSError:
+                    pass
         func(target)
 
     if sys.version_info >= (3, 12):
@@ -323,7 +331,10 @@ def work_path(rel, must_exist=True):
     parts = rel.replace("\\", "/").split("/")
     if ".." in path.parts or ".." in parts:
         refuse(f"REFUSING parent traversal: {rel}")
-    if parts and parts[0] == ".git":
+    # In any letter case and behind any number of "./": a hook written into
+    # the git directory would run on the host at the next commit made here.
+    real = [part for part in parts if part not in ("", ".")]
+    if real and real[0].lower() == ".git":
         refuse(f"REFUSING a path inside .git: {rel}")
     full = WORK / rel
     if must_exist and not full.exists():
@@ -341,6 +352,11 @@ def work_path(rel, must_exist=True):
         refuse(f"REFUSING unresolvable path: {rel} ({error})")
     if resolved != root and root not in resolved.parents:
         refuse(f"REFUSING path resolving outside the sandbox: {rel} -> {resolved}")
+    # The textual check read the argument; this one reads where it lands,
+    # so a symlink into .git is caught as well.
+    landing = resolved.relative_to(root).parts if resolved != root else ()
+    if landing and landing[0].lower() == ".git":
+        refuse(f"REFUSING a path inside .git: {rel}")
     return full
 
 

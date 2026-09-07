@@ -114,9 +114,15 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: cargo test
-        run: cargo test --all-features
+        run: cargo test --locked --all-features
       - name: cargo build (test-overrides, for wiretest)
-        run: cargo build --features oxbox-send/test-overrides
+        run: cargo build --locked --features oxbox-send/test-overrides
+      - name: cargo build --release
+        # The release profile (LTO, one codegen unit, stripped) is what a
+        # tag ships; building it here means a link problem shows up on a
+        # push, not inside the release run. --locked everywhere: a drifted
+        # Cargo.lock fails instead of being rewritten on the runner.
+        run: cargo build --locked --release
       - name: guardtest against the binaries
         env:
           OXBOX_UNDER_TEST: ${{ github.workspace }}/target/debug

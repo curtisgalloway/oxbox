@@ -37,7 +37,16 @@ pub const SKILL_PATH_IN_TEXT: &str = ".claude/skills/ox-review";
 /// Python tools avoided by reading the file in text mode, and what guardtest
 /// asserts against: the document leaves as UTF-8 with LF on every platform.
 pub fn skill_text() -> String {
-    SKILL_MD.replace("\r\n", "\n")
+    normalize_newlines(SKILL_MD)
+}
+
+/// Text with every line ending as LF, the way Python's text mode reads a
+/// file: CRLF and a lone CR both become LF. Context sent to the model, a task
+/// read from stdin and a diff to apply all go through this, so a CRLF
+/// checkout produces the same bytes on the wire and the same patch as an LF
+/// one, and the two implementations agree byte for byte.
+pub fn normalize_newlines(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 /// The `sys.platform` name the Python tools used, kept because the jail hands
@@ -114,27 +123,29 @@ fn strip_verbatim(path: PathBuf) -> PathBuf {
     path
 }
 
-/// The home directory, the way `os.path.expanduser("~")` finds it.
-pub fn home_dir() -> PathBuf {
-    if cfg!(windows) {
-        env::var_os("USERPROFILE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
-    } else {
-        env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
-    }
+/// The home directory, the way `os.path.expanduser("~")` finds it: the
+/// platform variable first (`HOME`, `USERPROFILE`), then the account
+/// database. None when neither knows. Never the working directory: that is
+/// the project being reviewed, which is untrusted input, and a config file
+/// found there could point the sandbox root anywhere.
+pub fn home_dir() -> Option<PathBuf> {
+    #[allow(deprecated)]
+    env::home_dir().filter(|home| !home.as_os_str().is_empty())
 }
 
+/// `~` and `~/rest` through the home directory; left as written when there
+/// is no home, as `expanduser` leaves them.
 fn expand_tilde(value: &str) -> PathBuf {
     if value == "~" {
-        home_dir()
+        home_dir().unwrap_or_else(|| PathBuf::from(value))
     } else if let Some(rest) = value
         .strip_prefix("~/")
         .or_else(|| value.strip_prefix("~\\"))
     {
-        home_dir().join(rest)
+        match home_dir() {
+            Some(home) => home.join(rest),
+            None => PathBuf::from(value),
+        }
     } else {
         PathBuf::from(value)
     }
@@ -217,19 +228,20 @@ pub fn print_skill(prog: &str) -> i32 {
 pub const CONFIG_FILE: &str = "config.ini";
 
 /// `~/.config/oxbox/config.ini` (`XDG_CONFIG_HOME` honored), or
-/// `%APPDATA%\oxbox\config.ini` on Windows.
-pub fn config_path() -> PathBuf {
+/// `%APPDATA%\oxbox\config.ini` on Windows. None when there is no home to
+/// anchor it: then there is no config file, and the defaults apply.
+pub fn config_path() -> Option<PathBuf> {
     let base = if cfg!(windows) {
         env::var_os("APPDATA")
             .map(PathBuf::from)
-            .unwrap_or_else(|| home_dir().join("AppData").join("Roaming"))
+            .or_else(|| home_dir().map(|home| home.join("AppData").join("Roaming")))
     } else {
         env::var_os("XDG_CONFIG_HOME")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| home_dir().join(".config"))
+            .or_else(|| home_dir().map(|home| home.join(".config")))
     };
-    base.join("oxbox").join(CONFIG_FILE)
+    base.map(|base| base.join("oxbox").join(CONFIG_FILE))
 }
 
 /// One value out of an INI file: `key` under `[section]`.
@@ -292,8 +304,9 @@ pub fn sandbox_root() -> Result<SandboxRoot, String> {
         .ok()
         .filter(|value| !value.is_empty());
     let mut origin = String::from("OXBOX_SANDBOX_ROOT");
-    if value.is_none() {
-        let path = config_path();
+    if value.is_none()
+        && let Some(path) = config_path()
+    {
         value = ini_get(&path, "sandbox", "root")?.filter(|value| !value.is_empty());
         origin = path.to_string_lossy().into_owned();
     }
@@ -554,7 +567,7 @@ mod tests {
                 ("USERPROFILE", Some("/tmp/oxbox-home")),
             ],
             || {
-                assert_eq!(home_dir(), PathBuf::from("/tmp/oxbox-home"));
+                assert_eq!(home_dir(), Some(PathBuf::from("/tmp/oxbox-home")));
                 assert_eq!(expand_tilde("~"), PathBuf::from("/tmp/oxbox-home"));
                 assert_eq!(
                     expand_tilde("~/x/y"),
@@ -567,10 +580,24 @@ mod tests {
     }
 
     #[test]
-    fn home_falls_back_to_dot_without_the_variable() {
+    fn home_never_falls_back_to_the_working_directory() {
         with_env(&[("HOME", None), ("USERPROFILE", None)], || {
-            assert_eq!(home_dir(), PathBuf::from("."));
+            // The account database may still know a home; the working
+            // directory is never the answer.
+            let home = home_dir();
+            assert!(home.as_deref().is_none_or(Path::is_absolute), "{home:?}");
+            assert_eq!(
+                expand_tilde("~/x"),
+                home_dir().map_or(PathBuf::from("~/x"), |h| h.join("x"))
+            );
         });
+    }
+
+    #[test]
+    fn newlines_normalize_the_way_python_text_mode_reads() {
+        assert_eq!(normalize_newlines("a\r\nb\rc\n"), "a\nb\nc\n");
+        assert_eq!(normalize_newlines("plain\n"), "plain\n");
+        assert_eq!(normalize_newlines(""), "");
     }
 
     #[test]
@@ -584,7 +611,7 @@ mod tests {
             ],
             || {
                 assert_eq!(
-                    config_path(),
+                    config_path().unwrap(),
                     PathBuf::from("/tmp/oxbox-xdg")
                         .join("oxbox")
                         .join(CONFIG_FILE)
@@ -599,7 +626,7 @@ mod tests {
                 ("USERPROFILE", Some("/tmp/oxbox-home")),
             ],
             || {
-                let path = config_path();
+                let path = config_path().unwrap();
                 assert!(path.starts_with("/tmp/oxbox-home"), "{path:?}");
                 assert!(path.ends_with(Path::new("oxbox").join(CONFIG_FILE)));
             },
@@ -612,7 +639,7 @@ mod tests {
             ],
             || {
                 if !cfg!(windows) {
-                    assert!(config_path().starts_with("/tmp/oxbox-home"));
+                    assert!(config_path().unwrap().starts_with("/tmp/oxbox-home"));
                 }
             },
         );

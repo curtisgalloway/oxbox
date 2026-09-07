@@ -654,13 +654,14 @@ Ubuntu and Windows.
 quarantine and the dispatcher are standard-library only, so the
 security-critical pieces stay readable in full with nothing to audit beneath
 them; `Cargo.lock` is where that claim can be checked. `oxbox-send` needs a
-TLS stack, and the tree it pulls in — 47 crates as of this writing, from
+TLS stack, and the tree it pulls in — 48 crates as of this writing, from
 `cargo tree -p oxbox-send` — is: `ureq` (HTTP, redirects disabled) with
 `rustls`, `rustls-webpki`, `webpki-roots`, `ring` and `rustls-pki-types`;
 `serde_json` with `serde_core`, `indexmap`, `itoa`, `zmij`; `regex` (the
 secret scanner) with `regex-automata`, `regex-syntax`, `aho-corasick`,
 `memchr`; `sha2` with `digest`,
-`block-buffer`, `crypto-common`, `generic-array`, `typenum`, `cpufeatures`;
+`block-buffer`, `crypto-common`, `hybrid-array`, `const-oid`, `typenum`,
+`cpufeatures`;
 `flate2` with `miniz_oxide`, `adler2`, `simd-adler32`, `crc32fast` for gzip
 responses; and the small crates beneath those (`http`, `httparse`,
 `ureq-proto`, `base64`, `percent-encoding`, `utf8-zero`, `bytes`, `log`,

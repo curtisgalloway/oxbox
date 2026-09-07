@@ -511,7 +511,12 @@ fn load_manifest(path: &str, allow_paid: bool) -> Result<(Vec<Entry>, ManifestIn
     } else {
         fs::read(path).map_err(|error| quit(format!("cannot read manifest {path}: {error}")))?
     };
-    let sha256 = format!("{:x}", Sha256::digest(&raw));
+    // Spelled out rather than `{:x}` on the digest: the output type's
+    // formatting has changed across sha2 releases, and the hex is the same.
+    let sha256: String = Sha256::digest(&raw)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     let text = std::str::from_utf8(&raw)
         .map_err(|error| quit(format!("manifest {path} is not valid JSON: {error}")))?;
     let data: Value = serde_json::from_str(text)

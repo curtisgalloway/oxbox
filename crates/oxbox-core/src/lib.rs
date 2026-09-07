@@ -476,10 +476,26 @@ mod tests {
         assert!(skill_text().contains(SKILL_PATH_IN_TEXT));
     }
 
+    /// Whether the checkout is within the lookup's reach from this test
+    /// binary. Under `cargo test` it sits in target/debug/deps, three levels
+    /// down, which is the build-tree case the lookup promises; a coverage
+    /// build nests it one level deeper, past the walk, and those cases are
+    /// about the release layouts rather than this one.
+    fn checkout_in_reach() -> bool {
+        let checkout = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap();
+        exe_dir().ancestors().take(4).any(|dir| dir == checkout)
+    }
+
     #[test]
     fn the_skill_dir_is_found_from_a_build_tree() {
-        // The test binary sits in target/debug/deps, three levels below the
-        // checkout, which is the "build tree" case the lookup promises.
+        if !checkout_in_reach() {
+            eprintln!("skipped: the build tree is deeper than the lookup walks");
+            return;
+        }
         let dir = find_skill_dir().expect("the checkout carries the skill");
         assert!(dir.join("SKILL.md").is_file());
         assert!(dir.ends_with(Path::new(".claude").join("skills").join(SKILL_NAME)));
@@ -487,6 +503,10 @@ mod tests {
 
     #[test]
     fn print_skill_returns_zero_here() {
+        if !checkout_in_reach() {
+            eprintln!("skipped: the build tree is deeper than the lookup walks");
+            return;
+        }
         assert_eq!(print_skill("test"), 0);
     }
 

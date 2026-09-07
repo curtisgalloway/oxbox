@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use fancy_regex::Regex;
+use regex::Regex;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
@@ -98,10 +98,18 @@ const SECRET_PATTERNS: [(&str, &str); 9] = [
     // "_" is a word character, so \bsecret\b never matches inside
     // client_secret or aws_secret_access_key; the identifier run on either
     // side fixes that, and the unquoted alternative catches .env files and
-    // shell exports. token(?!s) keeps max_tokens and completion_tokens from
-    // matching every request this tool builds.
+    // shell exports. The Python reference writes token(?!s) to keep
+    // max_tokens and completion_tokens from matching every request this
+    // tool builds. The regex crate has no lookahead, so the same rule is
+    // spelled out: after "token", the identifier either ends or continues
+    // with something other than s. The two agree match for match on the
+    // suites and on this repository's own sources.
+    //
+    // Not fancy-regex, which has lookahead: its backtracking engine took
+    // more than ten minutes on a 433 KB file of ordinary source that Python
+    // scans in 0.15 s and the regex crate in 2 ms (measured 2026-09-06).
     (
-        r#"(?i)[A-Za-z0-9_\-]*(?:api[_\-]?key|secret|password|passwd|token(?!s)|credential)[A-Za-z0-9_\-]*\s*[:=]\s*(?:["'][^"'\s]{12,}["']|[^\s"'()\[\]{}#,;]{16,})"#,
+        r#"(?i)[A-Za-z0-9_\-]*(?:(?:api[_\-]?key|secret|password|passwd|credential)[A-Za-z0-9_\-]*|token(?:[A-RT-Za-rt-z0-9_\-][A-Za-z0-9_\-]*)?)\s*[:=]\s*(?:["'][^"'\s]{12,}["']|[^\s"'()\[\]{}#,;]{16,})"#,
         "hardcoded credential assignment",
     ),
     // AKIA... above is only the access key id, which is not itself a secret.
@@ -190,6 +198,7 @@ fn manifest_max_bytes() -> usize {
 /// Every way out of `run` other than success. `Message` is Python's
 /// `sys.exit("text")`: printed to stderr, exit 1, recorded in the status
 /// file. `Code` is a bare exit whose diagnosis is already on stderr.
+#[derive(Debug, PartialEq)]
 enum Exit {
     Message(String),
     Code(i32),
@@ -202,6 +211,7 @@ fn quit(message: impl Into<String>) -> Exit {
 /// A post-send failure: the request went out and came back unusable. Kept
 /// separate from `Exit` so `--failover` can move to the next manifest entry;
 /// without `--failover` it becomes the same exit it always was.
+#[derive(Debug, PartialEq)]
 struct AttemptFailed(String);
 
 fn say(message: &str) {
@@ -301,7 +311,7 @@ fn scan_for_secrets(text: &str, label: &str) -> Vec<String> {
     let mut hits = Vec::new();
     for (pattern, description) in SECRET_PATTERNS {
         let regex = Regex::new(pattern).expect("a scanner pattern is invalid");
-        for found in regex.find_iter(text).flatten() {
+        for found in regex.find_iter(text) {
             let line_no = text[..found.start()].matches('\n').count() + 1;
             hits.push(format!("{label}:{line_no}: possible {description}"));
         }
@@ -309,6 +319,7 @@ fn scan_for_secrets(text: &str, label: &str) -> Vec<String> {
     hits
 }
 
+#[derive(Debug)]
 struct Context {
     text: String,
     total_bytes: usize,
@@ -368,6 +379,7 @@ fn build_context(paths: &[String], force: bool, task: &str) -> Result<Context, E
 
 // ── the manifest ────────────────────────────────────────────────────────────
 
+#[derive(Debug)]
 struct Entry {
     position: usize,
     venue: String,
@@ -379,6 +391,7 @@ struct Entry {
     key_env: String,
 }
 
+#[derive(Debug)]
 struct ManifestInfo {
     path: String,
     sha256: String,
@@ -432,12 +445,20 @@ fn fetch_manifest(url: &str) -> Result<Vec<u8>, Exit> {
         return Err(quit(format!("manifest {url}: HTTP {code}")));
     }
     let mut response = response;
-    let raw = response
+    let raw = match response
         .body_mut()
         .with_config()
         .limit(cap as u64 + 1)
         .read_to_vec()
-        .map_err(|error| quit(format!("cannot fetch manifest {url}: {error}")))?;
+    {
+        Ok(raw) => raw,
+        Err(ureq::Error::BodyExceedsLimit(_)) => {
+            return Err(quit(format!(
+                "manifest {url} is larger than {cap} bytes, which no manifest is"
+            )));
+        }
+        Err(error) => return Err(quit(format!("cannot fetch manifest {url}: {error}"))),
+    };
     if raw.len() > cap {
         return Err(quit(format!(
             "manifest {url} is larger than {cap} bytes, which no manifest is"
@@ -664,6 +685,11 @@ fn utc_stamp() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0) as i64;
+    civil_stamp(secs)
+}
+
+/// The stamp for a given number of seconds since the Unix epoch.
+fn civil_stamp(secs: i64) -> String {
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
     let (hour, minute, second) = (rem / 3600, (rem % 3600) / 60, rem % 60);
@@ -687,6 +713,12 @@ fn utc_stamp() -> String {
 /// overwriting each other's request.json.
 fn make_log_dir(base: &Path) -> Result<(String, PathBuf), Exit> {
     let stamp = utc_stamp();
+    let log_dir = claim_log_dir(base, &stamp)?;
+    Ok((stamp, log_dir))
+}
+
+/// `<base>/<stamp>`, or `<base>/<stamp>-N` when that already exists.
+fn claim_log_dir(base: &Path, stamp: &str) -> Result<PathBuf, Exit> {
     fs::create_dir_all(base).map_err(|error| {
         quit(format!(
             "cannot create log directory {}: {error}",
@@ -696,12 +728,12 @@ fn make_log_dir(base: &Path) -> Result<(String, PathBuf), Exit> {
     let mut attempt = 1;
     loop {
         let log_dir = if attempt == 1 {
-            base.join(&stamp)
+            base.join(stamp)
         } else {
             base.join(format!("{stamp}-{attempt}"))
         };
         match fs::create_dir(&log_dir) {
-            Ok(()) => return Ok((stamp, log_dir)),
+            Ok(()) => return Ok(log_dir),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => attempt += 1,
             Err(error) => {
                 return Err(quit(format!(
@@ -715,6 +747,7 @@ fn make_log_dir(base: &Path) -> Result<(String, PathBuf), Exit> {
 
 // ── the request ─────────────────────────────────────────────────────────────
 
+#[derive(Debug)]
 struct Answer {
     choice: Map<String, Value>,
     usage: Map<String, Value>,
@@ -916,6 +949,7 @@ fn python_repr_plain(value: &Value) -> String {
 
 // ── arguments ───────────────────────────────────────────────────────────────
 
+#[derive(Debug, PartialEq)]
 struct Args {
     task: Option<String>,
     files: String,
@@ -1014,64 +1048,76 @@ options:
     )
 }
 
-fn usage_error(message: &str) -> ! {
-    eprint!("{USAGE_LINE}");
-    eprintln!("oxbox send: error: {message}");
-    process::exit(2);
+/// What a command line asks for. The three informational answers come
+/// before any run state exists; `Run` carries everything a run needs.
+#[derive(Debug, PartialEq)]
+enum Parsed {
+    Help,
+    Version,
+    Skill,
+    Run(Box<Args>),
 }
 
-fn parse_args() -> Args {
-    let raw: Vec<String> = env::args().skip(1).collect();
-    let mut args = Args {
-        task: None,
-        files: String::new(),
-        mode: "diff".to_string(),
-        venue: None,
-        manifest: None,
-        allow_paid: false,
-        failover: false,
-        base_url: None,
-        api_key_env: None,
-        model: None,
-        effort: None,
-        max_tokens: None,
-        temperature: 0.2,
-        stdin: false,
-        log_dir: env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join("logs"),
-        output: None,
-        status_file: None,
-        force: false,
-        dry_run: false,
-    };
+/// An argparse-shaped usage error: the message after `oxbox send: error:`.
+fn usage(message: impl Into<String>) -> String {
+    message.into()
+}
+
+impl Args {
+    /// The values argparse would give with no flags at all.
+    fn defaults() -> Args {
+        Args {
+            task: None,
+            files: String::new(),
+            mode: "diff".to_string(),
+            venue: None,
+            manifest: None,
+            allow_paid: false,
+            failover: false,
+            base_url: None,
+            api_key_env: None,
+            model: None,
+            effort: None,
+            max_tokens: None,
+            temperature: 0.2,
+            stdin: false,
+            log_dir: env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join("logs"),
+            output: None,
+            status_file: None,
+            force: false,
+            dry_run: false,
+        }
+    }
+}
+
+fn parse_args(raw: &[String]) -> Result<Parsed, String> {
+    let mut args = Args::defaults();
     let mut skill = false;
     let mut index = 0;
     let mut positional_done = false;
     while index < raw.len() {
         let arg = raw[index].as_str();
-        let take = |index: usize| -> &str {
-            raw.get(index + 1)
-                .map(String::as_str)
-                .unwrap_or_else(|| usage_error(&format!("argument {arg}: expected one argument")))
-        };
         let (flag, inline) = match arg.split_once('=') {
             Some((flag, value)) if flag.starts_with("--") => (flag, Some(value)),
             _ => (arg, None),
         };
-        let value_of = |index: &mut usize| -> String {
+        // The flag's value: the text after `=`, or the next word.
+        let mut value_of = || -> Result<String, String> {
             match inline {
-                Some(value) => value.to_string(),
+                Some(value) => Ok(value.to_string()),
                 None => {
-                    let value = take(*index).to_string();
-                    *index += 1;
-                    value
+                    index += 1;
+                    raw.get(index)
+                        .cloned()
+                        .ok_or_else(|| usage(format!("argument {arg}: expected one argument")))
                 }
             }
         };
         if positional_done || !arg.starts_with('-') || arg == "-" {
             if args.task.is_some() {
-                usage_error(&format!("unrecognized arguments: {arg}"));
+                return Err(usage(format!("unrecognized arguments: {arg}")));
             }
             args.task = Some(arg.to_string());
             index += 1;
@@ -1079,81 +1125,75 @@ fn parse_args() -> Args {
         }
         match flag {
             "--" => positional_done = true,
-            "-h" | "--help" => {
-                print!("{}", help_text());
-                process::exit(0);
-            }
-            "--version" => {
-                println!("{PROG} {}", core::VERSION);
-                process::exit(0);
-            }
-            "--files" => args.files = value_of(&mut index),
+            "-h" | "--help" => return Ok(Parsed::Help),
+            "--version" => return Ok(Parsed::Version),
+            "--files" => args.files = value_of()?,
             "--mode" => {
-                let value = value_of(&mut index);
+                let value = value_of()?;
                 if !MODES.contains(&value.as_str()) {
-                    usage_error(&format!(
+                    return Err(usage(format!(
                         "argument --mode: invalid choice: '{value}' (choose from 'ask', 'diff', 'review')"
-                    ));
+                    )));
                 }
                 args.mode = value;
             }
             "--venue" => {
-                let value = value_of(&mut index);
+                let value = value_of()?;
                 if !VENUES.iter().any(|venue| venue.name == value) {
-                    usage_error(&format!(
+                    return Err(usage(format!(
                         "argument --venue: invalid choice: '{value}' (choose from 'opencode', 'openrouter', 'requesty', 'zenmux')"
-                    ));
+                    )));
                 }
                 args.venue = Some(value);
             }
-            "--manifest" => args.manifest = Some(value_of(&mut index)),
+            "--manifest" => args.manifest = Some(value_of()?),
             "--allow-paid" => args.allow_paid = true,
             "--failover" => args.failover = true,
-            "--base-url" => args.base_url = Some(value_of(&mut index)),
-            "--api-key-env" => args.api_key_env = Some(value_of(&mut index)),
-            "--model" => args.model = Some(value_of(&mut index)),
+            "--base-url" => args.base_url = Some(value_of()?),
+            "--api-key-env" => args.api_key_env = Some(value_of()?),
+            "--model" => args.model = Some(value_of()?),
             "--effort" => {
-                let value = value_of(&mut index);
+                let value = value_of()?;
                 if !EFFORTS.contains(&value.as_str()) {
-                    usage_error(&format!(
+                    return Err(usage(format!(
                         "argument --effort: invalid choice: '{value}' (choose from 'low', 'medium', 'high', 'xhigh', 'max')"
-                    ));
+                    )));
                 }
                 args.effort = Some(value);
             }
             "--max-tokens" => {
-                let value = value_of(&mut index);
-                args.max_tokens = Some(value.parse().unwrap_or_else(|_| {
-                    usage_error(&format!(
+                let value = value_of()?;
+                args.max_tokens = Some(value.parse().map_err(|_| {
+                    usage(format!(
                         "argument --max-tokens: invalid int value: '{value}'"
                     ))
-                }));
+                })?);
             }
             "--temperature" => {
-                let value = value_of(&mut index);
-                args.temperature = value.parse().unwrap_or_else(|_| {
-                    usage_error(&format!(
+                let value = value_of()?;
+                args.temperature = value.parse().map_err(|_| {
+                    usage(format!(
                         "argument --temperature: invalid float value: '{value}'"
                     ))
-                });
+                })?;
             }
             "--stdin" => args.stdin = true,
-            "--log-dir" => args.log_dir = PathBuf::from(value_of(&mut index)),
-            "--output" => args.output = Some(value_of(&mut index)),
-            "--status-file" => args.status_file = Some(value_of(&mut index)),
+            "--log-dir" => args.log_dir = PathBuf::from(value_of()?),
+            "--output" => args.output = Some(value_of()?),
+            "--status-file" => args.status_file = Some(value_of()?),
             "--force" => args.force = true,
             "--dry-run" => args.dry_run = true,
             "--skill" => skill = true,
-            _ => usage_error(&format!("unrecognized arguments: {arg}")),
+            _ => return Err(usage(format!("unrecognized arguments: {arg}"))),
         }
         index += 1;
     }
     if skill {
         // Answered before the status record is touched: a question about the
         // installation rather than a run.
-        process::exit(core::print_skill(PROG));
+        return Ok(Parsed::Skill);
     }
-    args
+    Ok(Parsed::Run(Box::new(args)))
 }
 
 // ── the run ─────────────────────────────────────────────────────────────────
@@ -1165,23 +1205,52 @@ fn truthy(value: Option<&Value>) -> Option<&Value> {
 }
 
 fn main() {
-    let args = parse_args();
+    let raw: Vec<String> = env::args().skip(1).collect();
+    let args = match parse_args(&raw) {
+        Ok(Parsed::Help) => {
+            print!("{}", help_text());
+            process::exit(0);
+        }
+        Ok(Parsed::Version) => {
+            println!("{PROG} {}", core::VERSION);
+            process::exit(0);
+        }
+        Ok(Parsed::Skill) => process::exit(core::print_skill(PROG)),
+        Ok(Parsed::Run(args)) => *args,
+        Err(message) => {
+            eprint!("{USAGE_LINE}");
+            eprintln!("oxbox send: error: {message}");
+            process::exit(2);
+        }
+    };
     let mut status = new_status();
-    match run(&args, &mut status) {
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
+    let mut out = io::stdout().lock();
+    let code = finish(run(&args, &mut status, &mut input, &mut out), &mut status);
+    drop(out);
+    process::exit(code);
+}
+
+/// Record how the run ended in the status record, write it everywhere it
+/// belongs, print the diagnosis if there is one, and give back the exit code.
+fn finish(outcome: Result<(), Exit>, status: &mut Map<String, Value>) -> i32 {
+    match outcome {
         Ok(()) => {
             status.insert("ok".into(), json!(true));
             status.insert("exit_code".into(), json!(0));
-            write_status(&status);
+            write_status(status);
+            0
         }
         Err(Exit::Message(message)) => {
             status.insert("ok".into(), json!(false));
             status.insert("exit_code".into(), json!(1));
             status.insert("error".into(), json!(format!("{PROG}: {message}")));
-            write_status(&status);
+            write_status(status);
             // Python's sys.exit("text") printed the text as given; every
             // message here already carries the program name.
             eprintln!("{PROG}: {message}");
-            process::exit(1);
+            1
         }
         Err(Exit::Code(code)) => {
             status.insert("ok".into(), json!(false));
@@ -1190,13 +1259,18 @@ fn main() {
                 "error".into(),
                 json!(format!("exited {code}; the diagnosis is on stderr")),
             );
-            write_status(&status);
-            process::exit(code);
+            write_status(status);
+            code
         }
     }
 }
 
-fn run(args: &Args, status: &mut Map<String, Value>) -> Result<(), Exit> {
+fn run(
+    args: &Args,
+    status: &mut Map<String, Value>,
+    input: &mut dyn Read,
+    out: &mut dyn Write,
+) -> Result<(), Exit> {
     status.insert("mode".into(), json!(args.mode));
     status.insert("dry_run".into(), json!(args.dry_run));
     status.insert("output".into(), json!(args.output));
@@ -1216,7 +1290,7 @@ fn run(args: &Args, status: &mut Map<String, Value>) -> Result<(), Exit> {
 
     let task = if args.stdin {
         let mut text = String::new();
-        io::stdin()
+        input
             .read_to_string(&mut text)
             .map_err(|error| quit(format!("cannot read stdin: {error}")))?;
         text
@@ -1463,7 +1537,8 @@ fn run(args: &Args, status: &mut Map<String, Value>) -> Result<(), Exit> {
 
         if args.dry_run {
             say("dry run, nothing sent");
-            println!("{}", pretty(&payload));
+            let _ = writeln!(out, "{}", pretty(&payload));
+            let _ = out.flush();
             return Ok(());
         }
 
@@ -1605,7 +1680,6 @@ fn run(args: &Args, status: &mut Map<String, Value>) -> Result<(), Exit> {
             say(&format!("answer -> {output}"));
         }
         None => {
-            let mut out = io::stdout().lock();
             let _ = writeln!(out, "{content}");
             let _ = out.flush();
         }
@@ -1626,12 +1700,215 @@ fn strip_prog(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Cursor};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::thread;
+
+    /// Tests that set environment variables take this lock; the process has
+    /// one environment and the test runner is multi-threaded.
+    static ENV: Mutex<()> = Mutex::new(());
+
+    fn lock_env() -> MutexGuard<'static, ()> {
+        ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Run `body` with the given variables set, then restore the previous
+    /// values, whether or not `body` panics.
+    fn with_env<T>(vars: &[(&str, Option<&str>)], body: impl FnOnce() -> T) -> T {
+        let _guard = lock_env();
+        let previous: Vec<(String, Option<String>)> = vars
+            .iter()
+            .map(|(key, _)| (key.to_string(), env::var(key).ok()))
+            .collect();
+        for (key, value) in vars {
+            match value {
+                Some(value) => unsafe { env::set_var(key, value) },
+                None => unsafe { env::remove_var(key) },
+            }
+        }
+        struct Restore(Vec<(String, Option<String>)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                for (key, value) in &self.0 {
+                    match value {
+                        Some(value) => unsafe { env::set_var(key, value) },
+                        None => unsafe { env::remove_var(key) },
+                    }
+                }
+            }
+        }
+        let _restore = Restore(previous);
+        body()
+    }
+
+    fn args(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("oxbox-send-{name}-{}", process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn parsed(words: &[&str]) -> Args {
+        match parse_args(&args(words)) {
+            Ok(Parsed::Run(args)) => *args,
+            other => panic!("{words:?}: {other:?}"),
+        }
+    }
+
+    fn message(exit: Exit) -> String {
+        match exit {
+            Exit::Message(text) => text,
+            Exit::Code(code) => panic!("expected a message, got exit {code}"),
+        }
+    }
+
+    // ── a loopback provider ───────────────────────────────────────────────
+
+    /// One HTTP request as the listener saw it.
+    struct Seen {
+        request_line: String,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    }
+
+    impl Seen {
+        fn header(&self, name: &str) -> Option<&str> {
+            self.headers
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.as_str())
+        }
+    }
+
+    fn read_request(stream: &mut TcpStream) -> Seen {
+        let mut reader = BufReader::new(stream);
+        let mut request_line = String::new();
+        reader.read_line(&mut request_line).unwrap();
+        let mut headers = Vec::new();
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let line = line.trim_end().to_string();
+            if line.is_empty() {
+                break;
+            }
+            if let Some((key, value)) = line.split_once(':') {
+                let (key, value) = (key.trim().to_string(), value.trim().to_string());
+                if key.eq_ignore_ascii_case("content-length") {
+                    length = value.parse().unwrap();
+                }
+                headers.push((key, value));
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        Seen {
+            request_line: request_line.trim_end().to_string(),
+            headers,
+            body,
+        }
+    }
+
+    /// A loopback provider: serves `responses` in order, one per connection,
+    /// and hands back the requests it saw.
+    struct Server {
+        url: String,
+        total: usize,
+        served: Arc<AtomicUsize>,
+        handle: thread::JoinHandle<Vec<Seen>>,
+    }
+
+    impl Server {
+        /// Collect what was seen. Any response the client never asked for is
+        /// drained first, so a failed assertion in the test surfaces as a
+        /// panic rather than as a thread blocked in accept forever.
+        fn finish(self) -> Vec<Seen> {
+            let address = self.url.trim_start_matches("http://").to_string();
+            while self.served.load(Ordering::SeqCst) < self.total {
+                if let Ok(mut stream) = TcpStream::connect(&address) {
+                    let _ = stream.write_all(b"GET /drain HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+                    let mut sink = Vec::new();
+                    let _ = stream.read_to_end(&mut sink);
+                } else {
+                    break;
+                }
+            }
+            self.handle.join().unwrap()
+        }
+    }
+
+    type Response = (&'static str, Vec<(&'static str, String)>, Vec<u8>);
+
+    fn serve(responses: Vec<Response>) -> Server {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let total = responses.len();
+        let served = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&served);
+        let handle = thread::spawn(move || {
+            let mut seen = Vec::new();
+            for (status, headers, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                counter.fetch_add(1, Ordering::SeqCst);
+                seen.push(read_request(&mut stream));
+                let mut reply = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n",
+                    body.len()
+                );
+                for (key, value) in headers {
+                    reply.push_str(&format!("{key}: {value}\r\n"));
+                }
+                reply.push_str("\r\n");
+                stream.write_all(reply.as_bytes()).unwrap();
+                stream.write_all(&body).unwrap();
+                stream.flush().unwrap();
+            }
+            seen
+        });
+        Server {
+            url,
+            total,
+            served,
+            handle,
+        }
+    }
+
+    fn ok_json(body: Value) -> Response {
+        (
+            "200 OK",
+            vec![("Content-Type", "application/json".to_string())],
+            serde_json::to_vec(&body).unwrap(),
+        )
+    }
+
+    fn good_answer() -> Value {
+        json!({
+            "id": "gen-1",
+            "provider": "SomeUpstream",
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "the answer\n", "reasoning": "thinking"}
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.0,
+                      "completion_tokens_details": {"reasoning_tokens": 2}}
+        })
+    }
+
+    // ── small pieces ──────────────────────────────────────────────────────
 
     #[test]
     fn the_scanner_catches_the_measured_forms() {
         let text = "api_key = \"abcdefghijklmnop\"\nclient_secret=abcdefghijklmnopqrst\nmy_api_key = \"abcdefghijklmnopqrst\"\nDB_PASSWORD=abcdefghijklmnopqrstu\ntoken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\naws_secret_access_key=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl/+\n";
         let hits = scan_for_secrets(text, "t");
         assert!(hits.len() >= 6, "{hits:?}");
+        assert!(hits[0].starts_with("t:1: possible "), "{}", hits[0]);
         assert!(
             scan_for_secrets("\"max_tokens\": 100000\ncompletion_tokens = 512\n", "t").is_empty()
         );
@@ -1644,10 +1921,1130 @@ mod tests {
         assert!(stamp.ends_with('Z'));
         assert_eq!(&stamp[4..5], "-");
         assert_eq!(&stamp[10..11], "T");
+        assert_eq!(civil_stamp(0), "1970-01-01T00-00-00Z");
+        assert_eq!(civil_stamp(1_600_000_000), "2020-09-13T12-26-40Z");
+        assert_eq!(civil_stamp(951_782_400), "2000-02-29T00-00-00Z");
+        assert_eq!(civil_stamp(4_102_444_799), "2099-12-31T23-59-59Z");
     }
 
     #[test]
     fn head_cuts_characters_not_bytes() {
         assert_eq!(head("héllo", 2), "hé");
+        assert_eq!(head("ab", 5), "ab");
+    }
+
+    #[test]
+    fn python_spellings_of_json_values() {
+        assert_eq!(python_repr(&json!("x")), "'x'");
+        assert_eq!(python_repr(&Value::Null), "None");
+        assert_eq!(python_repr(&json!(true)), "True");
+        assert_eq!(python_repr(&json!(3)), "3");
+        assert_eq!(python_repr_plain(&json!("x")), "x");
+        assert_eq!(python_repr_plain(&Value::Null), "None");
+        assert_eq!(python_repr_plain(&json!(false)), "False");
+        assert_eq!(python_repr_plain(&json!(2.5)), "2.5");
+    }
+
+    #[test]
+    fn truthiness_follows_python() {
+        let zero = json!(0);
+        let empty = json!("");
+        let no = json!(false);
+        let yes = json!("high");
+        assert_eq!(truthy(None), None);
+        assert_eq!(truthy(Some(&Value::Null)), None);
+        assert_eq!(truthy(Some(&zero)), None);
+        assert_eq!(truthy(Some(&empty)), None);
+        assert_eq!(truthy(Some(&no)), None);
+        assert_eq!(truthy(Some(&yes)), Some(&yes));
+    }
+
+    #[test]
+    fn every_mode_has_a_system_prompt_and_the_venues_have_urls() {
+        for mode in MODES {
+            assert!(!system_prompt(mode).is_empty(), "{mode}");
+        }
+        assert_ne!(system_prompt("diff"), system_prompt("review"));
+        assert_ne!(system_prompt("ask"), system_prompt("review"));
+        for venue in &VENUES {
+            assert!(venue_url(venue).starts_with("https://"), "{}", venue.name);
+        }
+        assert!(https_required());
+        assert_eq!(manifest_max_bytes(), MANIFEST_MAX_BYTES);
+    }
+
+    #[test]
+    fn manifest_effort_keeps_known_levels_only() {
+        assert_eq!(manifest_effort(&json!("high"), "x"), json!("high"));
+        assert_eq!(manifest_effort(&json!("extreme"), "x"), Value::Null);
+        assert_eq!(manifest_effort(&json!(3), "x"), Value::Null);
+    }
+
+    #[test]
+    fn strip_prog_removes_one_prefix() {
+        assert_eq!(strip_prog("oxbox-send: api error: x"), "api error: x");
+        assert_eq!(strip_prog("plain"), "plain");
+    }
+
+    // ── arguments ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn defaults_match_argparse() {
+        let a = parsed(&["fix it"]);
+        assert_eq!(a.task.as_deref(), Some("fix it"));
+        assert_eq!(a.mode, "diff");
+        assert_eq!(a.temperature, 0.2);
+        assert!(a.venue.is_none() && a.model.is_none() && a.manifest.is_none());
+        assert!(!a.allow_paid && !a.failover && !a.force && !a.dry_run && !a.stdin);
+        assert!(a.log_dir.ends_with("logs"));
+        let none = parsed(&[]);
+        assert_eq!(none.task, None);
+    }
+
+    #[test]
+    fn every_flag_parses_in_both_spellings() {
+        let a = parsed(&[
+            "--files",
+            "a.py,b.py",
+            "--mode",
+            "review",
+            "--venue",
+            "zenmux",
+            "--manifest",
+            "m.json",
+            "--allow-paid",
+            "--failover",
+            "--base-url",
+            "https://x/v1",
+            "--api-key-env",
+            "K",
+            "--model",
+            "m",
+            "--effort",
+            "low",
+            "--max-tokens",
+            "42",
+            "--temperature",
+            "0.7",
+            "--stdin",
+            "--log-dir",
+            "/tmp/l",
+            "--output",
+            "o.md",
+            "--status-file",
+            "s.json",
+            "--force",
+            "--dry-run",
+            "the task",
+        ]);
+        assert_eq!(a.files, "a.py,b.py");
+        assert_eq!(a.mode, "review");
+        assert_eq!(a.venue.as_deref(), Some("zenmux"));
+        assert_eq!(a.manifest.as_deref(), Some("m.json"));
+        assert!(a.allow_paid && a.failover && a.stdin && a.force && a.dry_run);
+        assert_eq!(a.base_url.as_deref(), Some("https://x/v1"));
+        assert_eq!(a.api_key_env.as_deref(), Some("K"));
+        assert_eq!(a.model.as_deref(), Some("m"));
+        assert_eq!(a.effort.as_deref(), Some("low"));
+        assert_eq!(a.max_tokens, Some(42));
+        assert_eq!(a.temperature, 0.7);
+        assert_eq!(a.log_dir, PathBuf::from("/tmp/l"));
+        assert_eq!(a.output.as_deref(), Some("o.md"));
+        assert_eq!(a.status_file.as_deref(), Some("s.json"));
+        assert_eq!(a.task.as_deref(), Some("the task"));
+        let b = parsed(&["--mode=ask", "--max-tokens=7", "--model=m", "task"]);
+        assert_eq!(b.mode, "ask");
+        assert_eq!(b.max_tokens, Some(7));
+        assert_eq!(b.model.as_deref(), Some("m"));
+        // After `--`, anything is the task, and a lone dash is too.
+        let c = parsed(&["--", "--not-a-flag"]);
+        assert_eq!(c.task.as_deref(), Some("--not-a-flag"));
+        let d = parsed(&["-"]);
+        assert_eq!(d.task.as_deref(), Some("-"));
+    }
+
+    #[test]
+    fn informational_flags_win_and_usage_errors_read_like_argparse() {
+        assert_eq!(parse_args(&args(&["--help"])), Ok(Parsed::Help));
+        assert_eq!(parse_args(&args(&["-h", "task"])), Ok(Parsed::Help));
+        assert_eq!(parse_args(&args(&["--version"])), Ok(Parsed::Version));
+        assert_eq!(parse_args(&args(&["--skill"])), Ok(Parsed::Skill));
+        assert_eq!(
+            parse_args(&args(&["--skill", "--model", "m"])),
+            Ok(Parsed::Skill)
+        );
+        for (bad, needle) in [
+            (vec!["a", "b"], "unrecognized arguments: b"),
+            (vec!["--nope"], "unrecognized arguments: --nope"),
+            (vec!["--model"], "argument --model: expected one argument"),
+            (
+                vec!["--mode", "poem"],
+                "argument --mode: invalid choice: 'poem'",
+            ),
+            (
+                vec!["--venue", "nowhere"],
+                "argument --venue: invalid choice: 'nowhere'",
+            ),
+            (
+                vec!["--effort", "extreme"],
+                "argument --effort: invalid choice: 'extreme'",
+            ),
+            (
+                vec!["--max-tokens", "lots"],
+                "argument --max-tokens: invalid int value: 'lots'",
+            ),
+            (
+                vec!["--temperature", "warm"],
+                "argument --temperature: invalid float value: 'warm'",
+            ),
+        ] {
+            let error = parse_args(&args(&bad)).unwrap_err();
+            assert!(error.contains(needle), "{bad:?}: {error}");
+        }
+        assert!(help_text().contains("--dry-run"));
+        assert!(help_text().starts_with(USAGE_LINE));
+    }
+
+    // ── the status record ─────────────────────────────────────────────────
+
+    #[test]
+    fn the_status_record_keeps_its_key_order_and_lands_in_both_places() {
+        let status = new_status();
+        let keys: Vec<&str> = status.keys().map(String::as_str).collect();
+        assert_eq!(&keys[..4], &["ox_version", "ok", "exit_code", "error"]);
+        assert!(keys.contains(&"route") && keys.contains(&"venue_cost"));
+        assert_eq!(*keys.last().unwrap(), "status_file");
+
+        let dir = scratch("status");
+        let mut status = new_status();
+        status.insert("log_dir".into(), json!(dir.to_string_lossy()));
+        let file = dir.join("s.json");
+        status.insert("status_file".into(), json!(file.to_string_lossy()));
+        let code = finish(Ok(()), &mut status);
+        assert_eq!(code, 0);
+        let beside: Value =
+            serde_json::from_slice(&fs::read(dir.join("status.json")).unwrap()).unwrap();
+        let named: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(beside, named);
+        assert_eq!(named["ok"], json!(true));
+        assert_eq!(named["exit_code"], json!(0));
+        assert!(
+            named.get("status_file").is_none(),
+            "the path is not part of the record"
+        );
+
+        let mut status = new_status();
+        status.insert("status_file".into(), json!(file.to_string_lossy()));
+        assert_eq!(finish(Err(quit("bad thing")), &mut status), 1);
+        let named: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(named["error"], json!("oxbox-send: bad thing"));
+        assert_eq!(finish(Err(Exit::Code(2)), &mut status), 2);
+        let named: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(named["exit_code"], json!(2));
+        assert!(named["error"].as_str().unwrap().contains("stderr"));
+        // An unwritable target warns and does not fail.
+        let mut status = new_status();
+        status.insert(
+            "status_file".into(),
+            json!(dir.join("no").join("such").join("s.json").to_string_lossy()),
+        );
+        assert_eq!(finish(Ok(()), &mut status), 0);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // ── context ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn context_blocks_carry_the_path_and_language() {
+        let dir = scratch("context");
+        fs::write(dir.join("a.py"), "x = 1\n").unwrap();
+        fs::write(dir.join("README"), "hello\n").unwrap();
+        let a = dir.join("a.py").to_string_lossy().into_owned();
+        let r = dir.join("README").to_string_lossy().into_owned();
+        let context = build_context(&[a.clone(), r.clone()], false, "task").unwrap();
+        assert_eq!(context.total_bytes, 12);
+        assert!(context.findings.is_empty());
+        assert!(
+            context
+                .text
+                .starts_with(&format!("### File: {a}\n```py\nx = 1\n\n```")),
+            "{}",
+            context.text
+        );
+        assert!(
+            context
+                .text
+                .contains(&format!("### File: {r}\n```text\nhello\n\n```")),
+            "{}",
+            context.text
+        );
+        let empty = build_context(&[], false, "").unwrap();
+        assert_eq!(empty.text, "");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn context_refuses_missing_binary_and_secret_bearing_files_unless_forced() {
+        let dir = scratch("context-refuse");
+        let missing = dir.join("nope.py").to_string_lossy().into_owned();
+        assert!(message(build_context(&[missing], false, "t").unwrap_err()).contains("not a file"));
+        fs::write(dir.join("blob.bin"), [0xff, 0xfe, 0x00, 0x80]).unwrap();
+        let blob = dir.join("blob.bin").to_string_lossy().into_owned();
+        assert!(
+            message(build_context(&[blob], false, "t").unwrap_err()).contains("not a text file")
+        );
+        fs::write(
+            dir.join("cfg.py"),
+            "api_key = \"abcdefghijklmnopqrstuvwx\"\n",
+        )
+        .unwrap();
+        let cfg = dir.join("cfg.py").to_string_lossy().into_owned();
+        assert_eq!(
+            build_context(std::slice::from_ref(&cfg), false, "t").unwrap_err(),
+            Exit::Code(2)
+        );
+        let forced = build_context(std::slice::from_ref(&cfg), true, "t").unwrap();
+        assert_eq!(forced.findings.len(), 1);
+        assert!(
+            forced.findings[0].starts_with(&format!("{cfg}:1: possible ")),
+            "{:?}",
+            forced.findings
+        );
+        // The task text is scanned like a file body, labeled as such.
+        let task = "here: token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
+        assert_eq!(build_context(&[], false, task).unwrap_err(), Exit::Code(2));
+        let forced = build_context(&[], true, task).unwrap();
+        assert!(
+            forced.findings[0].starts_with("<task text>:1:"),
+            "{:?}",
+            forced.findings
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn context_refuses_oversized_payloads_unless_forced() {
+        let dir = scratch("context-size");
+        let big = dir.join("big.txt");
+        fs::write(&big, "0\n".repeat(MAX_PAYLOAD_BYTES / 2 + 1)).unwrap();
+        let path = big.to_string_lossy().into_owned();
+        let error = message(build_context(std::slice::from_ref(&path), false, "t").unwrap_err());
+        assert!(error.contains("refusing to send"), "{error}");
+        assert!(error.contains("--force"), "{error}");
+        assert!(build_context(&[path], true, "t").unwrap().total_bytes > MAX_PAYLOAD_BYTES);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // ── the manifest ──────────────────────────────────────────────────────
+
+    fn write_manifest(dir: &Path, name: &str, value: &Value) -> String {
+        let path = dir.join(name);
+        fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn manifest_shape_errors_name_the_problem() {
+        let dir = scratch("manifest-shape");
+        let cases: Vec<(&str, Value, &str)> = vec![
+            (
+                "v-missing",
+                json!({"recommendations": []}),
+                "manifest_version must be an integer, found None",
+            ),
+            (
+                "v-bool",
+                json!({"manifest_version": true}),
+                "manifest_version must be an integer, found True",
+            ),
+            (
+                "v-new",
+                json!({"manifest_version": 99}),
+                "newer than this ox understands",
+            ),
+            (
+                "no-recs",
+                json!({"manifest_version": 0}),
+                "has no recommendations",
+            ),
+            (
+                "empty-recs",
+                json!({"manifest_version": 0, "recommendations": []}),
+                "has no recommendations",
+            ),
+            (
+                "bad-rec",
+                json!({"manifest_version": 0, "recommendations": [3]}),
+                "recommendation 1 is not an object",
+            ),
+        ];
+        for (name, value, needle) in cases {
+            let path = write_manifest(&dir, name, &value);
+            let error = message(load_manifest(&path, false).unwrap_err());
+            assert!(error.contains(needle), "{name}: {error}");
+        }
+        fs::write(dir.join("not.json"), b"{not json").unwrap();
+        let error =
+            message(load_manifest(dir.join("not.json").to_str().unwrap(), false).unwrap_err());
+        assert!(error.contains("is not valid JSON"), "{error}");
+        fs::write(dir.join("bytes.json"), [0xff, 0xfe]).unwrap();
+        let error =
+            message(load_manifest(dir.join("bytes.json").to_str().unwrap(), false).unwrap_err());
+        assert!(error.contains("is not valid JSON"), "{error}");
+        let error =
+            message(load_manifest(dir.join("absent.json").to_str().unwrap(), false).unwrap_err());
+        assert!(error.contains("cannot read manifest"), "{error}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn manifest_entries_are_permitted_or_skipped_for_the_right_reasons() {
+        let dir = scratch("manifest-entries");
+        let manifest = json!({
+            "manifest_version": 0,
+            "defaults": {"max_tokens": 5000, "effort": "extreme", "color": "blue"},
+            "recommendations": [
+                {"venue": "nowhere", "model": "m0"},
+                {"venue": "openrouter"},
+                {"venue": "openrouter", "model": "paid/one", "cost": "paid"},
+                {"venue": "openrouter", "model": "mystery/one"},
+                {"venue": "zenmux", "model": "z/free", "cost": "free"},
+                {"venue": "openrouter", "model": "or/free", "cost": "free", "rank": 9,
+                 "why": "fast", "base_url": "https://elsewhere.example/v1",
+                 "params": {"max_tokens": 0, "effort": "low"}},
+            ]
+        });
+        let path = write_manifest(&dir, "m.json", &manifest);
+        with_env(
+            &[("OPENROUTER_API_KEY", Some("k")), ("ZENMUX_API_KEY", None)],
+            || {
+                let (entries, info) = load_manifest(&path, false).unwrap();
+                assert_eq!(info.path, path);
+                assert_eq!(info.sha256.len(), 64);
+                assert!(!info.fetched);
+                assert_eq!(info.raw, fs::read(&path).unwrap());
+                assert_eq!(info.defaults.get("max_tokens"), Some(&json!(5000)));
+                assert_eq!(
+                    info.defaults.get("effort"),
+                    Some(&Value::Null),
+                    "unknown effort dropped"
+                );
+                let skips: Vec<Option<String>> = entries.iter().map(|e| e.skip.clone()).collect();
+                assert_eq!(skips[0].as_deref(), Some("unknown venue 'nowhere'"));
+                assert_eq!(skips[1].as_deref(), Some("no model named"));
+                assert_eq!(
+                    skips[2].as_deref(),
+                    Some("cost=paid (pass --allow-paid to use it)")
+                );
+                assert_eq!(
+                    skips[3].as_deref(),
+                    Some("cost=unknown (pass --allow-paid to use it)")
+                );
+                assert_eq!(skips[4].as_deref(), Some("ZENMUX_API_KEY not set"));
+                assert_eq!(skips[5], None);
+                let live = &entries[5];
+                assert_eq!(live.position, 6);
+                assert_eq!(
+                    live.url, "https://openrouter.ai/api/v1/chat/completions",
+                    "the table wins"
+                );
+                assert_eq!(live.key_env, "OPENROUTER_API_KEY");
+                assert_eq!(live.why, "fast");
+                assert_eq!(live.params.get("effort"), Some(&json!("low")));
+                assert_eq!(live.params.get("max_tokens"), Some(&json!(0)));
+                // --allow-paid admits paid and unknown alike.
+                let (entries, _) = load_manifest(&path, true).unwrap();
+                assert_eq!(entries[2].skip, None);
+                assert_eq!(entries[3].skip, None);
+            },
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_manifest_url_must_be_https_and_is_never_followed_through_a_redirect() {
+        with_env(&[("OXBOX_TEST_ALLOW_HTTP", None)], || {
+            let error = message(fetch_manifest("http://example.invalid/m.json").unwrap_err());
+            assert!(error.contains("must be https://"), "{error}");
+            let error = message(load_manifest("http://example.invalid/m.json", false).unwrap_err());
+            assert!(error.contains("must be https://"), "{error}");
+        });
+    }
+
+    #[cfg(feature = "test-overrides")]
+    #[test]
+    fn fetching_a_manifest_over_loopback() {
+        let manifest = json!({"manifest_version": 0, "recommendations": [{"venue": "openrouter", "model": "m", "cost": "free"}]});
+        let body = serde_json::to_vec(&manifest).unwrap();
+        let server = serve(vec![
+            ok_json(manifest.clone()),
+            (
+                "302 Found",
+                vec![("Location", "https://elsewhere.example/m.json".to_string())],
+                Vec::new(),
+            ),
+            ("404 Not Found", vec![], b"gone".to_vec()),
+            ok_json(manifest.clone()),
+        ]);
+        let url = server.url.clone();
+        with_env(
+            &[
+                ("OXBOX_TEST_ALLOW_HTTP", Some("1")),
+                ("OXBOX_TEST_MANIFEST_MAX_BYTES", None),
+                ("OPENROUTER_API_KEY", Some("k")),
+            ],
+            || {
+                assert!(!https_required());
+                let address = format!("{url}/m.json");
+                let (entries, info) = load_manifest(&address, false).unwrap();
+                assert!(info.fetched);
+                assert_eq!(info.raw, body);
+                assert_eq!(entries[0].skip, None);
+                let error = message(fetch_manifest(&address).unwrap_err());
+                assert!(
+                    error.contains("redirected (HTTP 302 to https://elsewhere.example/m.json)"),
+                    "{error}"
+                );
+                let error = message(fetch_manifest(&address).unwrap_err());
+                assert!(error.contains("HTTP 404"), "{error}");
+                unsafe { env::set_var("OXBOX_TEST_MANIFEST_MAX_BYTES", "10") };
+                assert_eq!(manifest_max_bytes(), 10);
+                let error = message(fetch_manifest(&address).unwrap_err());
+                assert!(error.contains("larger than 10 bytes"), "{error}");
+                unsafe { env::remove_var("OXBOX_TEST_MANIFEST_MAX_BYTES") };
+                // Nothing listens here any more: a connection error is reported, not retried.
+                let error = message(fetch_manifest("http://127.0.0.1:9/m.json").unwrap_err());
+                assert!(error.contains("cannot fetch manifest"), "{error}");
+            },
+        );
+        let seen = server.finish();
+        assert_eq!(seen.len(), 4);
+        assert!(
+            seen[0].request_line.starts_with("GET /m.json "),
+            "{}",
+            seen[0].request_line
+        );
+        assert_eq!(seen[0].header("accept"), Some("application/json"));
+        assert_eq!(
+            seen[0].header("authorization"),
+            None,
+            "a manifest fetch carries no credential"
+        );
+        assert!(seen[0].header("user-agent").unwrap().starts_with("oxbox ("));
+    }
+
+    // ── the audit log ─────────────────────────────────────────────────────
+
+    #[test]
+    fn log_directories_are_claimed_exclusively() {
+        let dir = scratch("logdir");
+        let base = dir.join("logs");
+        let first = claim_log_dir(&base, "2026-01-01T00-00-00Z").unwrap();
+        assert_eq!(first, base.join("2026-01-01T00-00-00Z"));
+        let second = claim_log_dir(&base, "2026-01-01T00-00-00Z").unwrap();
+        assert_eq!(second, base.join("2026-01-01T00-00-00Z-2"));
+        let third = claim_log_dir(&base, "2026-01-01T00-00-00Z").unwrap();
+        assert_eq!(third, base.join("2026-01-01T00-00-00Z-3"));
+        let (stamp, made) = make_log_dir(&base).unwrap();
+        assert_eq!(made.file_name().unwrap().to_string_lossy(), stamp);
+        // A base that cannot be created is a message, not a panic.
+        fs::write(dir.join("file"), b"x").unwrap();
+        let error = message(claim_log_dir(&dir.join("file").join("logs"), "s").unwrap_err());
+        assert!(error.contains("cannot create log directory"), "{error}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_log_warns_instead_of_failing() {
+        let dir = scratch("writelog");
+        write_log(&dir.join("ok.txt"), "fine");
+        assert_eq!(fs::read_to_string(dir.join("ok.txt")).unwrap(), "fine");
+        write_log(&dir.join("no").join("such").join("x.txt"), "lost");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // ── the request ───────────────────────────────────────────────────────
+
+    #[test]
+    fn a_good_answer_is_parsed_and_filed() {
+        let dir = scratch("send-good");
+        let server = serve(vec![ok_json(good_answer())]);
+        let url = server.url.clone();
+        let payload = json!({"model": "m", "messages": [], "max_tokens": 5});
+        let answer = send_and_parse(&url, "sekrit", &payload, &dir).unwrap();
+        assert_eq!(answer.content, "the answer\n");
+        assert_eq!(answer.reasoning, "thinking");
+        assert_eq!(answer.route.as_deref(), Some("SomeUpstream"));
+        assert_eq!(answer.choice.get("finish_reason"), Some(&json!("stop")));
+        assert_eq!(answer.usage.get("cost"), Some(&json!(0.0)));
+        assert_eq!(
+            fs::read_to_string(dir.join("content.md")).unwrap(),
+            "the answer\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("reasoning.txt")).unwrap(),
+            "thinking"
+        );
+        let filed: Value =
+            serde_json::from_slice(&fs::read(dir.join("response.json")).unwrap()).unwrap();
+        assert_eq!(filed, good_answer());
+        let seen = server.finish();
+        assert!(
+            seen[0].request_line.starts_with("POST / "),
+            "{}",
+            seen[0].request_line
+        );
+        assert_eq!(seen[0].header("authorization"), Some("Bearer sekrit"));
+        assert_eq!(seen[0].header("content-type"), Some("application/json"));
+        assert_eq!(seen[0].header("x-title"), Some("oxbox supervised bridge"));
+        let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
+        assert_eq!(
+            sent, payload,
+            "bytes on the wire are the payload, untouched"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn every_non_answer_fails_the_attempt_and_leaves_evidence() {
+        let dir = scratch("send-bad");
+        let payload = json!({"model": "m"});
+        let no_content = json!({"choices": [{"finish_reason": "length", "message": {"content": "  "}}],
+            "usage": {"completion_tokens": 7, "completion_tokens_details": {"reasoning_tokens": 7}}});
+        let server = serve(vec![
+            (
+                "500 Internal Server Error",
+                vec![],
+                b"upstream fell over".to_vec(),
+            ),
+            (
+                "302 Found",
+                vec![("Location", "https://elsewhere.example/".to_string())],
+                Vec::new(),
+            ),
+            (
+                "200 OK",
+                vec![("Content-Type", "text/html".to_string())],
+                b"<html>captive portal</html>".to_vec(),
+            ),
+            ok_json(json!({"error": {"message": "bad key", "code": 401}})),
+            ok_json(json!({"choices": []})),
+            ok_json(no_content.clone()),
+            ok_json(
+                json!({"choices": [{"message": {"content": "ok", "tool_calls": [{"id": "x"}]}}]}),
+            ),
+        ]);
+        let url = server.url.clone();
+        let text =
+            |result: Result<Answer, AttemptFailed>| result.err().map(|f| f.0).unwrap_or_default();
+
+        let failure = text(send_and_parse(&url, "k", &payload, &dir));
+        assert!(
+            failure.contains("HTTP 500: upstream fell over"),
+            "{failure}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("error.txt")).unwrap(),
+            "500\nupstream fell over"
+        );
+
+        let failure = text(send_and_parse(&url, "k", &payload, &dir));
+        assert!(
+            failure.contains("HTTP 302"),
+            "a redirect is answered, not followed: {failure}"
+        );
+
+        let failure = text(send_and_parse(&url, "k", &payload, &dir));
+        assert!(failure.contains("non-JSON body"), "{failure}");
+        assert!(
+            fs::read_to_string(dir.join("error.txt"))
+                .unwrap()
+                .contains("captive portal")
+        );
+
+        let failure = text(send_and_parse(&url, "k", &payload, &dir));
+        assert!(
+            failure.contains("api error:") && failure.contains("bad key"),
+            "{failure}"
+        );
+
+        let failure = text(send_and_parse(&url, "k", &payload, &dir));
+        assert!(failure.contains("no choices"), "{failure}");
+
+        let failure = text(send_and_parse(&url, "k", &payload, &dir));
+        assert!(failure.contains("no content (finish=length)"), "{failure}");
+        assert!(
+            failure.contains("7 of 7 completion tokens went to reasoning"),
+            "{failure}"
+        );
+
+        // tool_calls are logged and ignored; the answer still comes back.
+        let answer = send_and_parse(&url, "k", &payload, &dir).unwrap();
+        assert_eq!(answer.content, "ok");
+        assert_eq!(answer.route, None);
+
+        let failure = text(send_and_parse("http://127.0.0.1:9/", "k", &payload, &dir));
+        assert!(failure.contains("network error"), "{failure}");
+        server.finish();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // ── the run ───────────────────────────────────────────────────────────
+
+    fn run_with(words: &[&str], stdin: &str) -> (Result<(), Exit>, Map<String, Value>, String) {
+        let args = parsed(words);
+        let mut status = new_status();
+        let mut input = Cursor::new(stdin.as_bytes().to_vec());
+        let mut out = Vec::new();
+        let result = run(&args, &mut status, &mut input, &mut out);
+        (result, status, String::from_utf8_lossy(&out).into_owned())
+    }
+
+    #[test]
+    fn a_dry_run_builds_and_files_the_request_without_a_key() {
+        let dir = scratch("dry");
+        fs::write(dir.join("a.py"), "x = 1\n").unwrap();
+        let logs = dir.join("logs").to_string_lossy().into_owned();
+        let file = dir.join("a.py").to_string_lossy().into_owned();
+        with_env(&[("OPENROUTER_API_KEY", None)], || {
+            let (result, status, out) = run_with(
+                &[
+                    "--dry-run",
+                    "--model",
+                    "m/x",
+                    "--files",
+                    &file,
+                    "--log-dir",
+                    &logs,
+                    "--effort",
+                    "low",
+                    "fix it",
+                ],
+                "",
+            );
+            assert_eq!(result, Ok(()));
+            let printed: Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(printed["model"], json!("m/x"));
+            assert!(
+                printed.get("tools").is_none()
+                    && printed.get("tool_choice").is_none()
+                    && printed.get("functions").is_none()
+            );
+            assert_eq!(printed["messages"][0]["role"], json!("system"));
+            assert!(
+                printed["messages"][1]["content"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("fix it\n\n### File: ")
+            );
+            assert_eq!(printed["reasoning"]["effort"], json!("low"));
+            assert_eq!(printed["max_tokens"], json!(DEFAULT_MAX_TOKENS));
+            assert_eq!(status["venue"], json!("openrouter"));
+            assert_eq!(status["model"], json!("m/x"));
+            assert_eq!(status["dry_run"], json!(true));
+            let log_dir = PathBuf::from(status["log_dir"].as_str().unwrap());
+            let request: Value =
+                serde_json::from_slice(&fs::read(log_dir.join("request.json")).unwrap()).unwrap();
+            assert_eq!(request, printed);
+            let meta: Value =
+                serde_json::from_slice(&fs::read(log_dir.join("meta.json")).unwrap()).unwrap();
+            assert_eq!(meta["venue"], json!("openrouter"));
+            assert_eq!(meta["key_env"], json!("OPENROUTER_API_KEY"));
+            assert_eq!(
+                meta["endpoint"],
+                json!("https://openrouter.ai/api/v1/chat/completions")
+            );
+            assert_eq!(meta["files"], json!([file]));
+            assert_eq!(meta["context_bytes"], json!(6));
+            assert_eq!(
+                meta["log_dir"],
+                json!(log_dir.file_name().unwrap().to_string_lossy())
+            );
+            assert!(meta.get("manifest").is_none());
+            assert!(!log_dir.join("response.json").exists());
+        });
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_task_can_come_from_stdin_and_must_not_be_empty() {
+        let dir = scratch("stdin");
+        let logs = dir.join("logs").to_string_lossy().into_owned();
+        let (result, _, out) = run_with(
+            &["--dry-run", "--stdin", "--model", "m", "--log-dir", &logs],
+            "from stdin\n",
+        );
+        assert_eq!(result, Ok(()));
+        let printed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(printed["messages"][1]["content"], json!("from stdin"));
+        let (result, _, _) = run_with(&["--dry-run", "--stdin", "--model", "m"], "   \n");
+        assert_eq!(message(result.unwrap_err()), "no task given");
+        let (result, _, _) = run_with(&["--dry-run", "--model", "m"], "");
+        assert_eq!(message(result.unwrap_err()), "no task given");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn destination_and_credential_are_resolved_together() {
+        with_env(
+            &[
+                ("OPENROUTER_API_KEY", None),
+                ("MY_KEY", None),
+                ("OXBOX_TEST_ALLOW_HTTP", None),
+            ],
+            || {
+                let cases: Vec<(Vec<&str>, &str)> = vec![
+                    (
+                        vec!["--failover", "--model", "m", "t"],
+                        "--failover requires --manifest",
+                    ),
+                    (
+                        vec!["--manifest", "m.json", "--venue", "zenmux", "t"],
+                        "--venue conflicts with --manifest",
+                    ),
+                    (
+                        vec!["--manifest", "m.json", "--model", "m", "t"],
+                        "--model conflicts with --manifest",
+                    ),
+                    (
+                        vec!["--manifest", "m.json", "--base-url", "https://x", "t"],
+                        "--base-url conflicts with --manifest",
+                    ),
+                    (
+                        vec!["--manifest", "m.json", "--api-key-env", "K", "t"],
+                        "--api-key-env conflicts with --manifest",
+                    ),
+                    (
+                        vec!["--base-url", "https://x/v1", "--model", "m", "t"],
+                        "--base-url requires --api-key-env",
+                    ),
+                    (
+                        vec![
+                            "--base-url",
+                            "http://x/v1",
+                            "--api-key-env",
+                            "K",
+                            "--model",
+                            "m",
+                            "t",
+                        ],
+                        "must be an https:// URL",
+                    ),
+                    (
+                        vec!["--base-url", "https://x/v1", "--api-key-env", "K", "t"],
+                        "--model is required for venue 'custom'",
+                    ),
+                    (
+                        vec!["--api-key-env", "K", "--model", "m", "t"],
+                        "--api-key-env only applies with --base-url",
+                    ),
+                    (
+                        vec!["--venue", "zenmux", "t"],
+                        "no model chosen, and 'zenmux' has no default",
+                    ),
+                    (vec!["--model", "m", "t"], "OPENROUTER_API_KEY not set"),
+                    (
+                        vec![
+                            "--base-url",
+                            "https://x/v1",
+                            "--api-key-env",
+                            "MY_KEY",
+                            "--model",
+                            "m",
+                            "t",
+                        ],
+                        "MY_KEY not set",
+                    ),
+                ];
+                for (words, needle) in cases {
+                    let (result, _, _) = run_with(&words, "");
+                    let error = message(result.unwrap_err());
+                    assert!(error.contains(needle), "{words:?}: {error}");
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn a_leftover_output_file_is_cleared_first_and_a_status_file_marks_the_run_in_progress() {
+        let dir = scratch("output");
+        let output = dir.join("answer.md");
+        fs::write(&output, "stale").unwrap();
+        let status_file = dir.join("s.json");
+        let (result, _, _) = run_with(
+            &[
+                "--dry-run",
+                "--output",
+                output.to_str().unwrap(),
+                "--status-file",
+                status_file.to_str().unwrap(),
+            ],
+            "",
+        );
+        assert_eq!(message(result.unwrap_err()), "no task given");
+        assert!(
+            !output.exists(),
+            "the stale answer is gone even though the run failed"
+        );
+        let record: Value = serde_json::from_slice(&fs::read(&status_file).unwrap()).unwrap();
+        assert_eq!(record["ok"], json!(false));
+        assert_eq!(
+            record["exit_code"],
+            Value::Null,
+            "written before the outcome is known"
+        );
+        assert_eq!(record["output"], json!(output.to_string_lossy()));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_manifest_dry_run_records_the_choice_and_skips_the_rest() {
+        let dir = scratch("manifest-dry");
+        let manifest = json!({
+            "manifest_version": 0,
+            "defaults": {"max_tokens": 4321, "effort": "medium"},
+            "recommendations": [
+                {"venue": "openrouter", "model": "paid/one", "cost": "paid"},
+                {"venue": "openrouter", "model": "or/free", "cost": "free", "why": "quick",
+                 "params": {"effort": "xhigh"}},
+                {"venue": "openrouter", "model": "or/other", "cost": "free"},
+            ]
+        });
+        let path = write_manifest(&dir, "m.json", &manifest);
+        let logs = dir.join("logs").to_string_lossy().into_owned();
+        with_env(&[("OPENROUTER_API_KEY", Some("k"))], || {
+            let (result, status, out) = run_with(
+                &["--dry-run", "--manifest", &path, "--log-dir", &logs, "t"],
+                "",
+            );
+            assert_eq!(result, Ok(()));
+            let printed: Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(printed["model"], json!("or/free"));
+            assert_eq!(printed["max_tokens"], json!(4321), "issue-wide default");
+            assert_eq!(
+                printed["reasoning"]["effort"],
+                json!("xhigh"),
+                "entry params beat defaults"
+            );
+            assert_eq!(status["manifest"]["path"], json!(path));
+            assert_eq!(status["manifest"]["sha256"].as_str().unwrap().len(), 64);
+            let log_dir = PathBuf::from(status["log_dir"].as_str().unwrap());
+            assert_eq!(
+                fs::read(log_dir.join("manifest.json")).unwrap(),
+                fs::read(&path).unwrap()
+            );
+            let meta: Value =
+                serde_json::from_slice(&fs::read(log_dir.join("meta.json")).unwrap()).unwrap();
+            assert_eq!(meta["manifest"]["entry_position"], json!(2));
+            assert_eq!(meta["manifest"]["fetched"], json!(false));
+            assert_eq!(meta["manifest"]["saved_as"], json!("manifest.json"));
+            // Explicit flags beat everything in the manifest.
+            let (_, _, out) = run_with(
+                &[
+                    "--dry-run",
+                    "--manifest",
+                    &path,
+                    "--log-dir",
+                    &logs,
+                    "--max-tokens",
+                    "9",
+                    "--effort",
+                    "low",
+                    "t",
+                ],
+                "",
+            );
+            let printed: Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(printed["max_tokens"], json!(9));
+            assert_eq!(printed["reasoning"]["effort"], json!("low"));
+        });
+        // With nothing permitted, the run says which entries were skipped and why.
+        with_env(&[("OPENROUTER_API_KEY", None)], || {
+            let (result, status, _) = run_with(
+                &["--dry-run", "--manifest", &path, "--log-dir", &logs, "t"],
+                "",
+            );
+            let error = message(result.unwrap_err());
+            assert!(
+                error.starts_with("no manifest entry produced an answer:"),
+                "{error}"
+            );
+            assert!(
+                error.contains("[1] openrouter/paid/one: cost=paid"),
+                "{error}"
+            );
+            assert!(
+                error.contains("[2] openrouter/or/free: OPENROUTER_API_KEY not set"),
+                "{error}"
+            );
+            assert_eq!(status["attempts"].as_array().unwrap().len(), 3);
+        });
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(feature = "test-overrides")]
+    #[test]
+    fn a_live_run_over_loopback_prints_the_answer_and_fills_the_record() {
+        let dir = scratch("live");
+        let logs = dir.join("logs").to_string_lossy().into_owned();
+        let output = dir.join("answer.md");
+        let server = serve(vec![
+            ok_json(good_answer()),
+            ok_json(
+                json!({"choices": [{"finish_reason": "length", "message": {"content": "cut off"}}], "usage": {}}),
+            ),
+            ok_json(json!({"choices": [{"message": {"content": "no finish"}}]})),
+        ]);
+        let url = server.url.clone();
+        with_env(
+            &[
+                ("OXBOX_TEST_ALLOW_HTTP", Some("1")),
+                ("MY_KEY", Some("sekrit")),
+            ],
+            || {
+                let base = [
+                    "--base-url",
+                    &url,
+                    "--api-key-env",
+                    "MY_KEY",
+                    "--model",
+                    "m",
+                    "--log-dir",
+                    &logs,
+                ];
+                let mut words = base.to_vec();
+                words.extend(["--output", output.to_str().unwrap(), "the task"]);
+                let (result, status, out) = run_with(&words, "");
+                assert_eq!(result, Ok(()));
+                assert_eq!(out, "", "the answer went to --output, not stdout");
+                assert_eq!(fs::read_to_string(&output).unwrap(), "the answer\n");
+                assert_eq!(status["venue"], json!("custom"));
+                assert_eq!(status["finish_reason"], json!("stop"));
+                assert_eq!(status["prompt_tokens"], json!(10));
+                assert_eq!(status["completion_tokens"], json!(5));
+                assert_eq!(status["reasoning_tokens"], json!(2));
+                assert_eq!(status["reasoning_chars"], json!(8));
+                assert_eq!(status["truncated"], json!(false));
+                assert_eq!(status["venue_cost"], json!(0.0));
+                assert_eq!(status["route"], json!("SomeUpstream"));
+                assert_eq!(
+                    status["attempts"],
+                    Value::Null,
+                    "attempts are a manifest thing"
+                );
+                let log_dir = PathBuf::from(status["log_dir"].as_str().unwrap());
+                assert!(log_dir.join("response.json").exists());
+                let meta: Value =
+                    serde_json::from_slice(&fs::read(log_dir.join("meta.json")).unwrap()).unwrap();
+                assert_eq!(meta["endpoint"], json!(url));
+                assert_eq!(meta["key_env"], json!("MY_KEY"));
+
+                let mut words = base.to_vec();
+                words.push("the task");
+                let (result, status, out) = run_with(&words, "");
+                assert_eq!(result, Ok(()));
+                assert_eq!(out, "cut off\n", "stdout gets print()'s newline");
+                assert_eq!(status["truncated"], json!(true));
+                assert_eq!(status["venue_cost"], Value::Null);
+
+                let (result, status, out) = run_with(&words, "");
+                assert_eq!(result, Ok(()));
+                assert_eq!(out, "no finish\n");
+                assert_eq!(
+                    status["truncated"],
+                    Value::Null,
+                    "no finish reason means unknown"
+                );
+            },
+        );
+        let seen = server.finish();
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[0].header("authorization"), Some("Bearer sekrit"));
+        let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
+        assert!(sent.get("tools").is_none());
+        assert_eq!(sent["messages"][1]["content"], json!("the task"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(feature = "test-overrides")]
+    #[test]
+    fn failover_moves_to_the_next_entry_and_records_every_attempt() {
+        let dir = scratch("failover");
+        let logs = dir.join("logs").to_string_lossy().into_owned();
+        let manifest = json!({
+            "manifest_version": 0,
+            "recommendations": [
+                {"venue": "openrouter", "model": "or/first", "cost": "free"},
+                {"venue": "zenmux", "model": "z/second", "cost": "free"},
+                {"venue": "openrouter", "model": "or/third", "cost": "free"},
+            ]
+        });
+        let path = write_manifest(&dir, "m.json", &manifest);
+        let server = serve(vec![
+            ok_json(json!({"error": {"message": "over capacity"}})),
+            ok_json(good_answer()),
+            ok_json(json!({"choices": []})),
+        ]);
+        let url = server.url.clone();
+        let venue_urls = json!({"openrouter": url, "zenmux": url}).to_string();
+        with_env(
+            &[
+                ("OXBOX_TEST_ALLOW_HTTP", Some("1")),
+                ("OXBOX_TEST_VENUE_URLS", Some(&venue_urls)),
+                ("OPENROUTER_API_KEY", Some("or-key")),
+                ("ZENMUX_API_KEY", Some("z-key")),
+            ],
+            || {
+                let (result, status, out) = run_with(
+                    &["--manifest", &path, "--failover", "--log-dir", &logs, "t"],
+                    "",
+                );
+                assert_eq!(result, Ok(()));
+                assert_eq!(
+                    out, "the answer\n\n",
+                    "print() adds a newline to content that has one"
+                );
+                assert_eq!(status["venue"], json!("zenmux"));
+                assert_eq!(status["model"], json!("z/second"));
+                let attempts = status["attempts"].as_array().unwrap();
+                assert_eq!(attempts.len(), 2, "the third entry was never needed");
+                assert!(
+                    attempts[0]["error"]
+                        .as_str()
+                        .unwrap()
+                        .contains("over capacity")
+                );
+                assert_eq!(attempts[0]["venue"], json!("openrouter"));
+                assert_eq!(attempts[1]["finish_reason"], json!("stop"));
+                assert_eq!(attempts[1]["route"], json!("SomeUpstream"));
+                assert!(attempts[1].get("error").is_none());
+
+                // Without --failover the first failure is the end, recorded once.
+                let (result, status, _) =
+                    run_with(&["--manifest", &path, "--log-dir", &logs, "t"], "");
+                let error = message(result.unwrap_err());
+                assert!(error.contains("no choices"), "{error}");
+                assert!(
+                    !error.starts_with("oxbox-send:"),
+                    "the exit path adds the prefix once"
+                );
+                let attempts = status["attempts"].as_array().unwrap();
+                assert_eq!(attempts.len(), 1);
+                assert!(
+                    attempts[0]["error"]
+                        .as_str()
+                        .unwrap()
+                        .contains("no choices")
+                );
+            },
+        );
+        let seen = server.finish();
+        assert_eq!(seen[0].header("authorization"), Some("Bearer or-key"));
+        assert_eq!(
+            seen[1].header("authorization"),
+            Some("Bearer z-key"),
+            "each venue gets only its own key"
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

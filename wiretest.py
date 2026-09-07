@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import http.server
 from pathlib import Path
@@ -37,6 +38,11 @@ HERE = Path(__file__).resolve().parent
 # source: venue URLs aimed at a loopback listener, the https guards relaxed,
 # the manifest size cap lowered.
 UNDER_TEST = os.environ.get("OXBOX_UNDER_TEST")
+# The tools read `[send] manifest` from ~/.config/oxbox/config.ini, and a
+# developer's own setting would turn every "no destination named" refusal
+# this suite asserts into a run. Every ox the suite starts gets an empty
+# config home; the cases that test the setting supply their own.
+CONFIG_HOME = tempfile.mkdtemp(prefix="wiretest-cfg-")
 
 
 def tool_path(name):
@@ -155,7 +161,7 @@ def canary_key(venue):
 
 
 def run_ox(argv, env=None, timeout=60):
-    environ = dict(os.environ)
+    environ = dict(os.environ, XDG_CONFIG_HOME=CONFIG_HOME, APPDATA=CONFIG_HOME)
     environ.update(env or {})
     return subprocess.run(OX + argv, capture_output=True, text=True,
                           timeout=timeout, env=environ)
@@ -201,7 +207,7 @@ REFERENCE_URLS = {
 
 def run_rewired(rewired, argv, env=None, cwd=None):
     command, overrides = rewired
-    environ = dict(os.environ)
+    environ = dict(os.environ, XDG_CONFIG_HOME=CONFIG_HOME, APPDATA=CONFIG_HOME)
     environ.update(overrides)
     environ.update(env or {})
     return subprocess.run(command + argv, capture_output=True, text=True,
@@ -379,13 +385,8 @@ def main():
     # --dry-run so the case cannot reach the network even when it fails: the
     # no-model exit happens before the dry-run branch, so the assertion is
     # unchanged, but a regression that restores a default sends nothing.
-    # An empty config home, so a developer's own `[send] manifest` cannot
-    # turn this refusal into a run.
-    empty_cfg = tmp / "empty-cfg"
-    empty_cfg.mkdir()
     result = run_ox(["--mode", "ask", "--dry-run", "hello"],
-                    env={"OPENROUTER_API_KEY": "sk-should-not-be-used",
-                         "XDG_CONFIG_HOME": str(empty_cfg), "APPDATA": str(empty_cfg)})
+                    env={"OPENROUTER_API_KEY": "sk-should-not-be-used"})
     report(result.returncode != 0
            and "no model chosen" in result.stderr
            and "oxbox.ai" in result.stderr,

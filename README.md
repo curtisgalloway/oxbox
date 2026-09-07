@@ -96,7 +96,7 @@ enforces them.
 | **Explicit context** | It sees only files passed to `--files`. A credential scanner refuses to send anything matching common key patterns. |
 | **Patch quarantine** | `oxbox-patch` applies diffs **only** into `sandbox/work`, and rejects absolute paths and `..` traversal outright. |
 | **Execution jail** | `oxbox` runs code with **no network** and **no writes outside the sandbox** — seatbelt on macOS, bubblewrap on Linux — with the environment cleared so no inherited secret crosses in. It refuses to start if stdout/stderr point at a file outside the sandbox. |
-| **Audit trail** | Every call writes `logs/<timestamp>/` with the exact request, raw response, extracted content, and metadata. The API key is never logged. |
+| **Audit trail** | Every call writes `logs/<timestamp>/` with the exact request, raw response, extracted content, and metadata. The API key is never logged. The survey reads these files back; the fields it depends on are listed in its [log contract](https://github.com/curtisgalloway/oxbox-survey/blob/main/docs/log-contract.md). |
 
 The jail is not taken on faith. `jailtest.py` probes from *inside* it — TCP,
 UDP, DNS, `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.claude`, Keychains, shell
@@ -164,7 +164,7 @@ uses 3.10+ APIs).
 
 | Tested on | Result |
 |---|---|
-| CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 90/90 (Windows 77/77 + 7 skipped), wiretest 69/69 (Windows 68/68 + 1 skipped), jailtest 9/9 |
+| CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 90/90 (Windows 77/77 + 7 skipped), wiretest 77/77 (Windows 76/76 + 1 skipped), jailtest 9/9 |
 | macOS 26.6.2, seatbelt | jailtest 13/13 |
 | Debian 13 (trixie), bubblewrap 0.12.0, Python 3.13.5 | jailtest 14/14 |
 | WSL2 Ubuntu 24.04.2, bubblewrap 0.9.0, Python 3.12.3 | jailtest 10/10 |
@@ -401,6 +401,26 @@ for a level it does not serve is answered by the venue, not by `oxbox send`, so 
 level a model actually takes belongs in the manifest entry beside its token
 cap (below) rather than in a table here that goes stale every issue.
 
+`--provider` pins the request to particular upstream endpoints. On OpenRouter a
+model id is a pool of endpoints, and price, output cap, quantization and
+failure mode are properties of the endpoint: the survey measured one payload
+answered in 47 seconds by one provider and never by another, and a run billed
+at double the list price because it landed on an endpoint priced above it.
+The flag takes OpenRouter's [`provider` object](https://openrouter.ai/docs/features/provider-routing)
+as JSON and sends it verbatim:
+
+```bash
+oxbox send --model deepseek/deepseek-v4-flash \
+  --provider '{"only": ["digitalocean", "streamlake"], "allow_fallbacks": false}' ...
+```
+
+`oxbox send` does not interpret the object; what its fields mean is
+OpenRouter's contract. It is refused on any other venue and with `--base-url`,
+because those would drop it silently and the request would go out unpinned.
+Absent, today's behavior: the venue's default routing. The request records
+the pin in `request.json` and `meta.json`, and `status.json` reports the
+endpoint that actually answered as `route`.
+
 ## Survey manifests
 
 The Oxbox Survey publishes a machine-readable manifest with each issue — an
@@ -432,7 +452,8 @@ The format is defined here, because `oxbox send` is the program that reads
 it; the survey publishes to it. A manifest is a JSON object with a short
 header and a ranked list:
 
-- `manifest_version` — an integer, `0` today. A document without an integer
+- `manifest_version` — an integer, `1` today (`1` added `provider`; a `0`
+  document is still read). A document without an integer
   here is refused as "not a recommendations manifest" (the survey ships other
   manifest-shaped files, such as its corpus manifest, and this is the field
   that tells them apart); a version newer than this `oxbox send` understands is
@@ -455,6 +476,15 @@ header and a ranked list:
   - `params` — optional per-entry overrides, the same two keys as `defaults`:
     a lower `max_tokens` for a model whose completion cap is below the
     default, or the `effort` level that model actually serves.
+  - `provider` — optional, the OpenRouter `provider` object the survey
+    measured this entry with (see `--provider` above), sent verbatim with the
+    request. Only `openrouter` honors one; an entry carrying `provider` on
+    any other venue is skipped with that reason rather than sent unpinned,
+    and so is an entry whose `provider` is not an object. `--provider` on
+    the command line beats the entry's. The survey's rule is that a pin is
+    a claim backed by a measurement, so it fills `only` with the endpoints
+    it actually ran, `allow_fallbacks: false`, and `max_price` at the list
+    price — a reader who drops the pin keeps the price guard.
   - `rank` — informational. Position in the list is authoritative, and a
     `rank` that disagrees with it is reported.
   - `base_url` — documentation for a human reader. `oxbox send` cross-checks it
@@ -489,7 +519,8 @@ Precedence: explicit flags beat the entry's `params`, which beat the
 manifest's `defaults`, which beat the built-ins. `params` and `defaults`
 both carry `max_tokens` and `effort` — the two facts that are properties of
 the model rather than of the request, and that the survey has measured and
-`oxbox send` has not. An `effort` `oxbox send` does not recognize is reported and ignored
+`oxbox send` has not. `provider` is a property of the entry alone, so it has
+no place in `defaults`. An `effort` `oxbox send` does not recognize is reported and ignored
 rather than forwarded, because a manifest is an outside document.
 Each attempt's `meta.json` records the manifest's sha256 and the entry
 used, because an audit trail should say why the destination was chosen,

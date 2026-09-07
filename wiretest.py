@@ -779,6 +779,106 @@ def main():
                            "(pass --allow-paid to use it)"],
            "an all-skipped manifest exits with each entry's reason",
            repr(summary))
+    print("\n=== a provider pin rides through verbatim, or is refused ===")
+
+    # An OpenRouter model id is a pool of endpoints, and price, output cap
+    # and failure mode belong to the endpoint. The provider object is how a
+    # caller says which; ox passes it through without reading it, sends it
+    # only where the venue honors it, and never sends a pinned request
+    # unpinned. OpenRouter is that venue, so here its URL points at the
+    # listener that answers.
+    pinned_venues = dict(local_venues, openrouter="http://127.0.0.1:%d/or/v1/chat/completions"
+                         % solid_server.server_address[1])
+    pin_ox = rewired_ox(tmp, "ox_pinned", venue_urls=pinned_venues)
+    pin = {"only": ["novita"], "allow_fallbacks": False}
+    pfile = tmp / "pinned-status.json"
+
+    solid.clear()
+    result = run_rewired(pin_ox, ["--venue", "openrouter", "--model", "m",
+         "--provider", json.dumps(pin), "--mode", "ask", "--status-file", str(pfile),
+         "--log-dir", str(tmp / "plogs"), "hello"], env=menv)
+    body = json.loads(solid.get("body") or b"{}")
+    pstat = json.loads(pfile.read_text()) if pfile.exists() else {}
+    report(result.returncode == 0 and body.get("provider") == pin,
+           "--provider lands in the request body verbatim",
+           "exit=%s provider=%r" % (result.returncode, body.get("provider")))
+    pmeta = {}
+    if pstat.get("log_dir"):
+        pmeta = json.loads((Path(pstat["log_dir"]) / "meta.json").read_text(encoding="utf-8"))
+    report(pmeta.get("provider") == pin,
+           "meta.json records the pin the request went out with",
+           repr(pmeta.get("provider")))
+
+    solid.clear()
+    result = run_rewired(pin_ox, ["--venue", "openrouter", "--model", "m",
+         "--mode", "ask", "--status-file", str(pfile),
+         "--log-dir", str(tmp / "plogs"), "hello"], env=menv)
+    body = json.loads(solid.get("body") or b"{}")
+    pmeta = {}
+    if pstat.get("log_dir"):
+        pstat = json.loads(pfile.read_text())
+        pmeta = json.loads((Path(pstat["log_dir"]) / "meta.json").read_text(encoding="utf-8"))
+    report(result.returncode == 0 and "provider" not in body
+           and "provider" in pmeta and pmeta["provider"] is None,
+           "without a pin the request carries no provider key and meta.json says null",
+           "keys=%r meta=%r" % (sorted(body), pmeta.get("provider", "absent")))
+
+    # A manifest entry carries the pin the survey measured with. One whose
+    # venue cannot honor it, or whose pin is not an object, is skipped with
+    # the reason rather than sent unpinned; the first entry that can carry
+    # its pin is the one that goes out, with the pin on it.
+    pinned = tmp / "manifest-pinned.json"
+    pinned.write_text(json.dumps({
+        "manifest_version": 1,
+        "recommendations": [
+            {"rank": 1, "venue": "opencode", "model": "oc/pinned", "cost": "free",
+             "provider": pin},
+            {"rank": 2, "venue": "openrouter", "model": "or/badpin", "cost": "free",
+             "provider": "novita"},
+            {"rank": 3, "venue": "openrouter", "model": "or/pinned", "cost": "free",
+             "provider": pin},
+        ],
+    }), encoding="utf-8")
+    solid.clear()
+    result = run_rewired(pin_ox, ["--manifest", str(pinned), "--mode", "ask",
+         "--status-file", str(pfile), "--log-dir", str(tmp / "plogs"), "hello"], env=menv)
+    pstat = json.loads(pfile.read_text()) if pfile.exists() else {}
+    body = json.loads(solid.get("body") or b"{}")
+    report(result.returncode == 0 and pstat.get("model") == "or/pinned"
+           and body.get("model") == "or/pinned" and body.get("provider") == pin,
+           "a version-1 manifest entry's pin rides with its request",
+           "exit=%s model=%r provider=%r" % (result.returncode, body.get("model"),
+                                             body.get("provider")))
+    skips = [a.get("skipped") for a in pstat.get("attempts") or []][:2]
+    report(skips == ["provider pin on venue opencode, which does not honor one",
+                     "provider is not an object"],
+           "an entry whose pin cannot be honored is skipped with the reason, not sent unpinned",
+           repr(skips))
+
+    solid.clear()
+    override = {"order": ["deepinfra"], "allow_fallbacks": False}
+    result = run_rewired(pin_ox, ["--manifest", str(pinned), "--provider",
+         json.dumps(override), "--mode", "ask", "--log-dir", str(tmp / "plogs"),
+         "hello"], env=menv)
+    body = json.loads(solid.get("body") or b"{}")
+    report(result.returncode == 0 and body.get("provider") == override,
+           "--provider beats the manifest entry's own pin",
+           "exit=%s provider=%r" % (result.returncode, body.get("provider")))
+
+    solid.clear()
+    result = run_rewired(pin_ox, ["--venue", "opencode", "--model", "m",
+         "--provider", json.dumps(pin), "--mode", "ask",
+         "--log-dir", str(tmp / "plogs"), "hello"], env=menv)
+    report(result.returncode == 1 and "does not honor one" in result.stderr and not solid,
+           "--provider on a venue that cannot honor it is refused before anything is sent",
+           "exit=%s sent=%r stderr=%r" % (result.returncode, bool(solid), result.stderr[-120:]))
+
+    result = run_rewired(pin_ox, ["--model", "m", "--provider", "novita",
+         "--mode", "ask", "--log-dir", str(tmp / "plogs"), "hello"], env=menv)
+    report(result.returncode == 2 and "argument --provider" in result.stderr,
+           "--provider that is not a JSON object is a usage error, not a request",
+           "exit=%s stderr=%r" % (result.returncode, result.stderr[-120:]))
+
     print("\n=== a manifest may be fetched by URL, carrying nothing ===")
 
     # The survey publishes latest.json at a stable URL. Fetching it must behave

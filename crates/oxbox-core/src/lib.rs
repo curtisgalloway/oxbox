@@ -254,7 +254,7 @@ pub fn config_path() -> Option<PathBuf> {
 
 /// One value out of an INI file: `key` under `[section]`.
 ///
-/// Enough of configparser's grammar for a config that holds one setting:
+/// Enough of configparser's grammar for a config of a few settings:
 /// `[section]` headers, `key = value` or `key: value`, blank lines, and
 /// comments starting with `#` or `;`. Keys compare case-insensitively, as
 /// configparser's do. Anything else is a parse error, reported rather than
@@ -294,6 +294,20 @@ pub fn ini_get(path: &Path, section: &str, key: &str) -> Result<Option<String>, 
         }
     }
     Ok(found)
+}
+
+/// One setting from the config file, with the file it came from, or None
+/// when there is no config file, no such key, or an empty value. A file
+/// that cannot be read or parsed is an error, reported rather than
+/// treated as absent: a typo in a setting should not silently mean
+/// "unset".
+pub fn config_get(section: &str, key: &str) -> Result<Option<(String, PathBuf)>, String> {
+    let Some(path) = config_path() else {
+        return Ok(None);
+    };
+    Ok(ini_get(&path, section, key)?
+        .filter(|value| !value.is_empty())
+        .map(|value| (value, path)))
 }
 
 /// Where sandboxes live, and where that setting came from.
@@ -692,6 +706,44 @@ mod tests {
         assert_eq!(
             ini_get(&path, "", "root").unwrap(),
             Some("early".to_string())
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn config_get_reads_a_named_setting_from_the_config_file() {
+        let dir = scratch("config-get");
+        let cfg = dir.join("oxbox");
+        fs::create_dir_all(&cfg).unwrap();
+        let dir_text = dir.to_string_lossy().into_owned();
+        with_env(
+            &[
+                ("XDG_CONFIG_HOME", Some(&dir_text)),
+                ("APPDATA", Some(&dir_text)),
+            ],
+            || {
+                assert_eq!(config_get("send", "manifest").unwrap(), None, "no file");
+                fs::write(
+                    cfg.join(CONFIG_FILE),
+                    "[send]\nmanifest = https://x/m.json\n",
+                )
+                .unwrap();
+                let (value, path) = config_get("send", "manifest").unwrap().unwrap();
+                assert_eq!(value, "https://x/m.json");
+                assert_eq!(path, cfg.join(CONFIG_FILE));
+                assert_eq!(config_get("sandbox", "root").unwrap(), None);
+                fs::write(cfg.join(CONFIG_FILE), "[send]\nmanifest =\n").unwrap();
+                assert_eq!(
+                    config_get("send", "manifest").unwrap(),
+                    None,
+                    "empty is unset"
+                );
+                fs::write(cfg.join(CONFIG_FILE), "[send]\nnot a setting\n").unwrap();
+                assert!(
+                    config_get("send", "manifest").is_err(),
+                    "a typo is an error"
+                );
+            },
         );
         fs::remove_dir_all(&dir).unwrap();
     }

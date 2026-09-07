@@ -20,6 +20,7 @@ Exit codes, so a caller can branch on a fact:
 """
 
 import argparse
+import configparser
 import hashlib
 import json
 import os
@@ -63,6 +64,10 @@ SEARCH_DIRS = [
 # so a mismatch surfaces as a listing ox then refuses, never as a
 # destination preflight approved on its own.
 PUBLIC_MANIFEST_URL = "https://oxbox.ai/manifests/latest.json"
+# `manifest` under [send] in oxbox's config file is the manifest ox itself
+# uses when nothing on its command line names one; preflight reads the
+# same key so the two agree. The path logic mirrors the tools' own.
+CONFIG_FILE = "config.ini"
 MANIFEST_MAX_BYTES = 1_048_576
 MANIFEST_TIMEOUT = 30
 USER_AGENT = "oxbox ox-review preflight (+https://github.com/curtisgalloway/oxbox)"
@@ -158,18 +163,40 @@ def find_ox(explicit):
     return None, None
 
 
+def config_path():
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.join(
+            os.path.expanduser("~"), "AppData", "Roaming")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+            os.path.expanduser("~"), ".config")
+    return os.path.join(base, "oxbox", CONFIG_FILE)
+
+
+def config_manifest():
+    """`manifest` under [send] in the config file, or None."""
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read(config_path(), encoding="utf-8")
+    except configparser.Error:
+        return None
+    return parser.get("send", "manifest", fallback=None) or None
+
+
 def manifest_candidates(explicit):
     """Collect manifests, newest issue first.
 
     "Current" means the newest issue the operator actually has, not the
     newest file: a manifest carries its own issue_date, and a re-download
     with a fresh mtime does not make an old issue current. mtime is only
-    the tiebreaker for files that never say. With nothing named and
-    nothing on disk, the survey's current issue at PUBLIC_MANIFEST_URL.
+    the tiebreaker for files that never say. --manifest, then
+    OXBOX_MANIFEST, then the config file's `manifest` name one outright;
+    with nothing named and nothing on disk, the survey's current issue at
+    PUBLIC_MANIFEST_URL.
     """
     if explicit:
         return [describe_manifest(explicit)]
-    named = os.environ.get("OXBOX_MANIFEST")
+    named = os.environ.get("OXBOX_MANIFEST") or config_manifest()
     if named:
         return [describe_manifest(named)]
     found = {}
@@ -311,8 +338,9 @@ def main():
         detail = "; ".join("%s: %s" % (m["path"], m["error"])
                            for m in manifests if m.get("error"))
         report["blockers"].append(
-            "no readable survey manifest%s. Point --manifest or OXBOX_MANIFEST "
-            "at the issue's file or its https URL, or drop the file beside the "
+            "no readable survey manifest%s. Point --manifest, OXBOX_MANIFEST or "
+            "`manifest` under [send] in oxbox's config.ini at the issue's file or "
+            "its https URL, or drop the file beside the "
             "project as %s. Searched: %s, then %s"
             % (" (%s)" % detail if detail else "", MANIFEST_GLOB,
                ", ".join(str(d) for d in SEARCH_DIRS), PUBLIC_MANIFEST_URL))
@@ -371,8 +399,9 @@ def render(report):
         print("issue_date=%s  sha256=%s" % (manifest["issue_date"], manifest["sha256"]))
         if manifest.get("fallback"):
             print("nothing named and none on disk, so this is the survey's current "
-                  "issue; set OXBOX_MANIFEST or drop a file beside the project to "
-                  "pin one")
+                  "issue; to pin one, set OXBOX_MANIFEST, put `manifest = ...` under "
+                  "[send] in ~/.config/oxbox/config.ini, or drop a file beside the "
+                  "project")
         if manifest.get("fetched"):
             print("fetched by URL; ox keeps the bytes it uses as manifest.json in "
                   "each run's log directory")

@@ -240,8 +240,8 @@ executed inside it.
   wiretest take `OXBOX_UNDER_TEST=<dir of
   binaries>` and drive those instead of the scripts, and jailtest runs
   inside whichever jail launched it. CI verifies on macOS, Ubuntu and
-  Windows on every push (guards 90/90, wire 77/77; Windows 77/77 + 7
-  skipped, 76/76 + 1 skipped, jail refuses 78).
+  Windows on every push (guards 90/90, wire 79/79; Windows 77/77 + 7
+  skipped, 78/78 + 1 skipped, jail refuses 78).
 - **Byte-for-byte agreement is not the goal.** Where the two differ and the
   suites do not pin it, the right behavior wins and both implementations
   move to it; do not port a Python bug for parity's sake. Differences
@@ -295,7 +295,10 @@ executed inside it.
   working-directory relative, because installed tools live in `/usr/bin` or a
   Homebrew Cellar where script-relative state is unwritable or worse. The
   sandbox root can be moved — `OXBOX_SANDBOX_ROOT`, else `[sandbox] root` in
-  `~/.config/oxbox/config.ini`, else `./sandbox`, with a relative value still
+  `~/.config/oxbox/config.ini` (the file also holds `[send] manifest`, the
+  manifest `oxbox send` uses when nothing on the command line names a
+  destination; a typed destination always wins), else `./sandbox`, with a
+  relative value still
   resolving against the working directory — and every sandbox is
   `<root>/NAME`, `work` by default. The config file is INI via `configparser`
   because the floor is Python 3.9 and `tomllib` arrived in 3.11. Two

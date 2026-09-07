@@ -164,7 +164,7 @@ uses 3.10+ APIs).
 
 | Tested on | Result |
 |---|---|
-| CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 90/90 (Windows 77/77 + 7 skipped), wiretest 77/77 (Windows 76/76 + 1 skipped), jailtest 9/9 |
+| CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 90/90 (Windows 77/77 + 7 skipped), wiretest 79/79 (Windows 78/78 + 1 skipped), jailtest 9/9 |
 | macOS 26.6.2, seatbelt | jailtest 13/13 |
 | Debian 13 (trixie), bubblewrap 0.12.0, Python 3.13.5 | jailtest 14/14 |
 | WSL2 Ubuntu 24.04.2, bubblewrap 0.9.0, Python 3.12.3 | jailtest 10/10 |
@@ -340,6 +340,9 @@ the named one and `--destroy --all` removes the root.
 # ~/.config/oxbox/config.ini
 [sandbox]
 root = ~/oxbox-sandboxes
+
+[send]
+manifest = https://oxbox.ai/manifests/latest.json
 ```
 
 **Only `oxbox` is on `PATH`.** A package installs the four scripts into a
@@ -440,6 +443,13 @@ request carries no Authorization header and reads no key variable. The bytes
 `oxbox send` used are written into the run's log directory as `manifest.json`, because
 `latest.json` will say something else next issue and the audit trail has to
 keep saying what this run used.
+
+To make a manifest the default, name it once as `manifest` under `[send]` in
+`~/.config/oxbox/config.ini` (the same file that holds the sandbox root). It
+stands in for `--manifest` when nothing on the command line names a
+destination — a typed `--model`, `--venue` or `--base-url` is a choice the
+config file does not overrule — and the run announces on stderr where the
+manifest came from. The ox-review skill's preflight reads the same key.
 
 `oxbox send` takes the first *permitted* entry: cost confirmed `free` unless you pass
 `--allow-paid` (an entry of unknown cost counts as paid), a venue this `oxbox send`

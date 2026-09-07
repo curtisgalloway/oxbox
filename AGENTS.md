@@ -240,8 +240,8 @@ executed inside it.
   wiretest take `OXBOX_UNDER_TEST=<dir of
   binaries>` and drive those instead of the scripts, and jailtest runs
   inside whichever jail launched it. CI verifies on macOS, Ubuntu and
-  Windows on every push (guards 90/90, wire 79/79; Windows 77/77 + 7
-  skipped, 78/78 + 1 skipped, jail refuses 78).
+  Windows on every push (guards 90/90, wire 81/81; Windows 77/77 + 7
+  skipped, 80/80 + 1 skipped, jail refuses 78).
 - **Byte-for-byte agreement is not the goal.** Where the two differ and the
   suites do not pin it, the right behavior wins and both implementations
   move to it; do not port a Python bug for parity's sake. Differences
@@ -297,7 +297,9 @@ executed inside it.
   sandbox root can be moved — `OXBOX_SANDBOX_ROOT`, else `[sandbox] root` in
   `~/.config/oxbox/config.ini` (the file also holds `[send] manifest`, the
   manifest `oxbox send` uses when nothing on the command line names a
-  destination; a typed destination always wins), else `./sandbox`, with a
+  destination, a typed destination always winning, and `[send] allow_paid`,
+  which opens the cost gate as `--allow-paid` does and can only open it),
+  else `./sandbox`, with a
   relative value still
   resolving against the working directory — and every sandbox is
   `<root>/NAME`, `work` by default. The config file is INI via `configparser`

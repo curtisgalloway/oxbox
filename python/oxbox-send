@@ -551,6 +551,28 @@ def config_path():
     return os.path.join(base, "oxbox", CONFIG_FILE)
 
 
+def config_allow_paid():
+    """`allow_paid` under [send] in the config file, and the file, or (None, None).
+
+    configparser's boolean spellings; anything else is an error rather
+    than a closed gate, so a typo says so instead of silently refusing
+    every paid entry.
+    """
+    path = config_path()
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read(path, encoding="utf-8")
+    except configparser.Error as error:
+        sys.exit("oxbox-send: cannot parse %s: %s" % (path, error))
+    if not parser.get("send", "allow_paid", fallback=None):
+        return None, None
+    try:
+        return parser.getboolean("send", "allow_paid"), path
+    except ValueError:
+        sys.exit("oxbox-send: cannot parse %s: allow_paid under [send] must be true or "
+                 "false, not %r" % (path, parser.get("send", "allow_paid")))
+
+
 def config_manifest():
     """`manifest` under [send] in the config file, and the file, or (None, None).
 
@@ -1013,8 +1035,17 @@ def run(status):
             if value:
                 sys.exit("oxbox-send: %s conflicts with --manifest; the manifest "
                          "chooses the destination" % name)
-        entries, manifest_info = load_manifest(manifest, args.allow_paid,
-                                               args.provider)
+        # The cost gate opens once, in the config file, for someone who has
+        # decided paid entries are fine: `allow_paid = true` under [send]
+        # reads exactly as --allow-paid. The file only ever opens the
+        # gate; the flag cannot close it, and the default stays free-only.
+        allow_paid = args.allow_paid
+        if not allow_paid:
+            configured, origin = config_allow_paid()
+            if configured:
+                sys.stderr.write("oxbox-send: allow_paid from %s\n" % origin)
+                allow_paid = True
+        entries, manifest_info = load_manifest(manifest, allow_paid, args.provider)
         status["manifest"] = {"path": manifest_info["path"],
                               "sha256": manifest_info["sha256"]}
     elif args.base_url:

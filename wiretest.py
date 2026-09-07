@@ -816,6 +816,32 @@ def main():
            "exit=%s model=%r manifest=%r" % (result.returncode, stat.get("model"),
                                              stat.get("manifest")))
 
+    # `allow_paid = true` beside it opens the cost gate exactly as the flag
+    # does; absent, the gate stays closed, which the cases above already
+    # pin under an empty config home. Entry 1 is the paid one on the 429
+    # listener, so the proof is that it was tried rather than skipped.
+    (cfg_home / "oxbox" / "config.ini").write_text(
+        "[send]\nmanifest = %s\nallow_paid = true\n" % manifest, encoding="utf-8")
+    flaky.clear()
+    result = run_rewired(manifest_ox, ["--mode", "ask", "--status-file", str(sfile),
+         "--log-dir", str(tmp / "mlogs"), "hello"], env=cfg_env)
+    stat = json.loads(sfile.read_text()) if sfile.exists() else {}
+    first = (stat.get("attempts") or [{}])[0]
+    report(stat.get("model") == "top-paid" and "skipped" not in first
+           and json.loads(flaky.get("body") or b"{}").get("model") == "top-paid"
+           and "allow_paid from" in result.stderr,
+           "allow_paid in the config file opens the cost gate like the flag",
+           "model=%r first=%r" % (stat.get("model"), first))
+    (cfg_home / "oxbox" / "config.ini").write_text(
+        "[send]\nmanifest = %s\nallow_paid = maybe\n" % manifest, encoding="utf-8")
+    flaky.clear()
+    result = run_rewired(manifest_ox, ["--mode", "ask", "--dry-run",
+         "--log-dir", str(tmp / "mlogs"), "hello"], env=cfg_env)
+    report(result.returncode != 0 and "must be true or false" in result.stderr
+           and not flaky,
+           "an allow_paid that is neither true nor false is an error, not a closed gate",
+           "exit=%s stderr=%r" % (result.returncode, result.stderr[-120:]))
+
     print("\n=== a provider pin rides through verbatim, or is refused ===")
 
     # An OpenRouter model id is a pool of endpoints, and price, output cap

@@ -310,6 +310,27 @@ pub fn config_get(section: &str, key: &str) -> Result<Option<(String, PathBuf)>,
         .map(|value| (value, path)))
 }
 
+/// A boolean setting from the config file, in configparser's spellings:
+/// true/false, yes/no, on/off, 1/0, case-insensitively. Any other value is
+/// an error, reported rather than read as false: a setting that opens a
+/// gate must not fail closed on a typo without saying so.
+pub fn config_flag(section: &str, key: &str) -> Result<Option<(bool, PathBuf)>, String> {
+    let Some((value, path)) = config_get(section, key)? else {
+        return Ok(None);
+    };
+    let flag = match value.to_ascii_lowercase().as_str() {
+        "1" | "yes" | "true" | "on" => true,
+        "0" | "no" | "false" | "off" => false,
+        _ => {
+            return Err(format!(
+                "cannot parse {}: {key} under [{section}] must be true or false, not {value:?}",
+                path.display()
+            ));
+        }
+    };
+    Ok(Some((flag, path)))
+}
+
 /// Where sandboxes live, and where that setting came from.
 pub struct SandboxRoot {
     pub path: PathBuf,
@@ -706,6 +727,52 @@ mod tests {
         assert_eq!(
             ini_get(&path, "", "root").unwrap(),
             Some("early".to_string())
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn config_flag_reads_configparser_booleans_and_refuses_the_rest() {
+        let dir = scratch("config-flag");
+        let cfg = dir.join("oxbox");
+        fs::create_dir_all(&cfg).unwrap();
+        let dir_text = dir.to_string_lossy().into_owned();
+        with_env(
+            &[
+                ("XDG_CONFIG_HOME", Some(&dir_text)),
+                ("APPDATA", Some(&dir_text)),
+            ],
+            || {
+                assert_eq!(config_flag("send", "allow_paid").unwrap(), None);
+                for (text, expected) in [
+                    ("true", true),
+                    ("Yes", true),
+                    ("ON", true),
+                    ("1", true),
+                    ("false", false),
+                    ("no", false),
+                    ("Off", false),
+                    ("0", false),
+                ] {
+                    fs::write(
+                        cfg.join(CONFIG_FILE),
+                        format!("[send]\nallow_paid = {text}\n"),
+                    )
+                    .unwrap();
+                    let (flag, path) = config_flag("send", "allow_paid").unwrap().unwrap();
+                    assert_eq!(flag, expected, "{text}");
+                    assert_eq!(path, cfg.join(CONFIG_FILE));
+                }
+                fs::write(cfg.join(CONFIG_FILE), "[send]\nallow_paid =\n").unwrap();
+                assert_eq!(
+                    config_flag("send", "allow_paid").unwrap(),
+                    None,
+                    "empty is unset"
+                );
+                fs::write(cfg.join(CONFIG_FILE), "[send]\nallow_paid = maybe\n").unwrap();
+                let error = config_flag("send", "allow_paid").unwrap_err();
+                assert!(error.contains("must be true or false"), "{error}");
+            },
         );
         fs::remove_dir_all(&dir).unwrap();
     }

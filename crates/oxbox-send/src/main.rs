@@ -1446,7 +1446,18 @@ fn run(
                 )));
             }
         }
-        let (entries, info) = load_manifest(manifest, args.allow_paid, args.provider.as_ref())?;
+        // The cost gate opens once, in the config file, for someone who has
+        // decided paid entries are fine: `allow_paid = true` under [send]
+        // reads exactly as --allow-paid. The file only ever opens the
+        // gate; the flag cannot close it, and the default stays free-only.
+        let mut allow_paid = args.allow_paid;
+        if !allow_paid
+            && let Some((true, path)) = core::config_flag("send", "allow_paid").map_err(quit)?
+        {
+            say(&format!("allow_paid from {}", path.display()));
+            allow_paid = true;
+        }
+        let (entries, info) = load_manifest(manifest, allow_paid, args.provider.as_ref())?;
         status.insert(
             "manifest".into(),
             json!({"path": info.path, "sha256": info.sha256}),
@@ -2885,6 +2896,58 @@ mod tests {
         let mut out = Vec::new();
         let result = run(&args, &mut status, &mut input, &mut out);
         (result, status, String::from_utf8_lossy(&out).into_owned())
+    }
+
+    #[test]
+    fn allow_paid_in_the_config_file_opens_the_cost_gate_like_the_flag() {
+        let dir = scratch("config-allow-paid");
+        let logs = dir.join("logs").to_string_lossy().into_owned();
+        let manifest = write_manifest(
+            &dir,
+            "m.json",
+            &json!({"manifest_version": 0, "recommendations": [
+                {"venue": "openrouter", "model": "or/paid", "cost": "paid"}]}),
+        );
+        let cfg = dir.join("oxbox");
+        fs::create_dir_all(&cfg).unwrap();
+        let dir_text = dir.to_string_lossy().into_owned();
+        with_env(
+            &[
+                ("XDG_CONFIG_HOME", Some(&dir_text)),
+                ("APPDATA", Some(&dir_text)),
+                ("OPENROUTER_API_KEY", Some("k")),
+            ],
+            || {
+                let argv = [
+                    "--dry-run",
+                    "--manifest",
+                    &manifest,
+                    "--log-dir",
+                    &logs,
+                    "hi",
+                ];
+                // No file: free-only, and the paid entry is skipped.
+                let (result, status, _) = run_with(&argv, "");
+                let error = message(result.unwrap_err());
+                assert!(error.contains("cost=paid"), "{error}");
+                assert_eq!(status["model"], Value::Null);
+                // The file opens the gate exactly as the flag does.
+                fs::write(cfg.join(core::CONFIG_FILE), "[send]\nallow_paid = yes\n").unwrap();
+                let (result, status, _) = run_with(&argv, "");
+                assert_eq!(result, Ok(()));
+                assert_eq!(status["model"], json!("or/paid"));
+                // false is the default spelled out.
+                fs::write(cfg.join(core::CONFIG_FILE), "[send]\nallow_paid = false\n").unwrap();
+                let (result, _, _) = run_with(&argv, "");
+                assert!(message(result.unwrap_err()).contains("cost=paid"));
+                // A value that is neither is an error, not a closed gate.
+                fs::write(cfg.join(core::CONFIG_FILE), "[send]\nallow_paid = maybe\n").unwrap();
+                let (result, _, _) = run_with(&argv, "");
+                let error = message(result.unwrap_err());
+                assert!(error.contains("must be true or false"), "{error}");
+            },
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

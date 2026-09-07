@@ -164,7 +164,7 @@ uses 3.10+ APIs).
 
 | Tested on | Result |
 |---|---|
-| CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 90/90 (Windows 77/77 + 7 skipped), wiretest 79/79 (Windows 78/78 + 1 skipped), jailtest 9/9 |
+| CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 90/90 (Windows 77/77 + 7 skipped), wiretest 81/81 (Windows 80/80 + 1 skipped), jailtest 9/9 |
 | macOS 26.6.2, seatbelt | jailtest 13/13 |
 | Debian 13 (trixie), bubblewrap 0.12.0, Python 3.13.5 | jailtest 14/14 |
 | WSL2 Ubuntu 24.04.2, bubblewrap 0.9.0, Python 3.12.3 | jailtest 10/10 |
@@ -343,6 +343,7 @@ root = ~/oxbox-sandboxes
 
 [send]
 manifest = https://oxbox.ai/manifests/latest.json
+allow_paid = false
 ```
 
 **Only `oxbox` is on `PATH`.** A package installs the four scripts into a
@@ -450,9 +451,14 @@ stands in for `--manifest` when nothing on the command line names a
 destination — a typed `--model`, `--venue` or `--base-url` is a choice the
 config file does not overrule — and the run announces on stderr where the
 manifest came from. The ox-review skill's preflight reads the same key.
+`allow_paid = true` beside it opens the cost gate once, exactly as passing
+`--allow-paid` on every call would, for someone who has decided paid entries
+are fine; the run says `allow_paid from <file>` when the file is what opened
+it. The file only opens the gate, the default stays free-only, and a value
+that is neither true nor false is an error rather than a closed gate.
 
 `oxbox send` takes the first *permitted* entry: cost confirmed `free` unless you pass
-`--allow-paid` (an entry of unknown cost counts as paid), a venue this `oxbox send`
+`--allow-paid` or set it in the config file (an entry of unknown cost counts as paid), a venue this `oxbox send`
 knows, and that venue's key variable actually set. Skipped entries are
 announced with their reasons, and the run's status record lists every one.
 

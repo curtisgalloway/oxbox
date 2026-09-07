@@ -132,24 +132,36 @@ fn parse(args: &[String], root: &core::SandboxRoot) -> Result<Request, Fail> {
     let mut allow_external = false;
     let mut rest = args;
     while let Some(head) = rest.first() {
-        match head.as_str() {
+        // `--work=DIR` and `--sandbox=NAME` as well as the two-word forms,
+        // so the four tools take flags the same way.
+        let (flag, inline) = match head.split_once('=') {
+            Some((flag, value)) if matches!(flag, "--work" | "--sandbox") => (flag, Some(value)),
+            _ => (head.as_str(), None),
+        };
+        // The flag's value and how many words it took.
+        let take = |missing: &str| -> Result<(String, usize), Fail> {
+            match inline {
+                Some(value) => Ok((value.to_string(), 1)),
+                None => rest
+                    .get(1)
+                    .map(|value| (value.clone(), 2))
+                    .ok_or_else(|| Fail::diag(2, missing)),
+            }
+        };
+        match flag {
             "--help" | "-h" => return Ok(Request::Help),
             "--version" => return Ok(Request::Version),
             "--skill" => return Ok(Request::Skill),
             "--work" => {
-                let Some(dir) = rest.get(1) else {
-                    return Err(Fail::diag(2, "--work needs a directory"));
-                };
+                let (dir, taken) = take("--work needs a directory")?;
                 work = PathBuf::from(dir);
-                rest = &rest[2..];
+                rest = &rest[taken..];
             }
             "--sandbox" => {
-                let Some(name) = rest.get(1) else {
-                    return Err(Fail::diag(2, "--sandbox needs a name"));
-                };
-                let name = core::sandbox_name(name).map_err(|message| Fail::diag(2, &message))?;
+                let (name, taken) = take("--sandbox needs a name")?;
+                let name = core::sandbox_name(&name).map_err(|message| Fail::diag(2, &message))?;
                 work = root.path.join(name);
-                rest = &rest[2..];
+                rest = &rest[taken..];
             }
             "--allow-external-output" => {
                 allow_external = true;
@@ -772,6 +784,17 @@ mod tests {
                 command: args(&["true"]),
             })
         );
+        assert_eq!(
+            parse(
+                &args(&["--sandbox=alt", "--work=/elsewhere", "--", "true"]),
+                &root
+            ),
+            Ok(Request::Launch {
+                work: PathBuf::from("/elsewhere"),
+                allow_external: false,
+                command: args(&["true"]),
+            })
+        );
         // Flags after -- belong to the command.
         assert_eq!(
             parse(&args(&["--", "--help"]), &root),
@@ -784,6 +807,7 @@ mod tests {
         for (bad, needle) in [
             (vec!["--work"], "--work needs a directory"),
             (vec!["--sandbox"], "--sandbox needs a name"),
+            (vec!["--sandbox=", "--", "true"], "not a sandbox name"),
             (
                 vec!["--sandbox", "../x", "--", "true"],
                 "not a sandbox name",

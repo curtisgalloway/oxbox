@@ -771,17 +771,33 @@ fn parse(args: &[String]) -> Result<Parsed, Fail> {
     let mut index = 0;
     while index < args.len() {
         let arg = args[index].as_str();
-        match arg {
+        // `--sandbox=NAME` as well as `--sandbox NAME`, as argparse takes it.
+        let (flag, inline) = match arg.split_once('=') {
+            Some((flag, value)) if flag.starts_with("--") => (flag, Some(value)),
+            _ => (arg, None),
+        };
+        match flag {
             "--help" | "-h" => return Ok(Parsed::Help),
             "--version" => return Ok(Parsed::Version),
             "--skill" => return Ok(Parsed::Skill),
             "--sandbox" => {
+                if let Some(value) = inline {
+                    name = value.to_string();
+                    index += 1;
+                    continue;
+                }
                 let Some(value) = args.get(index + 1) else {
                     return Err(Fail::usage("argument --sandbox: expected one argument"));
                 };
                 name = value.clone();
                 index += 2;
                 continue;
+            }
+            _ if inline.is_some() && flag.starts_with("--") => {
+                return Err(Fail::usage(&format!(
+                    "argument {flag}: ignored explicit argument '{}'",
+                    inline.unwrap_or_default()
+                )));
             }
             "--all" => all = true,
             _ if arg.starts_with("--") => {
@@ -987,6 +1003,15 @@ mod tests {
         );
         // Repeating the same operation is fine; two different ones are not.
         assert!(parse(&args(&["--list", "--list"])).is_ok());
+        assert_eq!(
+            parse(&args(&["--sandbox=alt", "--list"])),
+            Ok(Parsed::Run {
+                name: "alt".into(),
+                all: false,
+                op: "list",
+                paths: vec![],
+            })
+        );
         for (bad, needle) in [
             (
                 vec!["--list", "--destroy"],
@@ -995,6 +1020,10 @@ mod tests {
             (vec![], "one of the arguments"),
             (vec!["a.py"], "one of the arguments"),
             (vec!["--sandbox"], "expected one argument"),
+            (
+                vec!["--list=x"],
+                "argument --list: ignored explicit argument 'x'",
+            ),
             (vec!["--frobnicate"], "unrecognized arguments: --frobnicate"),
         ] {
             let fail = parse(&args(&bad)).unwrap_err();

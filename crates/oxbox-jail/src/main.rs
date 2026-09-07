@@ -787,6 +787,20 @@ mod tests {
 
     #[test]
     fn the_profile_is_found_from_a_build_tree() {
+        // Under `cargo test` the binary sits three levels below the checkout,
+        // within the lookup's walk; a coverage build nests it one deeper.
+        let checkout = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .unwrap();
+        if !core::exe_dir()
+            .ancestors()
+            .take(4)
+            .any(|dir| dir == checkout)
+        {
+            eprintln!("skipped: the build tree is deeper than the lookup walks");
+            return;
+        }
         let profile = find_profile().unwrap();
         assert!(
             profile.ends_with(Path::new("profiles").join("jail.sb")),
@@ -1005,7 +1019,10 @@ mod tests {
         let ok_allowed = plan(&root, &work, true, &args(&["true"]), &[("stdout", outside)]);
         // Both need a backend on this host; when there is none the refusal
         // is about the backend, not the descriptor, and the case is moot.
-        let backend_here = cfg!(target_os = "macos") || core::which("bwrap").is_some();
+        // On macOS the backend needs the profile too, which a build tree
+        // deeper than the lookup walks (a coverage build) cannot supply.
+        let backend_here = (cfg!(target_os = "macos") && find_profile().is_ok())
+            || (!cfg!(target_os = "macos") && core::which("bwrap").is_some());
         if backend_here {
             let planned = ok_inside.unwrap();
             assert!(planned.warnings.is_empty());
@@ -1027,7 +1044,8 @@ mod tests {
             assert!(planned.argv.ends_with(&args(&["true"])));
             assert!(["seatbelt", "bubblewrap"].contains(&planned.backend));
         } else {
-            assert!(ok_inside.unwrap_err().text.contains("bwrap"));
+            let text = ok_inside.unwrap_err().text;
+            assert!(text.contains("bwrap") || text.contains("jail.sb"), "{text}");
         }
         fs::remove_dir_all(&dir).unwrap();
     }

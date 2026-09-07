@@ -210,8 +210,10 @@ def describe_manifest(source):
     return record
 
 
-SKIP_LINE = re.compile(r"^ox: manifest\[(\d+)/\d+\] (\S+) skipped: (.+)$")
-PICK_LINE = re.compile(r"^ox: venue=(\S+) model=(\S+) mode=")
+# oxbox-send 0.7.0 prefixes its stderr lines "oxbox-send:"; earlier builds
+# said "ox:". Accept both so a preflight against either build parses.
+SKIP_LINE = re.compile(r"^(?:ox|oxbox-send): manifest\[(\d+)/\d+\] (\S+) skipped: (.+)$")
+PICK_LINE = re.compile(r"^(?:ox|oxbox-send): venue=(\S+) model=(\S+) mode=")
 
 
 def ask_ox_where(ox_command, manifest, allow_paid):

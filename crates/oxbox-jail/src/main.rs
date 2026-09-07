@@ -546,7 +546,13 @@ fn plan(
         }
     }
 
-    let real_home = core::home_dir();
+    let Some(real_home) = core::home_dir() else {
+        return Err(Fail::diag(
+            1,
+            "cannot determine the home directory (HOME is unset and the account \
+             database has none); the jail needs to know it to hide it",
+        ));
+    };
     let project_root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let tmpdir = work.join(".oxtmp");
     std::fs::create_dir_all(&tmpdir)

@@ -6,8 +6,10 @@
 # means the pins go stale instead, so Dependabot owns keeping them current and
 # each bump arrives as a reviewable PR with the version in the comment updated.
 #
-# No Python ecosystem entry: this project deliberately has no third-party
-# Python dependencies, so there is nothing there to update.
+# No Python ecosystem entry: the Python scripts deliberately have no
+# third-party dependencies, so there is nothing there to update. The Rust
+# workspace does carry dependencies, all under oxbox-send (the TLS stack,
+# JSON, the scanner's regex crate), so Cargo.lock gets the same treatment.
 
 version: 2
 updates:
@@ -17,5 +19,13 @@ updates:
       interval: weekly
     commit-message:
       prefix: ci
+    labels:
+      - dependencies
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: cargo
     labels:
       - dependencies

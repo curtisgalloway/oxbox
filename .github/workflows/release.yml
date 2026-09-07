@@ -556,8 +556,8 @@ jobs:
             ```
 
             There is no jail on native Windows and `oxbox` refuses rather
-            than pretending to sandbox anything, so `ox`, `oxseed` and
-            `oxapply` are fully usable and *running* model output means WSL2,
+            than pretending to sandbox anything, so `oxbox send`, `oxbox sandbox`
+            and `oxbox patch` are fully usable and *running* model output means WSL2,
             where the Linux backend works unchanged.
 
             **Debian/Ubuntu** — `oxbox_${{ needs.version.outputs.version }}_all.deb` below.

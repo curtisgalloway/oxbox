@@ -343,6 +343,9 @@ fn build_context(paths: &[String], force: bool, task: &str) -> Result<Context, E
         }
         let bytes = fs::read(path).map_err(|error| quit(format!("cannot read {raw}: {error}")))?;
         let body = String::from_utf8(bytes).map_err(|_| quit(format!("not a text file: {raw}")))?;
+        // Text mode, as the reference reads it: a CRLF checkout sends the
+        // same bytes and counts the same size as an LF one.
+        let body = core::normalize_newlines(&body);
         total += body.len();
         findings.extend(scan_for_secrets(&body, raw));
         let suffix = path
@@ -1293,7 +1296,7 @@ fn run(
         input
             .read_to_string(&mut text)
             .map_err(|error| quit(format!("cannot read stdin: {error}")))?;
-        text
+        core::normalize_newlines(&text)
     } else {
         args.task.clone().unwrap_or_default()
     };
@@ -1966,11 +1969,23 @@ mod tests {
         }
         assert_ne!(system_prompt("diff"), system_prompt("review"));
         assert_ne!(system_prompt("ask"), system_prompt("review"));
-        for venue in &VENUES {
-            assert!(venue_url(venue).starts_with("https://"), "{}", venue.name);
-        }
-        assert!(https_required());
-        assert_eq!(manifest_max_bytes(), MANIFEST_MAX_BYTES);
+        // The override knobs are read from the environment under the
+        // test-overrides feature, and the loopback tests set them on other
+        // threads, so this holds the lock and clears them first.
+        with_env(
+            &[
+                ("OXBOX_TEST_ALLOW_HTTP", None),
+                ("OXBOX_TEST_VENUE_URLS", None),
+                ("OXBOX_TEST_MANIFEST_MAX_BYTES", None),
+            ],
+            || {
+                for venue in &VENUES {
+                    assert!(venue_url(venue).starts_with("https://"), "{}", venue.name);
+                }
+                assert!(https_required());
+                assert_eq!(manifest_max_bytes(), MANIFEST_MAX_BYTES);
+            },
+        );
     }
 
     #[test]
@@ -2163,6 +2178,12 @@ mod tests {
         let r = dir.join("README").to_string_lossy().into_owned();
         let context = build_context(&[a.clone(), r.clone()], false, "task").unwrap();
         assert_eq!(context.total_bytes, 12);
+        // CRLF on disk is LF on the wire, and counts as LF.
+        fs::write(dir.join("win.py"), "x = 1\r\ny = 2\r\n").unwrap();
+        let w = dir.join("win.py").to_string_lossy().into_owned();
+        let windows = build_context(std::slice::from_ref(&w), false, "task").unwrap();
+        assert_eq!(windows.total_bytes, 12);
+        assert!(!windows.text.contains('\r'), "{}", windows.text);
         assert!(context.findings.is_empty());
         assert!(
             context

@@ -194,8 +194,7 @@ impl Sandbox {
         if core::has_parent_traversal(rel) {
             return Err(Fail::refuse(&format!("REFUSING parent traversal: {rel}")));
         }
-        let first = rel.replace('\\', "/");
-        if first.split('/').next() == Some(".git") {
+        if names_git_dir(rel) {
             return Err(Fail::refuse(&format!("REFUSING a path inside .git: {rel}")));
         }
         let full = self.work.join(rel);
@@ -226,6 +225,16 @@ impl Sandbox {
                 resolved.display()
             )));
         }
+        // The textual check read the argument; this one reads where the
+        // argument lands, so a symlink into .git is caught as well.
+        let lands_in_git = resolved
+            .strip_prefix(&root)
+            .ok()
+            .and_then(|rest| rest.components().next())
+            .is_some_and(|first| first.as_os_str().eq_ignore_ascii_case(".git"));
+        if lands_in_git {
+            return Err(Fail::refuse(&format!("REFUSING a path inside .git: {rel}")));
+        }
         Ok(full)
     }
 
@@ -250,6 +259,17 @@ impl Sandbox {
     }
 }
 
+/// Whether a relative path's first real component is `.git`, in any letter
+/// case and behind any number of `./`. The git directory is the baseline's
+/// bookkeeping, not a sandbox file, and a hook written there would run on
+/// the host, outside the jail, at the next commit this tool makes.
+fn names_git_dir(rel: &str) -> bool {
+    rel.replace('\\', "/")
+        .split('/')
+        .find(|part| !part.is_empty() && *part != ".")
+        .is_some_and(|first| first.eq_ignore_ascii_case(".git"))
+}
+
 /// POSIX root, Windows root, UNC, drive letter, or home expansion. Textual,
 /// because `Path::is_absolute` on Windows says `/etc/hosts` has a root but no
 /// drive and reports false.
@@ -261,13 +281,15 @@ fn is_rooted(rel: &str) -> bool {
         || (rel.len() > 1 && rel.as_bytes()[1] == b':')
 }
 
-/// `shutil.rmtree`, but able to remove git's read-only object files.
+/// `shutil.rmtree`, but able to remove git's read-only object files and a
+/// directory jailed code left read-only.
 ///
 /// Git marks objects in .git/objects read-only. On Windows that makes the
 /// unlink fail with "Access is denied", so re-seeding an existing sandbox
-/// blows up half-deleted. POSIX does not care -- permission to unlink comes
-/// from the directory there -- which is why this only ever shows up on
-/// Windows.
+/// blows up half-deleted. On POSIX permission to unlink comes from the
+/// directory, so what stops removal there is a directory made unwritable
+/// inside the tree. Either way the fallback grants owner-write to the tree's
+/// own entries and tries again.
 fn rmtree_force(path: &Path) -> Result<(), Fail> {
     if fs::remove_dir_all(path).is_ok() {
         return Ok(());
@@ -277,21 +299,63 @@ fn rmtree_force(path: &Path) -> Result<(), Fail> {
         .map_err(|error| Fail::diag(1, &format!("cannot remove {}: {error}", path.display())))
 }
 
+/// Owner-write on every entry of a tree, without ever going through a
+/// symlink. Jailed code can plant a link aimed at any file the operator
+/// owns, and `chmod` follows links, so a fallback that chmods whatever it
+/// finds would rewrite that file's mode on the operator's next `--destroy`.
+/// Links are skipped, and on Unix the mode is set through a descriptor
+/// opened with O_NOFOLLOW so a link swapped in after the check cannot be
+/// followed either.
 fn make_writable(path: &Path) {
-    if let Ok(meta) = fs::symlink_metadata(path) {
-        let mut permissions = meta.permissions();
-        #[allow(clippy::permissions_set_readonly_false)]
-        permissions.set_readonly(false);
-        let _ = fs::set_permissions(path, permissions);
-        if meta.is_dir()
-            && !meta.file_type().is_symlink()
-            && let Ok(entries) = fs::read_dir(path)
-        {
-            for entry in entries.filter_map(Result::ok) {
-                make_writable(&entry.path());
-            }
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return;
+    };
+    if meta.file_type().is_symlink() {
+        return;
+    }
+    add_owner_write(path, &meta);
+    if meta.is_dir()
+        && let Ok(entries) = fs::read_dir(path)
+    {
+        for entry in entries.filter_map(Result::ok) {
+            make_writable(&entry.path());
         }
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn add_owner_write(path: &Path, meta: &fs::Metadata) {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    #[cfg(target_os = "macos")]
+    const O_NOFOLLOW: i32 = 0x0100;
+    #[cfg(target_os = "linux")]
+    const O_NOFOLLOW: i32 = 0o400000;
+    // A directory opens read-only like a file does; fchmod works on either.
+    let Ok(file) = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW)
+        .open(path)
+    else {
+        return;
+    };
+    let mode = meta.permissions().mode() | 0o200;
+    let _ = file.set_permissions(fs::Permissions::from_mode(mode));
+}
+
+#[cfg(windows)]
+fn add_owner_write(path: &Path, meta: &fs::Metadata) {
+    // Windows symlinks were skipped by the caller; the read-only attribute
+    // is the only thing in the way here.
+    let mut permissions = meta.permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    let _ = fs::set_permissions(path, permissions);
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+fn add_owner_write(_path: &Path, _meta: &fs::Metadata) {
+    // No O_NOFOLLOW constant known for this platform: leave the tree as it
+    // is and let the second remove_dir_all report the failure.
 }
 
 /// Reject anything that would land outside the sandbox.
@@ -1176,6 +1240,9 @@ mod tests {
             ("read", "../src/c.py", 78, "parent traversal"),
             ("read", "/etc/passwd", 78, "absolute path"),
             ("write", ".git/config", 78, "inside .git"),
+            ("write", "./.git/hooks/pre-commit", 78, "inside .git"),
+            ("write", ".GIT/hooks/pre-commit", 78, "inside .git"),
+            ("read", "pkg/./../.git/config", 78, "parent traversal"),
             ("remove", "~/x", 78, "absolute path"),
             ("read", "nope.py", 3, "no such file"),
             ("remove", "nope.py", 3, "no such file"),
@@ -1293,6 +1360,62 @@ mod tests {
             fail.text
         );
         assert!(!outside.join("pwned.txt").exists());
+        // A link into the git directory is refused by where it lands.
+        symlink(sandbox.work.join(".git"), sandbox.work.join("gitlink")).unwrap();
+        let (result, _) = run_op(
+            &sandbox,
+            "write",
+            false,
+            &["gitlink/hooks/pre-commit"],
+            b"x",
+        );
+        let fail = result.unwrap_err();
+        assert_eq!(fail.code, 78);
+        assert!(fail.text.contains("inside .git"), "{}", fail.text);
+        assert!(
+            !sandbox
+                .work
+                .join(".git")
+                .join("hooks")
+                .join("pre-commit")
+                .exists()
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_never_chmods_through_a_planted_symlink() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = scratch("chmod");
+        let src = source_at(&dir);
+        let sandbox = sandbox_at(&dir, "work");
+        run_op(
+            &sandbox,
+            "create",
+            false,
+            &[src.to_str().unwrap(), "a.py"],
+            b"",
+        )
+        .0
+        .unwrap();
+        let victim = dir.join("victim.txt");
+        fs::write(&victim, b"outside\n").unwrap();
+        fs::set_permissions(&victim, fs::Permissions::from_mode(0o644)).unwrap();
+        // What jailed code can leave behind: a read-only directory that
+        // makes the first removal fail, and links aimed outside.
+        let locked = sandbox.work.join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::write(locked.join("f"), b"x").unwrap();
+        symlink(&victim, locked.join("link")).unwrap();
+        symlink(&victim, sandbox.work.join("link")).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+        assert_eq!(run_op(&sandbox, "destroy", false, &[], b"").0, Ok(0));
+        assert!(!sandbox.work.exists(), "the tree is gone");
+        let mode = fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "the file outside kept its mode");
+        assert!(!names_git_dir("pkg/b.py") && names_git_dir(".git") && names_git_dir("./.GIT/x"));
+        assert!(names_git_dir(".\\.git\\config") && !names_git_dir(".gitignore"));
         fs::remove_dir_all(&dir).unwrap();
     }
 

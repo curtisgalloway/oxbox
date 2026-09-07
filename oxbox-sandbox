@@ -166,14 +166,16 @@ def rmtree_force(path):
         # any file the operator owns, and chmod follows links. A real entry
         # gets owner-write on itself and on its directory (POSIX grants
         # unlink from the directory), then the failed step is retried.
-        if not os.path.islink(target):
-            for candidate in (os.path.dirname(target), target):
-                if os.path.islink(candidate):
-                    continue
-                try:
-                    os.chmod(candidate, os.lstat(candidate).st_mode | stat.S_IWUSR)
-                except OSError:
-                    pass
+        # The directory is chmodded even when the failing entry is itself a
+        # link (a link cannot be unlinked from a read-only directory either,
+        # and ext4 may list it first); the link is never chmodded.
+        for candidate in (os.path.dirname(target), target):
+            if os.path.islink(candidate):
+                continue
+            try:
+                os.chmod(candidate, os.lstat(candidate).st_mode | stat.S_IWUSR)
+            except OSError:
+                pass
         func(target)
 
     if sys.version_info >= (3, 12):

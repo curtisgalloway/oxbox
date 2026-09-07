@@ -85,7 +85,7 @@ jobs:
             exit 1
           fi
           for tool in oxbox oxbox-sandbox oxbox-send oxbox-patch oxbox-jail; do
-            reported="$(python3 "$tool" --version)"
+            reported="$(python3 "python/$tool" --version)"
             if [ "$reported" != "$tool ${VERSION}" ]; then
               echo "::error::tag says ${VERSION} but the reference script says '${reported}'"
               exit 1

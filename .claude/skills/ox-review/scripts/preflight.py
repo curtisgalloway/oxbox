@@ -141,9 +141,12 @@ def find_ox(explicit):
     if front_door:
         command, path = as_command(front_door)
         return command + ["send"], path + " send"
+    # A checkout keeps the reference scripts under python/; a bare
+    # oxbox-send beside the base is an unpacked libexec directory.
     for base in (Path.cwd(), Path(os.environ.get("OXBOX_HOME") or Path.cwd())):
-        if (base / "oxbox-send").exists():
-            return as_command(base / "oxbox-send")
+        for candidate in (base / "oxbox-send", base / "python" / "oxbox-send"):
+            if candidate.exists():
+                return as_command(candidate)
     return None, None
 
 

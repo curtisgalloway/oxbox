@@ -60,8 +60,9 @@ entirely. The README carries the dedicated-distro setup; keep the two in step.
 `oxbox` is the one command; each step is a subcommand that execs the script
 of the same name (`oxbox sandbox` → `oxbox-sandbox`, `oxbox send` →
 `oxbox-send`, `oxbox patch` → `oxbox-patch`, `oxbox jail` → `oxbox-jail`),
-and the bare `oxbox -- cmd` is still the jail. From a checkout, `./oxbox` in
-place of `oxbox`.
+and the bare `oxbox -- cmd` is still the jail. From a checkout,
+`target/release/oxbox` (after `cargo build --release`) or `python3
+python/oxbox` (the reference scripts) in place of `oxbox`.
 
 ```bash
 oxbox sandbox --create /path/to/repo file1.py file2.py   # disposable copy + pristine commit
@@ -153,7 +154,9 @@ executed inside it.
 - Re-run ALL THREE suites after any change to `profiles/jail.sb`, `oxbox`, `oxbox-send`,
   or the validators: `python3 guardtest.py` (pre-jail refusals plus positive
   controls), `python3 wiretest.py` (what the request actually carries, against a
-  local listener), and `./oxbox jail -- python3 jailtest.py` (in-jail probes). A jail
+  local listener), and `python3 python/oxbox jail -- python3 jailtest.py` (in-jail
+  probes; `OXBOX_UNDER_TEST=$PWD/target/debug` and `target/debug/oxbox jail`
+  for the binaries). A jail
   you have not tested since editing is decoration.
 - **A wire test must drive `oxbox-send`, never rebuild its logic.** The first version of
   the redirect check constructed an opener with `NoRedirects` itself, so it passed
@@ -206,7 +209,7 @@ executed inside it.
   and a work dir owned by a uid that namespace does not map appears as `nobody`
   (65534) — so not even root inside can write it, and `fs write: inside work
   dir` fails for a reason that has nothing to do with containment. Seeding the
-  sandbox as yourself and then running `sudo ./oxbox` is exactly how to produce
+  sandbox as yourself and then running `sudo oxbox` is exactly how to produce
   that confusing result; don't mix the two.
 - The secret scanner covers `--files` bodies, the task argument, and `--stdin`.
   Anything new that reaches the payload must be scanned too — the scan lives in
@@ -216,7 +219,7 @@ executed inside it.
 ## The Rust port
 
 - **Two implementations, one contract.** From 1.0.0 the Rust workspace in
-  `crates/` is what every package ships; the Python scripts at the root are
+  `crates/` is what every package ships; the Python scripts under `python/` are
   the reference implementation the binaries are held to. A behavior change
   lands in both, in the same commit, or it is not done. The contract is what the suites pin and
   what the survey reads (`status.json`, the log directory's JSON files,
@@ -283,10 +286,11 @@ executed inside it.
   `<root>/NAME`, `work` by default. The config file is INI via `configparser`
   because the floor is Python 3.9 and `tomllib` arrived in 3.11. Two
   assets are script-relative, and both use the same two-location pattern:
-  the seatbelt profile (`profiles/jail.sb` beside the script, or
-  `../share/oxbox/jail.sb` in an installed prefix — `find_profile` in
-  `oxbox`) and the ox-review skill (`.claude/skills/ox-review` beside the
-  script, or `share/oxbox/ox-review` one, two or three levels up —
+  the seatbelt profile (`profiles/jail.sb` one level above the script in a
+  checkout, or `../share/oxbox/jail.sb` in an installed prefix —
+  `find_profile` in `oxbox-jail`) and the ox-review skill
+  (`.claude/skills/ox-review` one level above the script in a checkout, or
+  `share/oxbox/ox-review` one, two or three levels up —
   `find_skill`, carried by all five tools, because the scripts sit in
   `libexec/bin` or `libexec/oxbox/bin` below the prefix). A third asset is
   the scripts themselves, which `oxbox` resolves from its own location

@@ -140,7 +140,7 @@ $ python3 guardtest.py
 [PASS] oxbox-patch refuses traversal in rename headers
 [PASS] `oxbox send` refuses a key in the task argument
 ...
-guards hold: 88/88 passed, 0 skipped   (77/77 + 5 skipped on Windows)
+guards hold: 90/90 passed, 0 skipped   (77/77 + 7 skipped on Windows)
 ```
 
 Every case in it is a regression test for a defect that was actually found and
@@ -164,7 +164,7 @@ uses 3.10+ APIs).
 
 | Tested on | Result |
 |---|---|
-| CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 88/88 (Windows 77/77 + 5 skipped), wiretest 69/69 (Windows 68/68 + 1 skipped), jailtest 9/9 |
+| CI, every push — macOS, Ubuntu, Windows, 3.9 floor | guardtest 90/90 (Windows 77/77 + 7 skipped), wiretest 69/69 (Windows 68/68 + 1 skipped), jailtest 9/9 |
 | macOS 26.6.2, seatbelt | jailtest 13/13 |
 | Debian 13 (trixie), bubblewrap 0.12.0, Python 3.13.5 | jailtest 14/14 |
 | WSL2 Ubuntu 24.04.2, bubblewrap 0.9.0, Python 3.12.3 | jailtest 10/10 |
@@ -185,7 +185,7 @@ four were green at `036a99b` on 2026-09-05, on every suite the platform can run
 test. Three machines between them: macOS locally, Windows and its WSL2 distro on
 one box, Debian on another.
 
-Four guardtest cases and one wiretest case need POSIX file permissions or
+Six guardtest cases and one wiretest case need POSIX file permissions or
 symlinks to provoke the failure they check, so they skip on Windows and say why. A skip is
 not a smaller suite; it is a case that would otherwise pass vacuously.
 

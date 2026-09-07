@@ -146,6 +146,17 @@ executed inside it.
   longer says what it said. wiretest covers all four properties; the
   ox-review scripts mirror the fetch rules for their listing and leave the
   destination to ox.
+- **A provider pin is honored or refused, never dropped.** `--provider` and
+  a manifest entry's `provider` are OpenRouter's routing object, passed
+  through verbatim so a run reaches the endpoint the survey measured. The
+  venue table says which venue honors one (`provider_routing`); on any
+  other venue, or with `--base-url`, a pinned request is refused (a
+  manifest entry is skipped with the reason) rather than sent with the
+  pin silently dropped, because an unpinned request that the caller
+  believes is pinned is worse than no request. `MANIFEST_VERSION` went to
+  1 with the field so an older ox refuses a pinned manifest instead of
+  ignoring the pin. wiretest covers the pass-through, the precedence, and
+  every refusal.
 - **Failover is opt-in and belongs to `--manifest` only.** The default is
   probe mode: one request, one destination, because a survey measurement
   that silently switched targets would be corrupt data. `--failover` is one
@@ -223,11 +234,14 @@ executed inside it.
   the reference implementation the binaries are held to. A behavior change
   lands in both, in the same commit, or it is not done. The contract is what the suites pin and
   what the survey reads (`status.json`, the log directory's JSON files,
-  exit codes): guardtest and wiretest take `OXBOX_UNDER_TEST=<dir of
+  exit codes — the survey's
+  [log contract](https://github.com/curtisgalloway/oxbox-survey/blob/main/docs/log-contract.md)
+  names the fields whose removal breaks one of its tools): guardtest and
+  wiretest take `OXBOX_UNDER_TEST=<dir of
   binaries>` and drive those instead of the scripts, and jailtest runs
   inside whichever jail launched it. CI verifies on macOS, Ubuntu and
-  Windows on every push (guards 90/90, wire 69/69; Windows 77/77 + 7
-  skipped, 68/68 + 1 skipped, jail refuses 78).
+  Windows on every push (guards 90/90, wire 77/77; Windows 77/77 + 7
+  skipped, 76/76 + 1 skipped, jail refuses 78).
 - **Byte-for-byte agreement is not the goal.** Where the two differ and the
   suites do not pin it, the right behavior wins and both implementations
   move to it; do not port a Python bug for parity's sake. Differences

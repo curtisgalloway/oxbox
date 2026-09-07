@@ -4,27 +4,34 @@
 # Build the release packages and attach them to a GitHub Release when a v*
 # tag is pushed, then ask the Homebrew tap to re-pin its formula.
 # workflow_dispatch builds the packages as workflow artifacts only (no
-# Release, no tap bump), for testing the pipeline.
+# Release, no tap bump), for rehearsing the pipeline.
 #
-# Three packages, one per platform: the Linux .deb, the macOS tarball, and the
-# Windows MSI. All three are pure Python and arch-independent, so each is one
-# build on the stock runner with no container and no cross-compilation.
+# From 1.0.0 the tools are the Rust binaries under crates/, so every package
+# is built from a `cargo build --release` on the platform it is for:
 #
-# The Windows MSI is Authenticode-signed by Azure Artifact Signing when the
-# repo is configured for it, and ships unsigned when it is not -- every
-# signing step is gated on vars.AZURE_SIGNING_ACCOUNT. The account is shared
-# across projects; onboarding this one is configuration, not a purchase, and
-# the runbook is in ~/src/iac/mac-common/code-signing/README.md.
+#   Linux    a .deb and a prefix tarball per architecture (amd64, arm64),
+#            built inside a debian:bookworm container so the binaries link
+#            against a glibc every supported Debian and Ubuntu carries, then
+#            installed and smoke-tested on a plain runner where bubblewrap
+#            can actually jail something;
+#   macOS    one universal (arm64 + x86_64) prefix tarball, lipo'd from two
+#            target builds;
+#   Windows  an x64 per-user MSI, Authenticode-signed by Azure Artifact
+#            Signing when the repo is configured for it and shipped unsigned
+#            when it is not -- every signing step is gated on
+#            vars.AZURE_SIGNING_ACCOUNT. The account is shared across
+#            projects; onboarding this one is configuration, not a purchase,
+#            and the runbook is in ~/src/iac/mac-common/code-signing/README.md.
 #
-# Homebrew is the maintained macOS channel and is not built here -- the tap
-# installs from the tag's source tarball, which is why the last job only has
-# to tell it that a new tag exists. The macOS tarball ships the same prefix
-# layout the formula installs, for people who do not use brew.
+# Homebrew is the maintained channel on macOS and Linux and pours the same
+# tarballs this workflow builds, which is why the last job only has to tell
+# the tap that a new tag exists: its formula re-pins to the tarballs' sha256
+# sidecars.
 #
 # The smoke tests are the part that earns trust -- each one installs its
 # package for real and runs the full in-jail probe suite against the INSTALLED
 # tools from a scratch directory, which exercises exactly what a package must
-# get right: executables on PATH, working-directory anchoring, script-relative
+# get right: executables on PATH, working-directory anchoring, exe-relative
 # assets found under the prefix, and a jail that holds.
 
 name: Release package
@@ -41,9 +48,8 @@ env:
   NFPM_VERSION: 2.46.3
 
 jobs:
-  # One place decides what version is being built, so the two package jobs
-  # cannot disagree about it, and the tag check runs once rather than per
-  # platform.
+  # One place decides what version is being built, so the package jobs cannot
+  # disagree about it, and the tag check runs once rather than per platform.
   version:
     name: resolve version
     runs-on: ubuntu-latest
@@ -64,49 +70,123 @@ jobs:
             echo "version=0.0.0~dev.$(printf '%.7s' "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
           fi
 
-      # A tag that disagrees with the tools' own VERSION would ship a package
-      # whose --version lies about what it is. Refuse before building.
-      - name: Check the tag matches the tools' VERSION
+      # A tag that disagrees with the workspace version would ship binaries
+      # whose --version lies about what they are; a Python reference script
+      # that disagrees would fail wiretest's five-way check. Refuse before
+      # building anything.
+      - name: Check the tag matches the workspace and the reference scripts
         if: github.ref_type == 'tag'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          reported="$(python3 oxbox-send --version)"
-          if [ "$reported" != "oxbox-send ${VERSION}" ]; then
-            echo "::error::tag says ${VERSION} but the tools say '${reported}'"
+          workspace="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          if [ "$workspace" != "$VERSION" ]; then
+            echo "::error::tag says ${VERSION} but Cargo.toml says '${workspace}'"
             exit 1
           fi
+          for tool in oxbox oxbox-sandbox oxbox-send oxbox-patch oxbox-jail; do
+            reported="$(python3 "$tool" --version)"
+            if [ "$reported" != "$tool ${VERSION}" ]; then
+              echo "::error::tag says ${VERSION} but the reference script says '${reported}'"
+              exit 1
+            fi
+          done
 
-  deb:
-    name: Debian package and smoke test
+  linux-build:
+    name: Linux packages (${{ matrix.arch }})
     needs: version
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    container: debian:bookworm
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      # git must precede checkout so the action does a real clone; the rest
+      # is what a `cargo build` of the workspace needs (a C compiler for
+      # ring, curl and certificates for the toolchain bootstrap).
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential curl ca-certificates git
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The same SHA-pinned toolchain action ci.yml uses. The container has no
+      # rustup; the action bootstraps one itself.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Build the release binaries
+        run: cargo build --locked --release
+
+      - name: Install nfpm
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          curl -fsSL -o /tmp/nfpm.deb \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_${ARCH}.deb"
+          apt-get install -y /tmp/nfpm.deb
+
+      - name: Build the .deb and the tarball
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          BINDIR: target/release
+        run: |
+          mkdir -p dist
+          nfpm package -f packaging/nfpm.yaml -p deb \
+            -t "dist/oxbox_${VERSION}_${ARCH}.deb"
+          packaging/tarball.sh "$VERSION" dist "linux-${ARCH}" target/release
+          # The sidecar the tap's re-pin reads, in sha256sum's own format.
+          cd dist
+          sha256sum "oxbox-${VERSION}-linux-${ARCH}.tar.gz" \
+            > "oxbox-${VERSION}-linux-${ARCH}.tar.gz.sha256"
+          ls -l
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packages-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  linux-smoke:
+    name: Debian install and smoke test (${{ matrix.arch }})
+    needs: [version, linux-build]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Install nfpm
-        run: |
-          curl -fsSL -o /tmp/nfpm.deb \
-            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb"
-          sudo apt-get install -y /tmp/nfpm.deb
-
-      - name: Build .deb
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          mkdir -p dist
-          nfpm package -f packaging/nfpm.yaml -p deb \
-            -t "dist/oxbox_${VERSION}_all.deb"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: packages-linux-${{ matrix.arch }}
+          path: dist
 
       - name: Install the .deb and its dependencies
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y "./dist/oxbox_${VERSION}_all.deb"
+          sudo apt-get install -y "./dist/oxbox_${VERSION}_${ARCH}.deb"
 
       # Same knob ci.yml uses: Ubuntu 24.04's AppArmor patch restricts the
       # unprivileged user namespaces bubblewrap needs.
@@ -116,11 +196,12 @@ jobs:
       - name: Smoke-test the installed tools from a scratch directory
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
         run: |
           test -x /usr/bin/oxbox
           for tool in oxbox-sandbox oxbox-send oxbox-patch oxbox-jail; do
             test -x "/usr/libexec/oxbox/bin/$tool"
-            # The scripts stay off PATH on purpose: oxbox is the one
+            # The helpers stay off PATH on purpose: oxbox is the one
             # command, and a package that put them in bin would be two ways
             # to run everything.
             test ! -e "/usr/bin/$tool"
@@ -131,21 +212,22 @@ jobs:
           mkdir -p "$scratch/srcrepo"
           echo 'print("hi")' > "$scratch/srcrepo/thing.py"
           cd "$scratch"
-          # Against the checkout's own ox, not against ${VERSION}: on a
-          # workflow_dispatch build the package version is 0.0.0~dev.<sha>
-          # while the tools still report their baked-in VERSION, and the
-          # version job has already refused any tag that disagrees with it.
-          # What is being asserted here is that the tool on PATH is this
-          # checkout's tool.
-          expected="$(python3 "$GITHUB_WORKSPACE/oxbox-send" --version)"
+          # Against the checkout's workspace version, not against ${VERSION}:
+          # on a workflow_dispatch build the package version is
+          # 0.0.0~dev.<sha> while the binaries report the version compiled
+          # in, and the version job has already refused any tag that
+          # disagrees with it. What is being asserted here is that the tool
+          # on PATH is this checkout's tool.
+          workspace="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$GITHUB_WORKSPACE/Cargo.toml" | head -1)"
+          expected="oxbox-send ${workspace}"
           # Through the front door and through the escape hatch: both have
-          # to find the script this package shipped in /usr/libexec/oxbox/bin.
+          # to find the helper this package shipped in /usr/libexec/oxbox/bin.
           [ "$(/usr/bin/oxbox send --version)" = "$expected" ]
           [ "$(/usr/bin/oxbox helper send --version)" = "$expected" ]
           /usr/bin/oxbox sandbox --create "$scratch/srcrepo" thing.py
           [ "$(/usr/bin/oxbox sandbox --list)" = "thing.py" ]
           # A dry run needs no key and proves logs land in the working
-          # directory, not somewhere script-relative under /usr. --model is
+          # directory, not somewhere exe-relative under /usr. --model is
           # explicit because no venue carries a default: this asserts where
           # the log lands, not how a model gets chosen, and a bare run is
           # supposed to refuse.
@@ -154,10 +236,10 @@ jobs:
           # --skill reads a packaged file, so it fails exactly when the
           # package forgets to ship one. It must also rewrite the runbook's
           # script paths to where they landed, or the commands it prints
-          # name a .claude directory that does not exist here. All four
+          # name a .claude directory that does not exist here. All five
           # tools answer it, and wiretest already proves they agree in a
-          # checkout — what only an installed system can show is that the
-          # lookup still resolves from /usr/bin, and from the scripts'
+          # checkout -- what only an installed system can show is that the
+          # lookup still resolves from /usr/bin, and from the helpers'
           # /usr/libexec/oxbox/bin three levels below share/.
           /usr/bin/oxbox --skill 2>/dev/null > skill-oxbox.md
           for sub in sandbox send patch jail; do
@@ -182,50 +264,90 @@ jobs:
           cp "$GITHUB_WORKSPACE/jailtest.py" sandbox/work/jailtest.py
           /usr/bin/oxbox jail -- /usr/bin/python3 jailtest.py
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: deb
-          path: dist/*.deb
-          if-no-files-found: error
+      # The tarball is what Homebrew on Linux pours, so it gets the layout
+      # check the macOS job gives its own: unpack anywhere, run in place.
+      - name: Smoke-test the tarball unpacked to a prefix
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          prefix="$RUNNER_TEMP/prefix"
+          mkdir -p "$prefix"
+          tar xzf "dist/oxbox-${VERSION}-linux-${ARCH}.tar.gz" -C "$prefix" \
+            --strip-components 1
+          (cd dist && sha256sum -c "oxbox-${VERSION}-linux-${ARCH}.tar.gz.sha256")
+          test -x "$prefix/bin/oxbox"
+          for tool in oxbox-sandbox oxbox-send oxbox-patch oxbox-jail; do
+            test -x "$prefix/libexec/bin/$tool"
+            test ! -e "$prefix/bin/$tool"
+          done
+          test -f "$prefix/share/oxbox/ox-review/SKILL.md"
+          workspace="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$GITHUB_WORKSPACE/Cargo.toml" | head -1)"
+          [ "$("$prefix/bin/oxbox" send --version)" = "oxbox-send ${workspace}" ]
+          "$prefix/bin/oxbox" --skill 2>/dev/null | grep -q "$prefix/share/oxbox/ox-review/scripts/preflight.py"
 
   macos:
-    name: macOS tarball and smoke test
+    name: macOS universal tarball and smoke test
     needs: version
-    runs-on: macos-latest
-    timeout-minutes: 15
+    runs-on: macos-14
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      # No nfpm and no installer: the tarball IS the package. macOS ships
-      # sandbox-exec and a python3, and the tools are stdlib-only, so there is
-      # nothing to declare a dependency on and nothing to compile.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      # Both slices, then one universal executable per tool: the tarball and
+      # the formula that pours it serve Apple Silicon and Intel from one file.
+      - name: Build the release binaries (both targets) and lipo them
+        run: |
+          set -euo pipefail
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --locked --release --target "$target"
+          done
+          mkdir -p dist-stage/universal
+          for tool in oxbox oxbox-sandbox oxbox-send oxbox-patch oxbox-jail; do
+            lipo -create -output "dist-stage/universal/$tool" \
+              "target/aarch64-apple-darwin/release/$tool" \
+              "target/x86_64-apple-darwin/release/$tool"
+            lipo -info "dist-stage/universal/$tool"
+          done
+
       - name: Build the tarball
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           mkdir -p dist
-          packaging/macos-tarball.sh "$VERSION" dist
+          packaging/tarball.sh "$VERSION" dist macos-universal dist-stage/universal
+          cd dist
+          shasum -a 256 "oxbox-${VERSION}-macos-universal.tar.gz" \
+            > "oxbox-${VERSION}-macos-universal.tar.gz.sha256"
+          ls -l
 
       # Unpacked to a prefix under RUNNER_TEMP rather than over /usr/local, so
       # the smoke test proves what the artifact actually promises: extract it
-      # anywhere and it works from there. find_profile and find_skill resolve
-      # ../share/oxbox from the script, which is exactly the assumption that
-      # breaks if the tarball's layout drifts.
+      # anywhere and it works from there. The profile and skill lookups
+      # resolve ../share/oxbox from the executable, which is exactly the
+      # assumption that breaks if the tarball's layout drifts.
       - name: Smoke-test the unpacked tools from a scratch directory
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           prefix="$RUNNER_TEMP/prefix"
           mkdir -p "$prefix"
-          tar xzf "dist/oxbox-${VERSION}-macos.tar.gz" -C "$prefix" \
+          tar xzf "dist/oxbox-${VERSION}-macos-universal.tar.gz" -C "$prefix" \
             --strip-components 1
+          (cd dist && shasum -a 256 -c "oxbox-${VERSION}-macos-universal.tar.gz.sha256")
           test -x "$prefix/bin/oxbox"
           for tool in oxbox-sandbox oxbox-send oxbox-patch oxbox-jail; do
             test -x "$prefix/libexec/bin/$tool"
             test ! -e "$prefix/bin/$tool"
           done
+          lipo -info "$prefix/bin/oxbox" | grep -q x86_64
+          lipo -info "$prefix/bin/oxbox" | grep -q arm64
           test -f "$prefix/share/doc/oxbox/LICENSE"
           test -f "$prefix/share/doc/oxbox/docs/comparison.md"
           # The seatbelt profile, which the .deb has no reason to ship and a
@@ -235,7 +357,8 @@ jobs:
           mkdir -p "$scratch/srcrepo"
           echo 'print("hi")' > "$scratch/srcrepo/thing.py"
           cd "$scratch"
-          expected="$(python3 "$GITHUB_WORKSPACE/oxbox-send" --version)"
+          workspace="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$GITHUB_WORKSPACE/Cargo.toml" | head -1)"
+          expected="oxbox-send ${workspace}"
           [ "$("$prefix/bin/oxbox" send --version)" = "$expected" ]
           [ "$("$prefix/bin/oxbox" helper send --version)" = "$expected" ]
           "$prefix/bin/oxbox" sandbox --create "$scratch/srcrepo" thing.py
@@ -262,14 +385,14 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: macos-tarball
-          path: dist/*.tar.gz
+          path: dist/*
           if-no-files-found: error
 
   windows:
     name: Windows MSI and smoke test
     needs: version
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     # The signing identity federates on this environment's NAME, not on the
     # tag. Entra federated credentials take no wildcards, so a `refs/tags/*`
     # subject is impossible and a fixed string is the only thing that works;
@@ -285,6 +408,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Build the release binaries
+        run: cargo build --locked --release
+
       - name: Install the WiX v7 CLI
         run: dotnet tool install --global wix
 
@@ -298,7 +426,7 @@ jobs:
         shell: pwsh
         env:
           VERSION: ${{ needs.version.outputs.version }}
-        run: packaging\windows\build.ps1 -Version $env:VERSION -OutDir dist
+        run: packaging\windows\build.ps1 -Version $env:VERSION -OutDir dist -BinDir target\release
 
       # The signing action wants an absolute path and the MSI name carries the
       # version, so resolve it once here rather than re-globbing per step.
@@ -364,8 +492,8 @@ jobs:
 
       # Installed for real, from the same file that will be uploaded, and
       # exercised from a scratch directory -- the same shape as the .deb and
-      # tarball smoke tests, plus the two things only Windows can show: that
-      # the .cmd shims find their scripts, and that oxbox refuses.
+      # tarball smoke tests, plus the thing only Windows can show: that oxbox
+      # refuses.
       - name: Smoke-test the installed tools from a scratch directory
         shell: pwsh
         env:
@@ -379,11 +507,12 @@ jobs:
             throw "msiexec install failed: $($p.ExitCode)"
           }
           $prefix = Join-Path $env:LOCALAPPDATA "Programs\oxbox"
-          if (-not (Test-Path "$prefix\bin\oxbox")) { throw "no oxbox in the install" }
-          if (-not (Test-Path "$prefix\bin\oxbox.cmd")) { throw "no oxbox.cmd shim in the install" }
+          $oxbox = "$prefix\bin\oxbox.exe"
+          if (-not (Test-Path $oxbox)) { throw "no oxbox.exe in the install" }
+          if (Test-Path "$prefix\bin\oxbox.cmd") { throw "a shim shipped; the binaries need none" }
           foreach ($tool in 'oxbox-sandbox', 'oxbox-send', 'oxbox-patch', 'oxbox-jail') {
-            if (-not (Test-Path "$prefix\libexec\bin\$tool")) { throw "no $tool in the install" }
-            if (Test-Path "$prefix\bin\$tool") { throw "$tool is in bin; the scripts live in libexec" }
+            if (-not (Test-Path "$prefix\libexec\bin\$tool.exe")) { throw "no $tool.exe in the install" }
+            if (Test-Path "$prefix\bin\$tool.exe") { throw "$tool is in bin; the helpers live in libexec" }
           }
           if (-not (Test-Path "$prefix\doc\LICENSE")) { throw "the package shipped no LICENSE" }
           if (-not (Test-Path "$prefix\doc\docs\comparison.md")) { throw "the package shipped no comparison page" }
@@ -391,16 +520,18 @@ jobs:
             throw "the package shipped an incomplete ox-review skill"
           }
 
-          # Against the checkout's own ox for the same reason the other two
-          # jobs do it: a workflow_dispatch build's package version is not the
-          # tools' VERSION, and the version job already refused a tag that
-          # disagreed.
-          $expected = & python "$env:GITHUB_WORKSPACE\oxbox-send" --version
-          $actual = & "$prefix\bin\oxbox.cmd" send --version
+          # Against the checkout's workspace version for the same reason the
+          # other jobs do it: a workflow_dispatch build's package version is
+          # not the binaries' version, and the version job already refused a
+          # tag that disagreed.
+          $workspace = (Select-String -Path "$env:GITHUB_WORKSPACE\Cargo.toml" -Pattern '^version = "(.*)"' |
+            Select-Object -First 1).Matches[0].Groups[1].Value
+          $expected = "oxbox-send $workspace"
+          $actual = & $oxbox send --version
           if ($actual -ne $expected) {
             throw "installed oxbox-send reports '$actual', this checkout says '$expected'"
           }
-          $actual = & "$prefix\bin\oxbox.cmd" helper send --version
+          $actual = & $oxbox helper send --version
           if ($actual -ne $expected) {
             throw "oxbox helper send reports '$actual', this checkout says '$expected'"
           }
@@ -409,25 +540,22 @@ jobs:
           New-Item -ItemType Directory -Force "$scratch\srcrepo" | Out-Null
           Set-Content "$scratch\srcrepo\thing.py" 'print("hi")'
           Set-Location $scratch
-          & "$prefix\bin\oxbox.cmd" sandbox --create "$scratch\srcrepo" thing.py
+          & $oxbox sandbox --create "$scratch\srcrepo" thing.py
           if ($LASTEXITCODE -ne 0) { throw "oxbox sandbox --create failed: $LASTEXITCODE" }
           # No key needed, and it proves the log lands in the working
-          # directory rather than beside the scripts under LocalAppData.
+          # directory rather than beside the executables under LocalAppData.
           # --model is explicit: no venue carries a default, and this
           # asserts where the log lands rather than how a model is chosen.
-          & "$prefix\bin\oxbox.cmd" send --model smoke-test --mode ask --dry-run hello > $null
+          & $oxbox send --model smoke-test --mode ask --dry-run hello > $null
           if ($LASTEXITCODE -ne 0) { throw "ox dry run failed: $LASTEXITCODE" }
           if (-not (Get-ChildItem "$scratch\logs\*\meta.json")) {
             throw "the run logged nothing into the working directory"
           }
 
           # stdout is captured and stderr is left alone, so each tool's
-          # provenance line lands in the run log where it can be read. That
-          # matters more than it looks: this step failed three times with a
-          # bare "exit code 1" and no message, and the log was the only
-          # instrument available.
+          # provenance line lands in the run log where it can be read.
           #
-          # All four tools answer --skill, agree byte for byte, and name the
+          # All five tools answer --skill, agree byte for byte, and name the
           # directory this installation actually put the runbook in. guardtest
           # asserts on the directory rather than a full script path because
           # the substitution leaves mixed separators on Windows: a backslash
@@ -442,7 +570,7 @@ jobs:
           }
           foreach ($tool in 'oxbox', 'sandbox', 'send', 'patch', 'jail') {
             $form = $forms[$tool]
-            $text = (& "$prefix\bin\oxbox.cmd" @form) -join "`n"
+            $text = (& $oxbox @form) -join "`n"
             if ($text -notmatch '(?m)^name: ox-review') {
               throw "$tool --skill did not print the runbook"
             }
@@ -453,13 +581,12 @@ jobs:
             elseif ($text -ne $first) { throw "$tool --skill disagrees with ox" }
           }
 
-          # The Windows-only assertion, and the one that also proves the shim
-          # propagates an exit code: there is no jail here, and oxbox says so
-          # with EX_CONFIG rather than pretending to sandbox anything.
+          # The Windows-only assertion: there is no jail here, and oxbox says
+          # so with EX_CONFIG rather than pretending to sandbox anything.
           #
           # This call is why the step ends with an explicit `exit 0` below.
           Write-Host "== asserting the refusal"
-          & "$prefix\bin\oxbox.cmd" -- python -c "print(1)" > $null
+          & $oxbox -- python -c "print(1)" > $null
           $refusal = $LASTEXITCODE
           Write-Host "== oxbox returned $refusal"
           if ($refusal -ne 78) {
@@ -469,17 +596,14 @@ jobs:
           Write-Host "== uninstalling"
           $p = Start-Process msiexec -Wait -PassThru -ArgumentList '/x', "`"$env:MSI_PATH`"", '/qn'
           if ($p.ExitCode -ne 0) { throw "msiexec uninstall failed: $($p.ExitCode)" }
-          if (Test-Path "$prefix\bin\oxbox") { throw "uninstall left the tools behind" }
-          if (Test-Path "$prefix\libexec\bin\oxbox-send") { throw "uninstall left the scripts behind" }
+          if (Test-Path $oxbox) { throw "uninstall left the tools behind" }
+          if (Test-Path "$prefix\libexec\bin\oxbox-send.exe") { throw "uninstall left the helpers behind" }
 
-          # Explicitly, and this is the whole reason the step took four
-          # attempts. GitHub's pwsh shell appends `exit $LASTEXITCODE` to
+          # Explicitly: GitHub's pwsh shell appends `exit $LASTEXITCODE` to
           # every script, and the refusal assertion above deliberately leaves
-          # 78 in there -- so the step failed AFTER every assertion had
-          # passed, with no error text, because nothing had errored. Every
-          # assertion here is a throw, so the only correct ending is a zero of
-          # our own. Any step that runs a tool expected to exit non-zero needs
-          # this line.
+          # 78 in there -- so without this the step fails AFTER every
+          # assertion has passed, with no error text. Every assertion here is
+          # a throw, so the only correct ending is a zero of our own.
           Write-Host "== ok"
           exit 0
 
@@ -492,19 +616,23 @@ jobs:
   release:
     name: publish the GitHub Release
     if: github.ref_type == 'tag'
-    needs: [version, deb, macos, windows]
+    needs: [version, linux-smoke, macos, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      # All three packages into one directory, so the release step can take
-      # the whole thing and no platform can be quietly left off the page.
-      # One job owns the release notes for the same reason: two workflows
+      # Every package into one directory, so the release step can take the
+      # whole thing and no platform can be quietly left off the page. One
+      # job owns the release notes for the same reason: two workflows
       # generating notes on one tag append two copies of "What's Changed".
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: deb
+          name: packages-linux-amd64
+          path: dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: packages-linux-arm64
           path: dist
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -515,44 +643,64 @@ jobs:
           name: msi
           path: dist
 
+      - name: List what is being published
+        run: ls -l dist
+
       # generate_release_notes appends the auto-generated changelog after this
       # body. The install section is written by hand because the generated
       # notes only ever list merged PRs, and someone arriving at the release
-      # page needs to be told that Homebrew exists — the tap is re-pinned by
+      # page needs to be told that Homebrew exists -- the tap is re-pinned by
       # the job below, so brew is the channel that keeps itself current and
       # these files are for people who do not use it.
       - name: Attach to the GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: dist/*
+          fail_on_unmatched_files: true
           generate_release_notes: true
           body: |
             ## Install
 
+            The tools are native executables: nothing to install first
+            beyond `git`, and `bubblewrap` on Linux.
+
             **Homebrew** — macOS and Linux, and the channel that upgrades
-            itself. The tap is re-pinned automatically by this release:
+            itself. The tap is re-pinned automatically by this release and
+            pours the tarballs below:
 
             ```
             brew install curtisgalloway/tap/oxbox
             brew upgrade curtisgalloway/tap/oxbox
             ```
 
-            **macOS without Homebrew** — `oxbox-${{ needs.version.outputs.version }}-macos.tar.gz`
-            below. `bin/` beside `share/`, so it runs from wherever you
-            unpack it, or copy the contents over a prefix on `PATH`:
+            **macOS without Homebrew** — `oxbox-${{ needs.version.outputs.version }}-macos-universal.tar.gz`
+            below, one universal build for Apple Silicon and Intel. `bin/`
+            beside `share/`, so it runs from wherever you unpack it, or copy
+            the contents over a prefix on `PATH`:
 
             ```
-            tar xzf oxbox-${{ needs.version.outputs.version }}-macos.tar.gz
-            sudo cp -R oxbox-${{ needs.version.outputs.version }}-macos/ /usr/local/
+            tar xzf oxbox-${{ needs.version.outputs.version }}-macos-universal.tar.gz
+            sudo cp -R oxbox-${{ needs.version.outputs.version }}-macos-universal/ /usr/local/
             ```
 
-            **Windows** — `oxbox-${{ needs.version.outputs.version }}.msi` below.
-            A per-user install: no elevation, and it puts the tools on your
-            PATH. Python 3.9+ has to be present, which winget will handle:
+            **Debian/Ubuntu** — `oxbox_${{ needs.version.outputs.version }}_amd64.deb` or
+            `_arm64.deb` below. `bubblewrap` is a hard dependency: without it
+            there is no jail and `oxbox` refuses to run.
 
             ```
-            winget install Python.Python.3.13
-            msiexec /i oxbox-${{ needs.version.outputs.version }}.msi /qn
+            sudo apt install ./oxbox_${{ needs.version.outputs.version }}_amd64.deb
+            ```
+
+            **Linux without a package manager** — `oxbox-${{ needs.version.outputs.version }}-linux-amd64.tar.gz`
+            or `-linux-arm64.tar.gz`, the same prefix layout as the macOS
+            tarball; install `bubblewrap` yourself.
+
+            **Windows** — `oxbox-${{ needs.version.outputs.version }}-x64.msi` below.
+            A per-user install: no elevation, and it puts `oxbox` on your
+            PATH.
+
+            ```
+            msiexec /i oxbox-${{ needs.version.outputs.version }}-x64.msi /qn
             ```
 
             There is no jail on native Windows and `oxbox` refuses rather
@@ -560,19 +708,12 @@ jobs:
             and `oxbox patch` are fully usable and *running* model output means WSL2,
             where the Linux backend works unchanged.
 
-            **Debian/Ubuntu** — `oxbox_${{ needs.version.outputs.version }}_all.deb` below.
-            `bubblewrap` is a hard dependency: without it there is no jail and
-            `oxbox` refuses to run.
-
-            ```
-            sudo apt install ./oxbox_${{ needs.version.outputs.version }}_all.deb
-            ```
-
             Every package here was installed and smoke-tested by the workflow
             that built it, including the full in-jail probe suite against the
-            installed tools. The suites themselves are not packaged — they
-            assert against a checkout's layout, so verifying the jail on your
-            own machine stays a `git clone` away.
+            installed tools. The `.sha256` files are what the Homebrew tap
+            verifies before it re-pins. The suites themselves are not
+            packaged — they assert against a checkout's layout, so verifying
+            the jail on your own machine stays a `git clone` away.
 
   bump-tap:
     name: bump Homebrew tap
@@ -582,7 +723,7 @@ jobs:
     timeout-minutes: 5
     steps:
       # Tell the tap to re-pin its formula. The tap workflow does the actual
-      # edit with its own GITHUB_TOKEN — this only needs permission to fire
+      # edit with its own GITHUB_TOKEN -- this only needs permission to fire
       # the dispatch, which the default token can't do cross-repo.
       # HOMEBREW_TAP_DISPATCH_TOKEN is a fine-grained PAT with Contents:write
       # on curtisgalloway/homebrew-tap. Absent, skip rather than fail: the
@@ -627,8 +768,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      # The secrets context is not allowed in a step `if` — it is a parse
-      # error that invalidates the whole workflow — so the token is tested
+      # The secrets context is not allowed in a step `if` -- it is a parse
+      # error that invalidates the whole workflow -- so the token is tested
       # through env instead.
       WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
     steps:

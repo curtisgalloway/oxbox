@@ -1,12 +1,15 @@
 # SPDX-FileCopyrightText: 2026 Curtis Galloway
 # SPDX-License-Identifier: Apache-2.0
 
-# nfpm manifest for the Linux .deb (built by .github/workflows/release.yml).
-# VERSION is injected as an environment variable by the workflow. Pure Python,
-# so the package is arch-independent (arch: all) and nothing is compiled.
+# nfpm manifest for the Linux .deb (built by .github/workflows/release.yml,
+# once per architecture inside a debian:bookworm container so the binaries
+# link against a glibc every supported Debian and Ubuntu carries).
+# VERSION, ARCH and BINDIR are injected as environment variables by the
+# workflow: the package version, the Debian architecture name (amd64 or
+# arm64), and the directory holding the five release binaries.
 #
 # Layout matches what the tools expect when installed (see helper_dirs and
-# find_skill in oxbox): oxbox on PATH, the three helper scripts it runs in
+# the skill lookup in oxbox-core): oxbox on PATH, the four helpers it runs in
 # /usr/libexec/oxbox/bin, and shared data under /usr/share/oxbox — though
 # the seatbelt profile is macOS-only, so the Linux .deb does not ship it; the
 # Linux jail is bubblewrap, listed as a hard dependency because without it
@@ -17,10 +20,13 @@
 # a git-clone operation, and README says so.
 #
 # Packaged, though it is not an executable: the ox-review skill, because
-# `oxbox --skill` has to find it on an installed system as well as in a checkout.
+# `oxbox --skill` has to find it on an installed system as well as in a
+# checkout. Its helper scripts are Python, which is why python3 is
+# recommended rather than depended on: the five tools themselves need no
+# interpreter.
 
 name: oxbox
-arch: all
+arch: ${ARCH}
 version: ${VERSION}
 platform: linux
 section: utils
@@ -36,30 +42,31 @@ description: |
   sandbox, and oxbox jail executes the result under bubblewrap with no
   network and no writes outside the sandbox.
 depends:
-  - python3
   - bubblewrap
   - git
+recommends:
+  - python3
 contents:
-  - src: oxbox
+  - src: ${BINDIR}/oxbox
     dst: /usr/bin/oxbox
     file_info:
       mode: 0o755
-  # The scripts live off PATH. oxbox finds them at <prefix>/libexec/oxbox/bin
+  # The helpers live off PATH. oxbox finds them at <prefix>/libexec/oxbox/bin
   # from its own location (helper_dirs); `oxbox <sub>` execs oxbox-<sub>,
   # and `oxbox helper <sub>` runs one directly.
-  - src: oxbox-sandbox
+  - src: ${BINDIR}/oxbox-sandbox
     dst: /usr/libexec/oxbox/bin/oxbox-sandbox
     file_info:
       mode: 0o755
-  - src: oxbox-send
+  - src: ${BINDIR}/oxbox-send
     dst: /usr/libexec/oxbox/bin/oxbox-send
     file_info:
       mode: 0o755
-  - src: oxbox-patch
+  - src: ${BINDIR}/oxbox-patch
     dst: /usr/libexec/oxbox/bin/oxbox-patch
     file_info:
       mode: 0o755
-  - src: oxbox-jail
+  - src: ${BINDIR}/oxbox-jail
     dst: /usr/libexec/oxbox/bin/oxbox-jail
     file_info:
       mode: 0o755

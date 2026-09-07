@@ -20,7 +20,6 @@ SPDX-License-Identifier: Apache-2.0
   <a href="LICENSE"><img
      src="https://img.shields.io/badge/license-Apache--2.0-blue"
      alt="License: Apache-2.0"></a>
-  <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="Python 3.9+">
 </p>
 
 # oxbox
@@ -158,8 +157,10 @@ decoration.
 | **Windows + WSL2** | bubblewrap, inside WSL | ✅ |
 | **Windows, native** | ❌ none — `oxbox` refuses | ✅ |
 
-Every row is tested, not asserted. Python 3.9+ (the system `python3` on macOS
-is still 3.9, so nothing here uses 3.10+ APIs).
+Every row is tested, not asserted. The tools are native executables; the
+suites that test them, and the Python reference they are held to, run on
+Python 3.9+ (the system `python3` on macOS is still 3.9, so nothing there
+uses 3.10+ APIs).
 
 | Tested on | Result |
 |---|---|
@@ -201,17 +202,16 @@ session: the launcher exits 0 and silently does nothing. It and Sandboxie were
 both evaluated and declined; `AGENTS.md` records the reasoning, the hardware it
 was measured on, and what would reopen either.
 
-The rest of the toolkit is fully native on Windows — `oxbox-send`, `oxbox-sandbox` and
-`oxbox-patch` are pure Python. You can talk to the model, scan for secrets, and
-quarantine its patches. Only *executing* its output needs the jail.
+The rest of the toolkit is fully native on Windows: `oxbox send`, `oxbox sandbox`
+and `oxbox patch` need nothing the MSI does not carry. You can talk to the
+model, scan for secrets, and quarantine its patches. Only *executing* its
+output needs the jail.
 
 That much ships as a signed per-user MSI on the
 [latest release](https://github.com/curtisgalloway/oxbox/releases): no
-elevation, `%LOCALAPPDATA%\Programs\oxbox\bin` added to your PATH, and a
-`.cmd` shim beside `oxbox` because Windows cannot execute a shebang. It
+elevation, and `%LOCALAPPDATA%\Programs\oxbox\bin` added to your PATH. It
 carries `oxbox-jail` too, refusal and all, so `oxbox --skill` answers and the
-five tools stay one set. Python 3.9+ has to be on PATH; the shim says so plainly
-if it is not.
+five tools stay one set.
 
 **With WSL2 you get the full thing**, and the Linux backend runs unchanged:
 
@@ -280,8 +280,9 @@ Stated exactly, because the difference matters:
 
 ## Setup
 
-Requires Python 3.9+ and git, plus `bubblewrap` on Linux. No third-party
-Python packages — deliberately.
+Requires git, plus `bubblewrap` on Linux. The tools are native executables;
+nothing else has to be installed first. (The `ox-review` agent skill's helper
+scripts, and the test suites, are Python 3.9+.)
 
 **Install from a package:**
 
@@ -289,19 +290,21 @@ Python packages — deliberately.
 # macOS or Linux, via Homebrew — the channel that upgrades itself
 brew install curtisgalloway/tap/oxbox
 
-# macOS without Homebrew: the tarball from the latest GitHub Release.
-# bin/ beside share/, so it runs from wherever you unpack it.
-tar xzf oxbox-<version>-macos.tar.gz
-sudo cp -R oxbox-<version>-macos/ /usr/local/
+# macOS without Homebrew: the universal tarball from the latest GitHub
+# Release. bin/ beside share/, so it runs from wherever you unpack it.
+tar xzf oxbox-<version>-macos-universal.tar.gz
+sudo cp -R oxbox-<version>-macos-universal/ /usr/local/
 
-# Debian/Ubuntu: the .deb from the latest GitHub Release
-sudo apt install ./oxbox_<version>_all.deb
+# Debian/Ubuntu: the .deb for your architecture from the latest GitHub Release
+sudo apt install ./oxbox_<version>_amd64.deb
+
+# Any other Linux: the same prefix layout as the macOS tarball
+tar xzf oxbox-<version>-linux-amd64.tar.gz
 ```
 
 ```powershell
 # Windows: the signed per-user MSI from the latest GitHub Release.
-# No elevation, and it puts oxbox on PATH. Needs Python 3.9+.
-winget install Python.Python.3.13
+# No elevation, and it puts oxbox on PATH.
 msiexec /i oxbox-<version>.msi /qn
 ```
 
@@ -433,7 +436,8 @@ header and a ranked list:
   manifest-shaped files, such as its corpus manifest, and this is the field
   that tells them apart); a version newer than this `oxbox send` understands is
   refused with a pointer to update.
-- `issue_date` — the survey issue the file belongs to, recorded with the run.
+- `issue_date` — the survey issue the file belongs to. Not read by `oxbox send`;
+  it survives in the run's `manifest.json`, which keeps the bytes as served.
 - `defaults` — an object applying to every entry. Two keys are read,
   `max_tokens` and `effort`; anything else is reported and ignored, and an
   `effort` outside the ladder above is reported and dropped.
@@ -629,21 +633,21 @@ hardcoded default any more.
 
 ## The Rust port
 
-The five tools exist twice in this repository: the Python scripts at the
-root, which are what every package installs today, and a Rust workspace
-under `crates/` that reproduces them executable for executable — `oxbox`,
+The five tools exist twice in this repository: a Rust workspace under
+`crates/`, which is what every package installs from 1.0.0 on — `oxbox`,
 `oxbox-sandbox`, `oxbox-send`, `oxbox-patch`, `oxbox-jail`, with the shared
 pieces (version, the embedded runbook, the sandbox root and name rules, the
-libexec lookup) in one library crate instead of a copy per file. The
-structure is the same because it was designed for this: one command on
-`PATH`, four executables in `libexec`, each a process of its own so a
-process listing says which piece is running.
+libexec lookup) in one library crate instead of a copy per file — and the
+Python scripts at the root, which are the reference implementation the
+binaries are held to. The structure is the same because it was designed for
+this: one command on `PATH`, four executables in `libexec`, each a process
+of its own so a process listing says which piece is running.
 
-The Python scripts are the reference until the binaries ship. The same three
-suites hold both to it: `OXBOX_UNDER_TEST=$PWD/target/debug python3
-guardtest.py` and `wiretest.py` drive the binaries instead of the scripts,
-and `target/debug/oxbox jail -- python3 jailtest.py` probes from inside the
-Rust jail. wiretest needs the binaries built with
+The same three suites hold both implementations to one contract:
+`OXBOX_UNDER_TEST=$PWD/target/debug python3 guardtest.py` and `wiretest.py`
+drive the binaries instead of the scripts, and `target/debug/oxbox jail --
+python3 jailtest.py` probes from inside the Rust jail. `AGENTS.md` records
+where the two are allowed to differ. wiretest needs the binaries built with
 `cargo build --features oxbox-send/test-overrides`, which compiles in the
 same knobs the suite patches into a copy of the Python source (venue URLs
 aimed at its loopback listener, the https guards relaxed); a release build

@@ -215,10 +215,10 @@ executed inside it.
 
 ## The Rust port
 
-- **Two implementations, one contract, until the binaries ship.** The
-  Python scripts at the root are the reference; `crates/` holds the Rust
-  workspace that reproduces them. A behavior change lands in both, in the
-  same commit, or it is not done. The contract is what the suites pin and
+- **Two implementations, one contract.** From 1.0.0 the Rust workspace in
+  `crates/` is what every package ships; the Python scripts at the root are
+  the reference implementation the binaries are held to. A behavior change
+  lands in both, in the same commit, or it is not done. The contract is what the suites pin and
   what the survey reads (`status.json`, the log directory's JSON files,
   exit codes): guardtest and wiretest take `OXBOX_UNDER_TEST=<dir of
   binaries>` and drive those instead of the scripts, and jailtest runs
@@ -401,7 +401,9 @@ executed inside it.
   AppArmor userns patch that an Ubuntu 24.04 *host* carries. Do not soften the
   native-Windows refusal on the strength of WSL working — they are different
   execution environments and `sys.platform` tells them apart.
-- **Python 3.9 is the floor.** The system `python3` on macOS is still 3.9, so
+- **Python 3.9 is the floor for the scripts.** The shipped tools are native
+  executables and need no interpreter; the reference scripts, the suites and
+  the ox-review skill's helpers are Python. The system `python3` on macOS is still 3.9, so
   no 3.10+ APIs: no `Path.write_text(newline=...)`, and `shutil.rmtree(onexc=)`
   stays behind its version check.
 - **Write patches and audit artifacts with explicit newlines.** Python's text

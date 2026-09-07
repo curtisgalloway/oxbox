@@ -382,6 +382,11 @@ def main():
     allow_external = False
 
     while args:
+        # --work=DIR and --sandbox=NAME as well as the two-word forms, so the
+        # four tools take flags the same way.
+        if args[0].startswith(("--work=", "--sandbox=")):
+            flag, value = args[0].split("=", 1)
+            args = [flag, value] + args[1:]
         if args[0] in ("--help", "-h"):
             sys.stdout.write(USAGE)
             return 0

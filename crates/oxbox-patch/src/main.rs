@@ -276,31 +276,38 @@ fn parse(args: &[String]) -> Result<Parsed, Fail> {
     let mut index = 0;
     while index < args.len() {
         let arg = args[index].as_str();
-        let value = |index: usize| -> Result<&String, Fail> {
-            args.get(index + 1)
-                .ok_or_else(|| Fail::usage(&format!("argument {arg}: expected one argument")))
+        // `--log=DIR` as well as `--log DIR`, as argparse takes it.
+        let (flag, inline) = match arg.split_once('=') {
+            Some((flag, value)) if flag.starts_with("--") => (flag, Some(value)),
+            _ => (arg, None),
         };
-        match arg {
+        // The flag's value: the text after `=`, or the next word.
+        let mut value = || -> Result<String, Fail> {
+            match inline {
+                Some(value) => Ok(value.to_string()),
+                None => {
+                    index += 1;
+                    args.get(index).cloned().ok_or_else(|| {
+                        Fail::usage(&format!("argument {flag}: expected one argument"))
+                    })
+                }
+            }
+        };
+        match flag {
             "--help" | "-h" => return Ok(Parsed::Help),
             "--version" => return Ok(Parsed::Version),
             "--skill" => return Ok(Parsed::Skill),
-            "--log" => {
-                options.log = Some(PathBuf::from(value(index)?));
-                index += 1;
+            "--log" => options.log = Some(PathBuf::from(value()?)),
+            "--diff" => options.diff = Some(PathBuf::from(value()?)),
+            "--sandbox" => options.sandbox = Some(value()?),
+            "--work" => options.work = Some(PathBuf::from(value()?)),
+            "--commit" if inline.is_none() => options.commit = true,
+            "--commit" => {
+                return Err(Fail::usage(&format!(
+                    "argument --commit: ignored explicit argument '{}'",
+                    inline.unwrap_or_default()
+                )));
             }
-            "--diff" => {
-                options.diff = Some(PathBuf::from(value(index)?));
-                index += 1;
-            }
-            "--sandbox" => {
-                options.sandbox = Some(value(index)?.clone());
-                index += 1;
-            }
-            "--work" => {
-                options.work = Some(PathBuf::from(value(index)?));
-                index += 1;
-            }
-            "--commit" => options.commit = true,
             _ => return Err(Fail::usage(&format!("unrecognized arguments: {arg}"))),
         }
         index += 1;
@@ -755,6 +762,14 @@ mod tests {
                 ..Options::default()
             }))
         );
+        assert_eq!(
+            parse(&args(&["--log=logs/x", "--sandbox=alt"])),
+            Ok(Parsed::Run(Options {
+                log: Some(PathBuf::from("logs/x")),
+                sandbox: Some("alt".into()),
+                ..Options::default()
+            }))
+        );
         for bad in [
             vec!["--log", "a", "--diff", "b"],
             vec![],
@@ -762,6 +777,7 @@ mod tests {
             vec!["--diff"],
             vec!["--nope"],
             vec!["--diff", "x", "extra"],
+            vec!["--diff", "x", "--commit=yes"],
         ] {
             let fail = parse(&args(&bad)).unwrap_err();
             assert_eq!(fail.code, 2, "{bad:?}");

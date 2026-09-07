@@ -215,15 +215,29 @@ executed inside it.
 
 ## The Rust port
 
-- **Two implementations, one behavior, until the binaries ship.** The
+- **Two implementations, one contract, until the binaries ship.** The
   Python scripts at the root are the reference; `crates/` holds the Rust
   workspace that reproduces them. A behavior change lands in both, in the
-  same commit, or it is not done. The suites are the arbiter: guardtest and
-  wiretest take `OXBOX_UNDER_TEST=<dir of binaries>` and drive those instead
-  of the scripts, and jailtest runs inside whichever jail launched it.
-  Verified at parity on 2026-09-06 on macOS (guards 84/84, wire 69/69, jail
-  13/13), Debian 13 on dev.h.curtisg.xyz (84/84, 69/69, jail 14/14) and
-  Windows 11 on brik (75/75 + 4 skipped, 68/68 + 1 skipped, jail refuses 78).
+  same commit, or it is not done. The contract is what the suites pin and
+  what the survey reads (`status.json`, the log directory's JSON files,
+  exit codes): guardtest and wiretest take `OXBOX_UNDER_TEST=<dir of
+  binaries>` and drive those instead of the scripts, and jailtest runs
+  inside whichever jail launched it. CI verifies on macOS, Ubuntu and
+  Windows on every push (guards 88/88, wire 69/69; Windows 77/77 + 5
+  skipped, 68/68 + 1 skipped, jail refuses 78).
+- **Byte-for-byte agreement is not the goal.** Where the two differ and the
+  suites do not pin it, the right behavior wins and both implementations
+  move to it; do not port a Python bug for parity's sake. Differences
+  reviewed on 2026-09-06 and accepted as they stand, so they are not
+  re-reported: the Rust writes JSON artifacts as UTF-8 where Python escapes
+  non-ASCII (same JSON, different bytes); argparse's prefix abbreviations
+  (`--dest` for `--destroy`) work nowhere in Rust; the wording of OS and
+  JSON error texts and the quoting of names in diagnostics differ; the Rust
+  reports a clean diagnosis where Python tracebacks on an odd response
+  shape, rejects a negative `--max-tokens` and a `NaN` in a provider body,
+  and skips a manifest entry whose `model` is not a string. Both accept
+  `--flag=value` on every flag that takes a value, treat an empty value as
+  "not given", and read an empty `error` object as no error.
 - **Separate packages, not [[bin]] targets.** The dependency tree is per
   package, and "oxbox-jail is standard-library only" has to be a fact
   Cargo.lock can show. Only `oxbox-send` depends on anything beyond

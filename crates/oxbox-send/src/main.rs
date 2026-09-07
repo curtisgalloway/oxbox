@@ -836,10 +836,9 @@ fn send_and_parse(
     };
     write_log(&log_dir.join("response.json"), &pretty(&body));
 
-    if let Some(error) = body.get("error")
-        && !error.is_null()
-        && error != &Value::Bool(false)
-    {
+    // Python's truthiness: an empty object beside a valid answer is not an
+    // error, and some venues send exactly that.
+    if let Some(error) = truthy(body.get("error")) {
         return Err(AttemptFailed(format!(
             "{PROG}: api error: {}",
             head(&error.to_string(), 500)
@@ -1196,6 +1195,20 @@ fn parse_args(raw: &[String]) -> Result<Parsed, String> {
         // installation rather than a run.
         return Ok(Parsed::Skill);
     }
+    // An empty value means "not given", as the reference's truthiness reads
+    // it: `--model ''` chooses no model rather than sending an empty id.
+    for slot in [
+        &mut args.manifest,
+        &mut args.base_url,
+        &mut args.api_key_env,
+        &mut args.model,
+        &mut args.output,
+        &mut args.status_file,
+    ] {
+        if slot.as_deref() == Some("") {
+            *slot = None;
+        }
+    }
     Ok(Parsed::Run(Box::new(args)))
 }
 
@@ -1204,7 +1217,14 @@ fn parse_args(raw: &[String]) -> Result<Parsed, String> {
 /// Python's truthiness for a manifest value: absent, null, 0, "" and false
 /// all mean "not set", so the next rung of the precedence ladder applies.
 fn truthy(value: Option<&Value>) -> Option<&Value> {
-    value.filter(|v| !v.is_null() && *v != &json!(0) && *v != &json!("") && *v != &json!(false))
+    value.filter(|v| match v {
+        Value::Null | Value::Bool(false) => false,
+        Value::Number(n) => n.as_f64() != Some(0.0),
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
+        Value::Bool(true) => true,
+    })
 }
 
 fn main() {
@@ -1511,9 +1531,10 @@ fn run(
                 "entry_position": entry.position, "fetched": info.fetched,
                 "saved_as": "manifest.json",
             });
-            if let Err(error) = fs::write(log_dir.join("manifest.json"), &info.raw) {
-                say(&format!("could not write manifest.json: {error}"));
-            }
+            // Not a warning: the README promises the bytes are recorded,
+            // and a run whose manifest cannot be filed does not send.
+            fs::write(log_dir.join("manifest.json"), &info.raw)
+                .map_err(|error| quit(format!("cannot write manifest.json: {error}")))?;
         }
         write_lf(&log_dir.join("request.json"), &pretty(&payload))
             .map_err(|error| quit(format!("cannot write request.json: {error}")))?;
@@ -1960,6 +1981,12 @@ mod tests {
         assert_eq!(truthy(Some(&empty)), None);
         assert_eq!(truthy(Some(&no)), None);
         assert_eq!(truthy(Some(&yes)), Some(&yes));
+        let empty_object = json!({});
+        let empty_array = json!([]);
+        let full = json!({"message": "x"});
+        assert_eq!(truthy(Some(&empty_object)), None);
+        assert_eq!(truthy(Some(&empty_array)), None);
+        assert_eq!(truthy(Some(&full)), Some(&full));
     }
 
     #[test]
@@ -2076,6 +2103,23 @@ mod tests {
         assert_eq!(c.task.as_deref(), Some("--not-a-flag"));
         let d = parsed(&["-"]);
         assert_eq!(d.task.as_deref(), Some("-"));
+        // Empty values are "not given".
+        let e = parsed(&[
+            "--model",
+            "",
+            "--base-url=",
+            "--output",
+            "",
+            "--status-file",
+            "",
+            "t",
+        ]);
+        assert!(
+            e.model.is_none()
+                && e.base_url.is_none()
+                && e.output.is_none()
+                && e.status_file.is_none()
+        );
     }
 
     #[test]
@@ -2554,6 +2598,7 @@ mod tests {
             ok_json(
                 json!({"choices": [{"message": {"content": "ok", "tool_calls": [{"id": "x"}]}}]}),
             ),
+            ok_json(json!({"error": {}, "choices": [{"message": {"content": "fine"}}]})),
         ]);
         let url = server.url.clone();
         let text =
@@ -2603,6 +2648,10 @@ mod tests {
         let answer = send_and_parse(&url, "k", &payload, &dir).unwrap();
         assert_eq!(answer.content, "ok");
         assert_eq!(answer.route, None);
+
+        // An empty error object is no error.
+        let answer = send_and_parse(&url, "k", &payload, &dir).unwrap();
+        assert_eq!(answer.content, "fine");
 
         let failure = text(send_and_parse("http://127.0.0.1:9/", "k", &payload, &dir));
         assert!(failure.contains("network error"), "{failure}");

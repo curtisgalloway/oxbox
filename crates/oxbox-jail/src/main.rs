@@ -16,13 +16,13 @@
 //! lives in a libexec directory rather than on PATH; oxbox finds it from its
 //! own location. Standard library only: this is the execution boundary, and
 //! it should be readable in full with nothing to audit beneath it.
+//!
+//! The work splits into `parse` (the command line), `plan` (every check and
+//! the argument vector and environment the backend gets) and `main`, which
+//! is the only place that prints, exits or execs. Tests drive the first two.
 
 use std::env;
-#[cfg(unix)]
-use std::fs;
-#[cfg(unix)]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use oxbox_core as core;
@@ -96,9 +96,90 @@ application). Only executing the model's output needs the jail.
 /// The jail refuses with this, the way `sysexits.h` spells "configuration".
 const EX_CONFIG: i32 = 78;
 
-fn refuse(message: &str) -> ! {
-    core::diagnose(PROG, message);
-    process::exit(1);
+/// How a run ends other than by launching: the text for stderr, already
+/// prefixed line by line, and the exit code.
+#[derive(Debug, PartialEq)]
+struct Fail {
+    code: i32,
+    text: String,
+}
+
+impl Fail {
+    fn diag(code: i32, message: &str) -> Fail {
+        let text = message
+            .lines()
+            .map(|line| format!("{PROG}: {line}\n"))
+            .collect();
+        Fail { code, text }
+    }
+}
+
+/// What a command line asks for.
+#[derive(Debug, PartialEq)]
+enum Request {
+    Help,
+    Version,
+    Skill,
+    Launch {
+        work: PathBuf,
+        allow_external: bool,
+        command: Vec<String>,
+    },
+}
+
+fn parse(args: &[String], root: &core::SandboxRoot) -> Result<Request, Fail> {
+    let mut work = root.path.join("work");
+    let mut allow_external = false;
+    let mut rest = args;
+    while let Some(head) = rest.first() {
+        match head.as_str() {
+            "--help" | "-h" => return Ok(Request::Help),
+            "--version" => return Ok(Request::Version),
+            "--skill" => return Ok(Request::Skill),
+            "--work" => {
+                let Some(dir) = rest.get(1) else {
+                    return Err(Fail::diag(2, "--work needs a directory"));
+                };
+                work = PathBuf::from(dir);
+                rest = &rest[2..];
+            }
+            "--sandbox" => {
+                let Some(name) = rest.get(1) else {
+                    return Err(Fail::diag(2, "--sandbox needs a name"));
+                };
+                let name = core::sandbox_name(name).map_err(|message| Fail::diag(2, &message))?;
+                work = root.path.join(name);
+                rest = &rest[2..];
+            }
+            "--allow-external-output" => {
+                allow_external = true;
+                rest = &rest[1..];
+            }
+            "--" => {
+                rest = &rest[1..];
+                break;
+            }
+            other => {
+                return Err(Fail::diag(
+                    2,
+                    &format!(
+                        "unexpected argument {other}; the command goes after --  (see oxbox jail --help)"
+                    ),
+                ));
+            }
+        }
+    }
+    if rest.is_empty() {
+        return Err(Fail {
+            code: 2,
+            text: format!("{PROG}: no command given (use: oxbox jail -- pytest -q)\n{USAGE}"),
+        });
+    }
+    Ok(Request::Launch {
+        work,
+        allow_external,
+        command: rest.to_vec(),
+    })
 }
 
 /// The seatbelt profile, wherever this oxbox is installed.
@@ -109,8 +190,7 @@ fn refuse(message: &str) -> ! {
 /// `<prefix>/share/oxbox/jail.sb`; a build tree keeps it two levels above
 /// `target/debug`. Refusing when none exists is deliberate: there is no jail
 /// without the profile, and no jail means no run.
-#[cfg(unix)]
-fn find_profile() -> PathBuf {
+fn find_profile() -> Result<PathBuf, Fail> {
     let mut candidates = Vec::new();
     for start in [core::exe_dir(), core::real_exe_dir()] {
         let mut base = Some(start);
@@ -129,21 +209,20 @@ fn find_profile() -> PathBuf {
     }
     for candidate in &candidates {
         if candidate.is_file() {
-            return candidate.clone();
+            return Ok(candidate.clone());
         }
     }
     let mut message = String::from("seatbelt profile jail.sb not found; looked in:\n");
     for candidate in candidates {
         message.push_str(&format!("  {}\n", candidate.display()));
     }
-    refuse(message.trim_end());
+    Err(Fail::diag(1, message.trim_end()))
 }
 
 /// Paths jailtest should try to read, per platform. Existence is decided
 /// HERE, outside the jail: inside, `stat()` is denied, so every hidden path
 /// looks absent and a probe that checks for itself would skip rather than
 /// test.
-#[cfg(unix)]
 fn sensitive_paths(real_home: &Path, project_root: &Path) -> Vec<PathBuf> {
     let mut names = vec![
         ".ssh",
@@ -178,7 +257,6 @@ fn sensitive_paths(real_home: &Path, project_root: &Path) -> Vec<PathBuf> {
 /// such a host jailtest's network probes would pass without testing
 /// anything. A UDP connect sends no packet; it only asks the kernel whether
 /// a route exists.
-#[cfg(unix)]
 fn host_has_route() -> bool {
     std::net::UdpSocket::bind("0.0.0.0:0")
         .and_then(|socket| socket.connect("1.1.1.1:53"))
@@ -195,7 +273,7 @@ fn descriptor_target(fd: i32) -> Option<PathBuf> {
     use std::os::fd::FromRawFd;
 
     // Borrow the descriptor for a metadata call without ever closing it.
-    let file = ManuallyDrop::new(unsafe { fs::File::from_raw_fd(fd) });
+    let file = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
     let info = file.metadata().ok()?;
     if !info.file_type().is_file() {
         return None;
@@ -206,7 +284,7 @@ fn descriptor_target(fd: i32) -> Option<PathBuf> {
 
 #[cfg(target_os = "linux")]
 fn descriptor_path(fd: i32) -> Option<PathBuf> {
-    fs::read_link(format!("/proc/self/fd/{fd}")).ok()
+    std::fs::read_link(format!("/proc/self/fd/{fd}")).ok()
 }
 
 #[cfg(target_os = "macos")]
@@ -239,30 +317,77 @@ fn descriptor_path(_fd: i32) -> Option<PathBuf> {
     None
 }
 
-/// stdout/stderr that point at regular files outside the sandbox root.
+/// Where stdout and stderr point, if at regular files.
+#[cfg(unix)]
+fn probe_descriptors() -> Vec<(&'static str, Option<PathBuf>)> {
+    vec![
+        ("stdout", descriptor_target(1)),
+        ("stderr", descriptor_target(2)),
+    ]
+}
+
+/// The named descriptors that point at regular files outside the sandbox
+/// root.
 ///
 /// Neither backend can help here: the shell opened those files before the
 /// jail existed, so the descriptor is already live. `oxbox -- cmd > ~/notes.md`
 /// would let jailed code write whatever it likes there.
-#[cfg(unix)]
-fn escaping_descriptors(root: &Path) -> Vec<String> {
-    let mut found = Vec::new();
-    for (fd, name) in [(1, "stdout"), (2, "stderr")] {
-        if let Some(target) = descriptor_target(fd)
-            && !core::is_within(root, &target)
-        {
-            found.push(format!("{name} -> {}", target.display()));
-        }
-    }
-    found
+fn escaping_descriptors(root: &Path, descriptors: &[(&str, Option<PathBuf>)]) -> Vec<String> {
+    descriptors
+        .iter()
+        .filter_map(|(name, target)| {
+            target.as_ref().and_then(|target| {
+                (!core::is_within(root, target)).then(|| format!("{name} -> {}", target.display()))
+            })
+        })
+        .collect()
 }
 
-#[cfg(unix)]
-fn macos_argv(work: &Path, command: &[String]) -> Vec<String> {
-    if !Path::new("/usr/bin/sandbox-exec").exists() {
-        refuse("/usr/bin/sandbox-exec not found; cannot jail on this macOS");
-    }
-    let profile = find_profile();
+/// The environment the jailed command sees: a fresh one, not the caller's.
+/// The parent shell routinely holds OPENROUTER_API_KEY (via `op run`), and
+/// inheriting it would hand jailed code the key.
+fn jail_env(
+    work: &Path,
+    real_home: &Path,
+    project_root: &Path,
+    existing: &[String],
+    has_route: bool,
+) -> Vec<(String, String)> {
+    vec![
+        ("HOME".into(), work.to_string_lossy().into_owned()),
+        ("REAL_HOME".into(), real_home.to_string_lossy().into_owned()),
+        (
+            "REPO_ROOT".into(),
+            project_root.to_string_lossy().into_owned(),
+        ),
+        ("OXBOX_EXISTING_PATHS".into(), existing.join("\n")),
+        (
+            "OXBOX_HOST_HAS_ROUTE".into(),
+            if has_route { "1" } else { "0" }.into(),
+        ),
+        ("OXBOX_PLATFORM".into(), core::PLATFORM.into()),
+        (
+            "TMPDIR".into(),
+            work.join(".oxtmp").to_string_lossy().into_owned(),
+        ),
+        (
+            "PATH".into(),
+            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".into(),
+        ),
+        (
+            "TERM".into(),
+            env::var("TERM").unwrap_or_else(|_| "dumb".into()),
+        ),
+        (
+            "LANG".into(),
+            env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".into()),
+        ),
+        ("PYTHONDONTWRITEBYTECODE".into(), "1".into()),
+    ]
+}
+
+/// `sandbox-exec -f <profile> -D WORK=<work> <command...>`.
+fn macos_argv(profile: &Path, work: &Path, command: &[String]) -> Vec<String> {
     let mut argv = vec![
         String::from("/usr/bin/sandbox-exec"),
         String::from("-f"),
@@ -274,18 +399,15 @@ fn macos_argv(work: &Path, command: &[String]) -> Vec<String> {
     argv
 }
 
-#[cfg(unix)]
-fn linux_argv(work: &Path, command: &[String], env: &[(String, String)]) -> Vec<String> {
-    let Some(bwrap) = core::which("bwrap") else {
-        refuse(
-            "bubblewrap (bwrap) not found.\n\
-             it is the sandbox on Linux; without it there is no jail.\n\
-               Debian/Ubuntu  sudo apt install bubblewrap\n\
-               Fedora/RHEL    sudo dnf install bubblewrap\n\
-               Arch           sudo pacman -S bubblewrap\n\
-               Alpine         sudo apk add bubblewrap",
-        );
-    };
+/// The bubblewrap invocation: every namespace unshared, the system bound
+/// read-only, the work dir bound writable, the environment cleared and
+/// rebuilt from `env` inside.
+fn linux_argv(
+    bwrap: &Path,
+    work: &Path,
+    command: &[String],
+    env: &[(String, String)],
+) -> Vec<String> {
     let mut argv: Vec<String> = vec![
         bwrap.to_string_lossy().into_owned(),
         // Namespaces: --unshare-all includes the network, which is the
@@ -315,11 +437,11 @@ fn linux_argv(work: &Path, command: &[String], env: &[(String, String)]) -> Vec<
         "/opt",
         "/usr/local",
     ] {
-        let Ok(meta) = fs::symlink_metadata(path) else {
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
             continue;
         };
         if meta.file_type().is_symlink() {
-            if let Ok(target) = fs::read_link(path) {
+            if let Ok(target) = std::fs::read_link(path) {
                 argv.extend([
                     "--symlink".into(),
                     target.to_string_lossy().into_owned(),
@@ -347,108 +469,40 @@ fn linux_argv(work: &Path, command: &[String], env: &[(String, String)]) -> Vec<
     argv
 }
 
-fn main() {
-    process::exit(run());
+/// Everything decided before the backend starts.
+#[derive(Debug)]
+struct Plan {
+    work: PathBuf,
+    backend: &'static str,
+    argv: Vec<String>,
+    env: Vec<(String, String)>,
+    /// Lines for stderr that are not refusals (an allowed external output).
+    warnings: Vec<String>,
 }
 
-fn run() -> i32 {
-    let args: Vec<String> = env::args().skip(1).collect();
-    let root = match core::sandbox_root() {
-        Ok(root) => root,
-        Err(message) => refuse(&message),
-    };
-    let mut work = root.path.join("work");
-    let mut allow_external = false;
-    let mut rest = args.as_slice();
-
-    while let Some(head) = rest.first() {
-        match head.as_str() {
-            "--help" | "-h" => {
-                print!("{USAGE}");
-                return 0;
-            }
-            "--version" => {
-                println!("{PROG} {}", core::VERSION);
-                return 0;
-            }
-            "--skill" => return core::print_skill(PROG),
-            "--work" => {
-                let Some(dir) = rest.get(1) else {
-                    core::diagnose(PROG, "--work needs a directory");
-                    return 2;
-                };
-                work = PathBuf::from(dir);
-                rest = &rest[2..];
-            }
-            "--sandbox" => {
-                let Some(name) = rest.get(1) else {
-                    core::diagnose(PROG, "--sandbox needs a name");
-                    return 2;
-                };
-                match core::sandbox_name(name) {
-                    Ok(name) => work = root.path.join(name),
-                    Err(message) => {
-                        core::diagnose(PROG, &message);
-                        return 2;
-                    }
-                }
-                rest = &rest[2..];
-            }
-            "--allow-external-output" => {
-                allow_external = true;
-                rest = &rest[1..];
-            }
-            "--" => {
-                rest = &rest[1..];
-                break;
-            }
-            other => {
-                core::diagnose(
-                    PROG,
-                    &format!(
-                        "unexpected argument {other}; the command goes after --  (see oxbox jail --help)"
-                    ),
-                );
-                return 2;
-            }
-        }
-    }
-
-    let command: Vec<String> = rest.to_vec();
-    if command.is_empty() {
-        core::diagnose(PROG, "no command given (use: oxbox jail -- pytest -q)");
-        eprint!("{USAGE}");
-        return 2;
-    }
-
-    if cfg!(windows) {
-        eprint!("{WINDOWS_HELP}");
-        return EX_CONFIG;
-    }
-    if !cfg!(any(target_os = "macos", target_os = "linux")) {
-        refuse(&format!(
-            "no sandbox backend for platform {:?}; refusing",
-            core::PLATFORM
+/// Every check, then the argument vector and environment. `descriptors` is
+/// where stdout and stderr point, passed in so the check can be exercised
+/// without redirecting the test runner's own streams.
+fn plan(
+    root: &core::SandboxRoot,
+    work: &Path,
+    allow_external: bool,
+    command: &[String],
+    descriptors: &[(&str, Option<PathBuf>)],
+) -> Result<Plan, Fail> {
+    if !work.is_dir() {
+        return Err(Fail::diag(
+            1,
+            &format!("work dir does not exist: {}", work.display()),
         ));
     }
-
-    jail(&root, work, allow_external, &command)
-}
-
-#[cfg(unix)]
-fn jail(root: &core::SandboxRoot, work: PathBuf, allow_external: bool, command: &[String]) -> i32 {
-    use std::os::unix::process::CommandExt;
-
-    if !work.is_dir() {
-        refuse(&format!("work dir does not exist: {}", work.display()));
-    }
-    let work = core::canonicalize_lenient(&work);
+    let work = core::canonicalize_lenient(work);
 
     // The backend grants write access to whatever --work names, so a work
     // dir outside the sandbox is not a jail at all.
     if !core::is_within(&root.path, &work) {
-        core::diagnose(
-            PROG,
+        return Err(Fail::diag(
+            EX_CONFIG,
             &format!(
                 "REFUSING --work {}\n\
                  the backend grants write access to whatever --work names, so a\n\
@@ -458,11 +512,11 @@ fn jail(root: &core::SandboxRoot, work: PathBuf, allow_external: bool, command: 
                 root.path.display(),
                 root.origin
             ),
-        );
-        return EX_CONFIG;
+        ));
     }
 
-    let escaping = escaping_descriptors(&root.path);
+    let escaping = escaping_descriptors(&root.path, descriptors);
+    let mut warnings = Vec::new();
     if !escaping.is_empty() && !allow_external {
         let mut message = String::from("REFUSING - output is redirected outside the sandbox:\n");
         for item in &escaping {
@@ -474,89 +528,523 @@ fn jail(root: &core::SandboxRoot, work: PathBuf, allow_external: bool, command: 
              redirect inside {}, or pass --allow-external-output.",
             work.display()
         ));
-        core::diagnose(PROG, &message);
-        return EX_CONFIG;
+        return Err(Fail::diag(EX_CONFIG, &message));
     }
     if !escaping.is_empty() {
-        let mut message =
-            String::from("WARNING - output redirected outside the sandbox (allowed):\n");
+        warnings.push("WARNING - output redirected outside the sandbox (allowed):".into());
         for item in &escaping {
-            message.push_str(&format!("  {item}\n"));
+            warnings.push(format!("  {item}"));
         }
-        core::diagnose(PROG, message.trim_end());
     }
 
     let real_home = core::home_dir();
     let project_root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let tmpdir = work.join(".oxtmp");
-    if let Err(error) = fs::create_dir_all(&tmpdir) {
-        refuse(&format!("cannot create {}: {error}", tmpdir.display()));
-    }
+    std::fs::create_dir_all(&tmpdir)
+        .map_err(|error| Fail::diag(1, &format!("cannot create {}: {error}", tmpdir.display())))?;
 
     let existing: Vec<String> = sensitive_paths(&real_home, &project_root)
         .into_iter()
-        .filter(|path| fs::symlink_metadata(path).is_ok())
+        .filter(|path| std::fs::symlink_metadata(path).is_ok())
         .map(|path| path.to_string_lossy().into_owned())
         .collect();
-
-    // A fresh environment, not the caller's. The parent shell routinely
-    // holds OPENROUTER_API_KEY (via `op run`), and inheriting it would hand
-    // jailed code the key.
-    let jail_env: Vec<(String, String)> = vec![
-        ("HOME".into(), work.to_string_lossy().into_owned()),
-        ("REAL_HOME".into(), real_home.to_string_lossy().into_owned()),
-        (
-            "REPO_ROOT".into(),
-            project_root.to_string_lossy().into_owned(),
-        ),
-        ("OXBOX_EXISTING_PATHS".into(), existing.join("\n")),
-        (
-            "OXBOX_HOST_HAS_ROUTE".into(),
-            if host_has_route() { "1" } else { "0" }.into(),
-        ),
-        ("OXBOX_PLATFORM".into(), core::PLATFORM.into()),
-        ("TMPDIR".into(), tmpdir.to_string_lossy().into_owned()),
-        (
-            "PATH".into(),
-            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".into(),
-        ),
-        (
-            "TERM".into(),
-            env::var("TERM").unwrap_or_else(|_| "dumb".into()),
-        ),
-        (
-            "LANG".into(),
-            env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".into()),
-        ),
-        ("PYTHONDONTWRITEBYTECODE".into(), "1".into()),
-    ];
+    let env = jail_env(
+        &work,
+        &real_home,
+        &project_root,
+        &existing,
+        host_has_route(),
+    );
 
     let (argv, backend) = if cfg!(target_os = "macos") {
-        (macos_argv(&work, command), "seatbelt")
+        if !Path::new("/usr/bin/sandbox-exec").exists() {
+            return Err(Fail::diag(
+                1,
+                "/usr/bin/sandbox-exec not found; cannot jail on this macOS",
+            ));
+        }
+        (macos_argv(&find_profile()?, &work, command), "seatbelt")
     } else {
-        (linux_argv(&work, command, &jail_env), "bubblewrap")
+        let Some(bwrap) = core::which("bwrap") else {
+            return Err(Fail::diag(
+                1,
+                "bubblewrap (bwrap) not found.\n\
+                 it is the sandbox on Linux; without it there is no jail.\n\
+                   Debian/Ubuntu  sudo apt install bubblewrap\n\
+                   Fedora/RHEL    sudo dnf install bubblewrap\n\
+                   Arch           sudo pacman -S bubblewrap\n\
+                   Alpine         sudo apk add bubblewrap",
+            ));
+        };
+        (linux_argv(&bwrap, &work, command, &env), "bubblewrap")
     };
 
-    eprintln!("{PROG}: backend={backend} work={}", work.display());
-    eprintln!("{PROG}: network=DENIED writes={} only", work.display());
+    Ok(Plan {
+        work,
+        backend,
+        argv,
+        env,
+        warnings,
+    })
+}
+
+fn main() {
+    let args: Vec<String> = env::args().skip(1).collect();
+    process::exit(run(&args));
+}
+
+fn run(args: &[String]) -> i32 {
+    let root = match core::sandbox_root() {
+        Ok(root) => root,
+        Err(message) => {
+            eprint!("{}", Fail::diag(1, &message).text);
+            return 1;
+        }
+    };
+    let request = match parse(args, &root) {
+        Ok(request) => request,
+        Err(fail) => {
+            eprint!("{}", fail.text);
+            return fail.code;
+        }
+    };
+    let (work, allow_external, command) = match request {
+        Request::Help => {
+            print!("{USAGE}");
+            return 0;
+        }
+        Request::Version => {
+            println!("{PROG} {}", core::VERSION);
+            return 0;
+        }
+        Request::Skill => return core::print_skill(PROG),
+        Request::Launch {
+            work,
+            allow_external,
+            command,
+        } => (work, allow_external, command),
+    };
+
+    if cfg!(windows) || !cfg!(any(target_os = "macos", target_os = "linux")) {
+        if cfg!(windows) {
+            eprint!("{WINDOWS_HELP}");
+        } else {
+            eprint!(
+                "{}",
+                Fail::diag(
+                    1,
+                    &format!(
+                        "no sandbox backend for platform {:?}; refusing",
+                        core::PLATFORM
+                    )
+                )
+                .text
+            );
+        }
+        return EX_CONFIG;
+    }
+
+    launch(&root, &work, allow_external, &command)
+}
+
+#[cfg(unix)]
+fn launch(root: &core::SandboxRoot, work: &Path, allow_external: bool, command: &[String]) -> i32 {
+    use std::os::unix::process::CommandExt;
+
+    let planned = match plan(root, work, allow_external, command, &probe_descriptors()) {
+        Ok(planned) => planned,
+        Err(fail) => {
+            eprint!("{}", fail.text);
+            return fail.code;
+        }
+    };
+    for line in &planned.warnings {
+        eprintln!("{PROG}: {line}");
+    }
+    eprintln!(
+        "{PROG}: backend={} work={}",
+        planned.backend,
+        planned.work.display()
+    );
+    eprintln!(
+        "{PROG}: network=DENIED writes={} only",
+        planned.work.display()
+    );
     eprintln!("{PROG}: env=CLEARED (nothing from the parent shell crosses in)");
 
-    let mut child = process::Command::new(&argv[0]);
-    child.args(&argv[1..]).current_dir(&work).env_clear();
-    for (key, value) in &jail_env {
+    let mut child = process::Command::new(&planned.argv[0]);
+    child
+        .args(&planned.argv[1..])
+        .current_dir(&planned.work)
+        .env_clear();
+    for (key, value) in &planned.env {
         child.env(key, value);
     }
     let error = child.exec();
-    refuse(&format!("failed to start {}: {error}", argv[0]));
+    eprint!(
+        "{}",
+        Fail::diag(1, &format!("failed to start {}: {error}", planned.argv[0])).text
+    );
+    1
 }
 
 #[cfg(not(unix))]
-fn jail(
+fn launch(
     _root: &core::SandboxRoot,
-    _work: PathBuf,
+    _work: &Path,
     _allow_external: bool,
     _command: &[String],
 ) -> i32 {
     eprint!("{WINDOWS_HELP}");
     EX_CONFIG
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn args(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("oxbox-jail-{name}-{}", process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn root_at(dir: &Path) -> core::SandboxRoot {
+        core::SandboxRoot {
+            path: core::canonicalize_lenient(dir),
+            origin: "test".into(),
+        }
+    }
+
+    #[test]
+    fn parsing_the_command_line() {
+        let dir = scratch("parse");
+        let root = root_at(&dir);
+        assert_eq!(parse(&args(&["--help"]), &root), Ok(Request::Help));
+        assert_eq!(parse(&args(&["-h"]), &root), Ok(Request::Help));
+        assert_eq!(parse(&args(&["--version"]), &root), Ok(Request::Version));
+        assert_eq!(parse(&args(&["--skill"]), &root), Ok(Request::Skill));
+        assert_eq!(
+            parse(&args(&["--", "pytest", "-q"]), &root),
+            Ok(Request::Launch {
+                work: root.path.join("work"),
+                allow_external: false,
+                command: args(&["pytest", "-q"]),
+            })
+        );
+        assert_eq!(
+            parse(
+                &args(&["--sandbox", "alt", "--allow-external-output", "--", "true"]),
+                &root
+            ),
+            Ok(Request::Launch {
+                work: root.path.join("alt"),
+                allow_external: true,
+                command: args(&["true"]),
+            })
+        );
+        assert_eq!(
+            parse(&args(&["--work", "/elsewhere", "--", "true"]), &root),
+            Ok(Request::Launch {
+                work: PathBuf::from("/elsewhere"),
+                allow_external: false,
+                command: args(&["true"]),
+            })
+        );
+        // Flags after -- belong to the command.
+        assert_eq!(
+            parse(&args(&["--", "--help"]), &root),
+            Ok(Request::Launch {
+                work: root.path.join("work"),
+                allow_external: false,
+                command: args(&["--help"]),
+            })
+        );
+        for (bad, needle) in [
+            (vec!["--work"], "--work needs a directory"),
+            (vec!["--sandbox"], "--sandbox needs a name"),
+            (
+                vec!["--sandbox", "../x", "--", "true"],
+                "not a sandbox name",
+            ),
+            (vec!["--nope", "--", "true"], "unexpected argument --nope"),
+            (vec!["pytest"], "unexpected argument pytest"),
+            (vec![], "no command given"),
+            (vec!["--"], "no command given"),
+        ] {
+            let fail = parse(&args(&bad), &root).unwrap_err();
+            assert_eq!(fail.code, 2, "{bad:?}");
+            assert!(fail.text.contains(needle), "{bad:?}: {}", fail.text);
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_profile_is_found_from_a_build_tree() {
+        let profile = find_profile().unwrap();
+        assert!(
+            profile.ends_with(Path::new("profiles").join("jail.sb")),
+            "{profile:?}"
+        );
+        assert!(profile.is_file());
+    }
+
+    #[test]
+    fn the_sensitive_list_matches_the_platform_and_ends_with_the_projects_env() {
+        let home = Path::new("/h");
+        let project = Path::new("/p");
+        let paths = sensitive_paths(home, project);
+        assert!(paths.contains(&PathBuf::from("/h/.ssh")));
+        assert!(paths.contains(&PathBuf::from("/h/.aws")));
+        assert!(paths.contains(&PathBuf::from("/h/.claude")));
+        assert!(paths.contains(&PathBuf::from("/p/.env")));
+        if cfg!(target_os = "macos") {
+            assert!(paths.contains(&PathBuf::from("/h/Library/Keychains")));
+            assert!(!paths.contains(&PathBuf::from("/etc/shadow")));
+        } else {
+            assert!(paths.contains(&PathBuf::from("/etc/shadow")));
+            assert!(paths.contains(&PathBuf::from("/h/.kube/config")));
+        }
+    }
+
+    #[test]
+    fn the_route_probe_answers_without_sending() {
+        // Either answer is right for some host; the property is that the
+        // probe completes and reports a bool rather than hanging or failing.
+        let _ = host_has_route();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_regular_file_descriptor_resolves_and_a_pipe_does_not() {
+        use std::os::fd::AsRawFd;
+        let dir = scratch("fd");
+        let path = dir.join("out.txt");
+        let file = fs::File::create(&path).unwrap();
+        let target = descriptor_target(file.as_raw_fd()).expect("a regular file has a path");
+        assert_eq!(target, core::canonicalize_lenient(&path));
+        let (reader, _writer) = std::io::pipe().unwrap();
+        assert_eq!(descriptor_target(reader.as_raw_fd()), None);
+        assert_eq!(descriptor_target(9999), None);
+        drop(file);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn escapes_are_files_outside_the_root() {
+        let root = Path::new("/r");
+        let descriptors = vec![
+            ("stdout", Some(PathBuf::from("/r/work/log.txt"))),
+            ("stderr", Some(PathBuf::from("/elsewhere/notes.md"))),
+            ("other", None),
+        ];
+        assert_eq!(
+            escaping_descriptors(root, &descriptors),
+            vec!["stderr -> /elsewhere/notes.md".to_string()]
+        );
+        assert!(escaping_descriptors(root, &[("stdout", None)]).is_empty());
+    }
+
+    #[test]
+    fn the_jailed_environment_is_exactly_what_jailtest_expects() {
+        let env = jail_env(
+            Path::new("/r/work"),
+            Path::new("/home/me"),
+            Path::new("/proj"),
+            &["/home/me/.ssh".into(), "/proj/.env".into()],
+            true,
+        );
+        let get = |key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        assert_eq!(get("HOME"), Some("/r/work"));
+        assert_eq!(get("REAL_HOME"), Some("/home/me"));
+        assert_eq!(get("REPO_ROOT"), Some("/proj"));
+        assert_eq!(
+            get("OXBOX_EXISTING_PATHS"),
+            Some("/home/me/.ssh\n/proj/.env")
+        );
+        assert_eq!(get("OXBOX_HOST_HAS_ROUTE"), Some("1"));
+        assert_eq!(get("OXBOX_PLATFORM"), Some(core::PLATFORM));
+        assert_eq!(get("TMPDIR"), Some("/r/work/.oxtmp"));
+        assert_eq!(get("PYTHONDONTWRITEBYTECODE"), Some("1"));
+        assert!(get("PATH").unwrap().starts_with("/opt/homebrew/bin:"));
+        assert!(get("TERM").is_some() && get("LANG").is_some());
+        assert!(get("OPENROUTER_API_KEY").is_none());
+        let offline = jail_env(
+            Path::new("/w"),
+            Path::new("/h"),
+            Path::new("/p"),
+            &[],
+            false,
+        );
+        assert_eq!(
+            offline
+                .iter()
+                .find(|(k, _)| k == "OXBOX_HOST_HAS_ROUTE")
+                .map(|(_, v)| v.as_str()),
+            Some("0")
+        );
+    }
+
+    #[test]
+    fn the_seatbelt_argument_vector() {
+        let argv = macos_argv(
+            Path::new("/p/jail.sb"),
+            Path::new("/r/work"),
+            &args(&["pytest", "-q"]),
+        );
+        assert_eq!(
+            argv,
+            args(&[
+                "/usr/bin/sandbox-exec",
+                "-f",
+                "/p/jail.sb",
+                "-D",
+                "WORK=/r/work",
+                "pytest",
+                "-q"
+            ])
+        );
+    }
+
+    #[test]
+    fn the_bubblewrap_argument_vector() {
+        let env = vec![("HOME".to_string(), "/r/work".to_string())];
+        let argv = linux_argv(
+            Path::new("/usr/bin/bwrap"),
+            Path::new("/r/work"),
+            &args(&["pytest", "-q"]),
+            &env,
+        );
+        assert_eq!(argv[0], "/usr/bin/bwrap");
+        for required in [
+            "--unshare-all",
+            "--die-with-parent",
+            "--new-session",
+            "--clearenv",
+        ] {
+            assert!(
+                argv.contains(&required.to_string()),
+                "{required} missing: {argv:?}"
+            );
+        }
+        let clear = argv.iter().position(|a| a == "--clearenv").unwrap();
+        assert_eq!(
+            &argv[clear + 1..clear + 4],
+            &args(&["--setenv", "HOME", "/r/work"])[..]
+        );
+        assert_eq!(&argv[argv.len() - 2..], &args(&["pytest", "-q"])[..]);
+        let bind = argv.iter().position(|a| a == "--bind").unwrap();
+        assert_eq!(
+            &argv[bind..bind + 5],
+            &args(&["--bind", "/r/work", "/r/work", "--chdir", "/r/work"])[..]
+        );
+        // The work dir is the only writable bind; the system is read-only.
+        assert_eq!(argv.iter().filter(|a| *a == "--bind").count(), 1);
+        assert!(argv.iter().any(|a| a == "--ro-bind" || a == "--symlink"));
+    }
+
+    #[test]
+    fn the_plan_refuses_a_work_dir_outside_the_root_and_a_missing_one() {
+        let dir = scratch("plan-refuse");
+        let root = root_at(&dir.join("root"));
+        fs::create_dir_all(root.path.join("work")).unwrap();
+        let outside = dir.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let fail = plan(&root, &outside, false, &args(&["true"]), &[]).unwrap_err();
+        assert_eq!(fail.code, EX_CONFIG);
+        assert!(fail.text.contains("REFUSING --work"), "{}", fail.text);
+        assert!(fail.text.contains("comes from test"), "{}", fail.text);
+        let fail = plan(
+            &root,
+            &root.path.join("absent"),
+            false,
+            &args(&["true"]),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(fail.code, 1);
+        assert!(fail.text.contains("does not exist"), "{}", fail.text);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_plan_refuses_an_escaping_descriptor_unless_allowed() {
+        let dir = scratch("plan-fd");
+        let root = root_at(&dir.join("root"));
+        let work = root.path.join("work");
+        fs::create_dir_all(&work).unwrap();
+        let outside = Some(PathBuf::from("/elsewhere/out.txt"));
+        let inside = Some(work.join("log.txt"));
+        let fail = plan(
+            &root,
+            &work,
+            false,
+            &args(&["true"]),
+            &[("stdout", outside.clone())],
+        )
+        .unwrap_err();
+        assert_eq!(fail.code, EX_CONFIG);
+        assert!(
+            fail.text
+                .contains("REFUSING - output is redirected outside"),
+            "{}",
+            fail.text
+        );
+        assert!(
+            fail.text.contains("stdout -> /elsewhere/out.txt"),
+            "{}",
+            fail.text
+        );
+        let ok_inside = plan(&root, &work, false, &args(&["true"]), &[("stdout", inside)]);
+        let ok_allowed = plan(&root, &work, true, &args(&["true"]), &[("stdout", outside)]);
+        // Both need a backend on this host; when there is none the refusal
+        // is about the backend, not the descriptor, and the case is moot.
+        let backend_here = cfg!(target_os = "macos") || core::which("bwrap").is_some();
+        if backend_here {
+            let planned = ok_inside.unwrap();
+            assert!(planned.warnings.is_empty());
+            let planned = ok_allowed.unwrap();
+            assert!(
+                planned.warnings.iter().any(|w| w.contains("(allowed)")),
+                "{:?}",
+                planned.warnings
+            );
+            assert!(
+                planned
+                    .warnings
+                    .iter()
+                    .any(|w| w.contains("stdout -> /elsewhere/out.txt"))
+            );
+            assert_eq!(planned.work, core::canonicalize_lenient(&work));
+            assert!(work.join(".oxtmp").is_dir());
+            assert!(planned.env.iter().any(|(k, _)| k == "OXBOX_EXISTING_PATHS"));
+            assert!(planned.argv.ends_with(&args(&["true"])));
+            assert!(["seatbelt", "bubblewrap"].contains(&planned.backend));
+        } else {
+            assert!(ok_inside.unwrap_err().text.contains("bwrap"));
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn run_answers_the_informational_flags_without_a_root_on_disk() {
+        assert_eq!(run(&args(&["--version"])), 0);
+        assert_eq!(run(&args(&["--help"])), 0);
+        assert_eq!(run(&args(&["--nope"])), 2);
+        assert_eq!(run(&[]), 2);
+    }
+
+    #[test]
+    fn diagnoses_carry_the_prefix_on_every_line() {
+        assert_eq!(
+            Fail::diag(78, "a\nb").text,
+            "oxbox-jail: a\noxbox-jail: b\n"
+        );
+    }
 }

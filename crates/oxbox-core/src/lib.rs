@@ -417,43 +417,409 @@ pub fn has_parent_traversal(rel: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Tests that set environment variables take this, because the
+    /// environment is process-wide and the test runner is multi-threaded.
+    static ENV: Mutex<()> = Mutex::new(());
+
+    fn env_lock() -> MutexGuard<'static, ()> {
+        ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("oxbox-core-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Set variables for the duration of a closure, restoring the previous
+    /// values afterwards, even if the closure panics.
+    fn with_env<T>(vars: &[(&str, Option<&str>)], body: impl FnOnce() -> T) -> T {
+        let _guard = env_lock();
+        let saved: Vec<(String, Option<std::ffi::OsString>)> = vars
+            .iter()
+            .map(|(key, _)| (key.to_string(), env::var_os(key)))
+            .collect();
+        for (key, value) in vars {
+            match value {
+                Some(value) => unsafe { env::set_var(key, value) },
+                None => unsafe { env::remove_var(key) },
+            }
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+        for (key, value) in saved {
+            match value {
+                Some(value) => unsafe { env::set_var(&key, value) },
+                None => unsafe { env::remove_var(&key) },
+            }
+        }
+        result.unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+    }
+
+    #[test]
+    fn the_version_is_the_workspace_version() {
+        assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
+        assert!(VERSION.split('.').count() == 3);
+    }
+
+    #[test]
+    fn the_platform_name_is_pythons() {
+        assert!(["darwin", "linux", "win32", "unknown"].contains(&PLATFORM));
+    }
 
     #[test]
     fn the_runbook_leaves_with_lf_endings() {
         assert!(!skill_text().contains('\r'));
         assert!(skill_text().starts_with("---\n"));
+        assert!(skill_text().contains(SKILL_PATH_IN_TEXT));
     }
 
     #[test]
-    fn names_are_one_component() {
-        assert!(sandbox_name("work").is_ok());
-        assert!(sandbox_name("alt-2").is_ok());
-        for bad in ["", ".", "..", ".hidden", "a/b", "a\\b", "c:x"] {
-            assert!(sandbox_name(bad).is_err(), "{bad:?} should be refused");
-        }
+    fn the_skill_dir_is_found_from_a_build_tree() {
+        // The test binary sits in target/debug/deps, three levels below the
+        // checkout, which is the "build tree" case the lookup promises.
+        let dir = find_skill_dir().expect("the checkout carries the skill");
+        assert!(dir.join("SKILL.md").is_file());
+        assert!(dir.ends_with(Path::new(".claude").join("skills").join(SKILL_NAME)));
+    }
+
+    #[test]
+    fn print_skill_returns_zero_here() {
+        assert_eq!(print_skill("test"), 0);
+    }
+
+    #[test]
+    fn canonicalize_lenient_resolves_the_existing_prefix() {
+        let dir = scratch("canon");
+        let real = fs::canonicalize(&dir).unwrap();
+        let missing = dir.join("not").join("yet");
+        assert_eq!(canonicalize_lenient(&missing), real.join("not").join("yet"));
+        assert_eq!(canonicalize_lenient(&dir), real);
+        // A relative path that exists resolves through the working directory.
+        assert!(canonicalize_lenient(Path::new(".")).is_absolute());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonicalize_lenient_follows_symlinks_in_the_prefix() {
+        let dir = scratch("canon-link");
+        fs::create_dir_all(dir.join("real")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).unwrap();
+        let resolved = canonicalize_lenient(&dir.join("link").join("later"));
+        assert!(
+            resolved.ends_with(Path::new("real").join("later")),
+            "{resolved:?}"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn strip_verbatim_only_touches_windows_prefixes() {
+        let plain = PathBuf::from("/usr/local/bin");
+        assert_eq!(strip_verbatim(plain.clone()), plain);
+    }
+
+    #[test]
+    fn home_and_tilde_follow_the_environment() {
+        with_env(
+            &[
+                ("HOME", Some("/tmp/oxbox-home")),
+                ("USERPROFILE", Some("/tmp/oxbox-home")),
+            ],
+            || {
+                assert_eq!(home_dir(), PathBuf::from("/tmp/oxbox-home"));
+                assert_eq!(expand_tilde("~"), PathBuf::from("/tmp/oxbox-home"));
+                assert_eq!(
+                    expand_tilde("~/x/y"),
+                    PathBuf::from("/tmp/oxbox-home").join("x/y")
+                );
+                assert_eq!(expand_tilde("plain"), PathBuf::from("plain"));
+                assert_eq!(expand_tilde("~user/x"), PathBuf::from("~user/x"));
+            },
+        );
+    }
+
+    #[test]
+    fn home_falls_back_to_dot_without_the_variable() {
+        with_env(&[("HOME", None), ("USERPROFILE", None)], || {
+            assert_eq!(home_dir(), PathBuf::from("."));
+        });
+    }
+
+    #[test]
+    fn config_path_honors_the_platform_variable() {
+        with_env(
+            &[
+                ("XDG_CONFIG_HOME", Some("/tmp/oxbox-xdg")),
+                ("APPDATA", Some("/tmp/oxbox-xdg")),
+                ("HOME", Some("/tmp/oxbox-home")),
+                ("USERPROFILE", Some("/tmp/oxbox-home")),
+            ],
+            || {
+                assert_eq!(
+                    config_path(),
+                    PathBuf::from("/tmp/oxbox-xdg")
+                        .join("oxbox")
+                        .join(CONFIG_FILE)
+                );
+            },
+        );
+        with_env(
+            &[
+                ("XDG_CONFIG_HOME", None),
+                ("APPDATA", None),
+                ("HOME", Some("/tmp/oxbox-home")),
+                ("USERPROFILE", Some("/tmp/oxbox-home")),
+            ],
+            || {
+                let path = config_path();
+                assert!(path.starts_with("/tmp/oxbox-home"), "{path:?}");
+                assert!(path.ends_with(Path::new("oxbox").join(CONFIG_FILE)));
+            },
+        );
+        // An empty XDG_CONFIG_HOME means unset, as the spec says.
+        with_env(
+            &[
+                ("XDG_CONFIG_HOME", Some("")),
+                ("HOME", Some("/tmp/oxbox-home")),
+            ],
+            || {
+                if !cfg!(windows) {
+                    assert!(config_path().starts_with("/tmp/oxbox-home"));
+                }
+            },
+        );
     }
 
     #[test]
     fn ini_reads_one_key() {
-        let dir = env::temp_dir().join(format!("oxbox-core-ini-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("ini");
         let path = dir.join("config.ini");
         fs::write(
             &path,
-            "# comment\n[other]\nroot = nope\n[sandbox]\nRoot = /x/y\n",
+            "# comment\n; another\n[other]\nroot = nope\n\n[sandbox]\nRoot = /x/y\nkey: with colon\n",
         )
         .unwrap();
         assert_eq!(
             ini_get(&path, "sandbox", "root").unwrap(),
             Some("/x/y".to_string())
         );
+        assert_eq!(
+            ini_get(&path, "sandbox", "key").unwrap(),
+            Some("with colon".to_string())
+        );
+        assert_eq!(
+            ini_get(&path, "other", "root").unwrap(),
+            Some("nope".to_string())
+        );
         assert_eq!(ini_get(&path, "sandbox", "missing").unwrap(), None);
+        assert_eq!(ini_get(&path, "absent", "root").unwrap(), None);
         assert_eq!(
             ini_get(&dir.join("absent.ini"), "sandbox", "root").unwrap(),
             None
         );
         fs::write(&path, "[sandbox]\nthis is not a setting\n").unwrap();
-        assert!(ini_get(&path, "sandbox", "root").is_err());
+        let error = ini_get(&path, "sandbox", "root").unwrap_err();
+        assert!(error.contains("line 2"), "{error}");
+        // A key before any section header belongs to no section.
+        fs::write(&path, "root = early\n[sandbox]\nroot = late\n").unwrap();
+        assert_eq!(
+            ini_get(&path, "sandbox", "root").unwrap(),
+            Some("late".to_string())
+        );
+        assert_eq!(
+            ini_get(&path, "", "root").unwrap(),
+            Some("early".to_string())
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn ini_reports_an_unreadable_file() {
+        let dir = scratch("ini-dir");
+        // A directory where a file is expected is neither absent nor readable.
+        let error = ini_get(&dir, "sandbox", "root").unwrap_err();
+        assert!(error.contains("cannot read"), "{error}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_sandbox_root_resolves_env_then_config_then_default() {
+        let dir = scratch("root");
+        let cfg = dir.join("cfg");
+        fs::create_dir_all(cfg.join("oxbox")).unwrap();
+        let cfg_root = dir.join("from-config");
+        fs::write(
+            cfg.join("oxbox").join(CONFIG_FILE),
+            format!("[sandbox]\nroot = {}\n", cfg_root.display()),
+        )
+        .unwrap();
+        let env_root = dir.join("from-env");
+        let cfg_text = cfg.to_string_lossy().into_owned();
+        let env_text = env_root.to_string_lossy().into_owned();
+        with_env(
+            &[
+                ("OXBOX_SANDBOX_ROOT", Some(env_text.as_str())),
+                ("XDG_CONFIG_HOME", Some(cfg_text.as_str())),
+                ("APPDATA", Some(cfg_text.as_str())),
+            ],
+            || {
+                let root = sandbox_root().unwrap();
+                assert_eq!(root.origin, "OXBOX_SANDBOX_ROOT");
+                assert_eq!(root.path, canonicalize_lenient(&env_root));
+            },
+        );
+        with_env(
+            &[
+                ("OXBOX_SANDBOX_ROOT", None),
+                ("XDG_CONFIG_HOME", Some(cfg_text.as_str())),
+                ("APPDATA", Some(cfg_text.as_str())),
+            ],
+            || {
+                let root = sandbox_root().unwrap();
+                assert!(root.origin.ends_with(CONFIG_FILE), "{}", root.origin);
+                assert_eq!(root.path, canonicalize_lenient(&cfg_root));
+            },
+        );
+        // An empty variable counts as unset.
+        let empty_cfg = dir.join("empty-cfg");
+        fs::create_dir_all(&empty_cfg).unwrap();
+        let empty_text = empty_cfg.to_string_lossy().into_owned();
+        with_env(
+            &[
+                ("OXBOX_SANDBOX_ROOT", Some("")),
+                ("XDG_CONFIG_HOME", Some(empty_text.as_str())),
+                ("APPDATA", Some(empty_text.as_str())),
+            ],
+            || {
+                let root = sandbox_root().unwrap();
+                assert_eq!(root.origin, "default");
+                assert!(root.path.ends_with("sandbox"), "{:?}", root.path);
+                assert!(root.path.is_absolute());
+            },
+        );
+        // A relative value resolves against the working directory, and ~ expands.
+        with_env(
+            &[
+                ("OXBOX_SANDBOX_ROOT", Some("rel/boxes")),
+                ("XDG_CONFIG_HOME", Some(empty_text.as_str())),
+            ],
+            || {
+                let root = sandbox_root().unwrap();
+                assert!(
+                    root.path.ends_with(Path::new("rel").join("boxes")),
+                    "{:?}",
+                    root.path
+                );
+            },
+        );
+        with_env(
+            &[
+                ("OXBOX_SANDBOX_ROOT", Some("~/boxes")),
+                ("HOME", Some(dir.to_str().unwrap())),
+                ("USERPROFILE", Some(dir.to_str().unwrap())),
+            ],
+            || {
+                let root = sandbox_root().unwrap();
+                assert_eq!(root.path, canonicalize_lenient(&dir.join("boxes")));
+            },
+        );
+        // A malformed config file is an error, not a silent default.
+        fs::write(
+            cfg.join("oxbox").join(CONFIG_FILE),
+            "[sandbox]\nbroken line\n",
+        )
+        .unwrap();
+        with_env(
+            &[
+                ("OXBOX_SANDBOX_ROOT", None),
+                ("XDG_CONFIG_HOME", Some(cfg_text.as_str())),
+                ("APPDATA", Some(cfg_text.as_str())),
+            ],
+            || {
+                assert!(sandbox_root().is_err());
+            },
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn names_are_one_component() {
+        assert_eq!(sandbox_name("work").unwrap(), "work");
+        assert!(sandbox_name("alt-2").is_ok());
+        for bad in ["", ".", "..", ".hidden", "a/b", "a\\b", "c:x", "../x"] {
+            let error = sandbox_name(bad).unwrap_err();
+            assert!(error.contains("not a sandbox name"), "{bad:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn within_means_equal_or_below() {
+        let root = Path::new("/a/b");
+        assert!(is_within(root, Path::new("/a/b")));
+        assert!(is_within(root, Path::new("/a/b/c/d")));
+        assert!(!is_within(root, Path::new("/a/bc")));
+        assert!(!is_within(root, Path::new("/a")));
+        assert!(!is_within(root, Path::new("/x/a/b")));
+    }
+
+    #[test]
+    fn helper_dirs_start_beside_the_executable_and_never_repeat() {
+        let dirs = helper_dirs();
+        assert_eq!(dirs[0], real_exe_dir());
+        assert!(
+            dirs.iter()
+                .any(|d| d.ends_with(Path::new("libexec").join("bin")))
+        );
+        assert!(
+            dirs.iter()
+                .any(|d| d.ends_with(Path::new("libexec").join("oxbox").join("bin")))
+        );
+        let mut unique = dirs.clone();
+        unique.dedup();
+        assert_eq!(unique.len(), dirs.len());
+        assert!(
+            !dirs.contains(&env::current_dir().unwrap())
+                || real_exe_dir() == env::current_dir().unwrap()
+        );
+    }
+
+    #[test]
+    fn executables_are_named_per_platform() {
+        let names = executable_names("oxbox-send");
+        if cfg!(windows) {
+            assert_eq!(
+                names,
+                vec!["oxbox-send.exe".to_string(), "oxbox-send".to_string()]
+            );
+            assert_eq!(executable_names("x.exe"), vec!["x.exe".to_string()]);
+        } else {
+            assert_eq!(names, vec!["oxbox-send".to_string()]);
+        }
+    }
+
+    #[test]
+    fn which_and_find_helper_search_path() {
+        let dir = scratch("path");
+        let name = if cfg!(windows) {
+            "oxbox-fake-helper.exe"
+        } else {
+            "oxbox-fake-helper"
+        };
+        fs::write(dir.join(name), b"").unwrap();
+        let path_text = dir.to_string_lossy().into_owned();
+        with_env(&[("PATH", Some(path_text.as_str()))], || {
+            assert_eq!(which("oxbox-fake-helper"), Some(dir.join(name)));
+            assert_eq!(find_helper("oxbox-fake-helper"), Some(dir.join(name)));
+            assert_eq!(which("oxbox-no-such-helper"), None);
+            assert_eq!(find_helper("oxbox-no-such-helper"), None);
+        });
+        with_env(&[("PATH", None)], || {
+            assert_eq!(which("oxbox-fake-helper"), None);
+        });
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -461,6 +827,17 @@ mod tests {
     fn traversal_is_seen_on_both_separators() {
         assert!(has_parent_traversal("../x"));
         assert!(has_parent_traversal("a\\..\\b"));
+        assert!(has_parent_traversal("a/../b"));
         assert!(!has_parent_traversal("a/b..c"));
+        assert!(!has_parent_traversal("..a/b"));
+        assert!(!has_parent_traversal("plain"));
+    }
+
+    #[test]
+    fn diagnose_prefixes_every_line() {
+        // Writes to the real stderr; the property under test is that it does
+        // not panic on an empty message or a multi-line one.
+        diagnose("test", "");
+        diagnose("test", "one\ntwo");
     }
 }

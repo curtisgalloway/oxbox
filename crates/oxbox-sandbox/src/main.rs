@@ -8,6 +8,11 @@
 //! This is the executable `oxbox sandbox` runs. It lives in a libexec
 //! directory rather than on PATH; oxbox finds it from its own location.
 //! Standard library only.
+//!
+//! Every refusal is a value (`Fail`) returned to `main`, which prints and
+//! exits, and the operations take their input and output streams as
+//! parameters. Nothing below `main` touches the process, which is what lets
+//! the unit tests drive every operation against a scratch root.
 
 use std::env;
 use std::fs;
@@ -66,18 +71,40 @@ recorded source, or a named file does not exist; 78 for a refused path.
 
 const EX_CONFIG: i32 = 78;
 
+/// How a run ends other than by succeeding: the text for stderr, already in
+/// its final form, and the exit code.
+#[derive(Debug, PartialEq)]
+struct Fail {
+    code: i32,
+    text: String,
+}
+
+impl Fail {
+    /// A diagnosis in the tool's own voice: every line prefixed.
+    fn diag(code: i32, message: &str) -> Fail {
+        let text = message
+            .lines()
+            .map(|line| format!("{PROG}: {line}\n"))
+            .collect();
+        Fail { code, text }
+    }
+
+    /// A refused path: exit 78, like the jail's refusals.
+    fn refuse(message: &str) -> Fail {
+        Fail::diag(EX_CONFIG, message)
+    }
+
+    /// An argparse-style usage error.
+    fn usage(message: &str) -> Fail {
+        Fail {
+            code: 2,
+            text: format!("oxbox sandbox: error: {message}\n"),
+        }
+    }
+}
+
 fn say(message: &str) {
     core::diagnose(PROG, message);
-}
-
-fn refuse(message: &str) -> ! {
-    say(message);
-    process::exit(EX_CONFIG);
-}
-
-fn fail(code: i32, message: &str) -> ! {
-    say(message);
-    process::exit(code);
 }
 
 /// The selected sandbox: its tree, and the record of where --create copied
@@ -101,29 +128,32 @@ impl Sandbox {
         }
     }
 
-    fn git(&self, args: &[&str]) {
+    fn git(&self, args: &[&str]) -> Result<(), Fail> {
         let status = Command::new("git")
             .arg("-C")
             .arg(&self.work)
             .args(args)
             .status();
         match status {
-            Ok(status) if status.success() => {}
-            Ok(status) => fail(1, &format!("git {} failed: {status}", args.join(" "))),
-            Err(error) => fail(1, &format!("cannot run git: {error}")),
+            Ok(status) if status.success() => Ok(()),
+            Ok(status) => Err(Fail::diag(
+                1,
+                &format!("git {} failed: {status}", args.join(" ")),
+            )),
+            Err(error) => Err(Fail::diag(1, &format!("cannot run git: {error}"))),
         }
     }
 
     /// Record a baseline change: everything after --create, or only the named
     /// paths after --add and --remove, so an uncommitted --write (or the
     /// model's applied patch) elsewhere in the tree stays out of the baseline.
-    fn commit(&self, message: &str, paths: &[String]) {
+    fn commit(&self, message: &str, paths: &[String]) -> Result<(), Fail> {
         if paths.is_empty() {
-            self.git(&["add", "-A"]);
+            self.git(&["add", "-A"])?;
         } else {
             let mut args = vec!["add", "-A", "--"];
             args.extend(paths.iter().map(String::as_str));
-            self.git(&args);
+            self.git(&args)?;
         }
         self.git(&[
             "-c",
@@ -135,15 +165,17 @@ impl Sandbox {
             "--allow-empty",
             "-m",
             message,
-        ]);
+        ])
     }
 
-    fn require(&self) {
-        if !self.work.join(".git").is_dir() {
-            fail(
+    fn require(&self) -> Result<(), Fail> {
+        if self.work.join(".git").is_dir() {
+            Ok(())
+        } else {
+            Err(Fail::diag(
                 3,
                 "no sandbox here; create one with oxbox sandbox --create /path/to/repo file...",
-            );
+            ))
         }
     }
 
@@ -155,20 +187,23 @@ impl Sandbox {
     /// outside it through a link the model's patch could have created. .git
     /// is refused because it is the baseline's bookkeeping, not a sandbox
     /// file.
-    fn work_path(&self, rel: &str, must_exist: bool) -> PathBuf {
+    fn work_path(&self, rel: &str, must_exist: bool) -> Result<PathBuf, Fail> {
         if is_rooted(rel) {
-            refuse(&format!("REFUSING absolute path: {rel}"));
+            return Err(Fail::refuse(&format!("REFUSING absolute path: {rel}")));
         }
         if core::has_parent_traversal(rel) {
-            refuse(&format!("REFUSING parent traversal: {rel}"));
+            return Err(Fail::refuse(&format!("REFUSING parent traversal: {rel}")));
         }
         let first = rel.replace('\\', "/");
         if first.split('/').next() == Some(".git") {
-            refuse(&format!("REFUSING a path inside .git: {rel}"));
+            return Err(Fail::refuse(&format!("REFUSING a path inside .git: {rel}")));
         }
         let full = self.work.join(rel);
         if must_exist && fs::symlink_metadata(&full).is_err() {
-            fail(3, &format!("no such file in the sandbox: {rel}"));
+            return Err(Fail::diag(
+                3,
+                &format!("no such file in the sandbox: {rel}"),
+            ));
         }
         // Resolve every existing component and require the result to stay
         // under the work tree -- a symlink anywhere on the way would put it
@@ -180,19 +215,18 @@ impl Sandbox {
                 None => break,
             }
         }
-        let root = fs::canonicalize(&self.work).unwrap_or_else(|error| {
-            refuse(&format!("REFUSING unresolvable path: {rel} ({error})"))
-        });
-        let resolved = fs::canonicalize(&probe).unwrap_or_else(|error| {
-            refuse(&format!("REFUSING unresolvable path: {rel} ({error})"))
-        });
+        let unresolvable = |error: io::Error| {
+            Fail::refuse(&format!("REFUSING unresolvable path: {rel} ({error})"))
+        };
+        let root = fs::canonicalize(&self.work).map_err(unresolvable)?;
+        let resolved = fs::canonicalize(&probe).map_err(unresolvable)?;
         if !core::is_within(&root, &resolved) {
-            refuse(&format!(
+            return Err(Fail::refuse(&format!(
                 "REFUSING path resolving outside the sandbox: {rel} -> {}",
                 resolved.display()
-            ));
+            )));
         }
-        full
+        Ok(full)
     }
 
     /// Every sandbox under the root, by name.
@@ -234,14 +268,13 @@ fn is_rooted(rel: &str) -> bool {
 /// blows up half-deleted. POSIX does not care -- permission to unlink comes
 /// from the directory there -- which is why this only ever shows up on
 /// Windows.
-fn rmtree_force(path: &Path) {
+fn rmtree_force(path: &Path) -> Result<(), Fail> {
     if fs::remove_dir_all(path).is_ok() {
-        return;
+        return Ok(());
     }
     make_writable(path);
-    if let Err(error) = fs::remove_dir_all(path) {
-        fail(1, &format!("cannot remove {}: {error}", path.display()));
-    }
+    fs::remove_dir_all(path)
+        .map_err(|error| Fail::diag(1, &format!("cannot remove {}: {error}", path.display())))
 }
 
 fn make_writable(path: &Path) {
@@ -265,16 +298,16 @@ fn make_writable(path: &Path) {
 ///
 /// The traversal class oxbox-patch refuses in patches applies just as much
 /// to seed arguments, which would otherwise copy straight past the boundary.
-fn validate(source: &Path, rel: &str) {
+fn validate(source: &Path, rel: &str) -> Result<(), Fail> {
     if is_rooted(rel) {
-        refuse(&format!("REFUSING absolute path: {rel}"));
+        return Err(Fail::refuse(&format!("REFUSING absolute path: {rel}")));
     }
     if core::has_parent_traversal(rel) {
-        refuse(&format!("REFUSING parent traversal: {rel}"));
+        return Err(Fail::refuse(&format!("REFUSING parent traversal: {rel}")));
     }
     let full = source.join(rel);
     let Ok(meta) = fs::symlink_metadata(&full) else {
-        fail(3, &format!("missing in source: {rel}"));
+        return Err(Fail::diag(3, &format!("missing in source: {rel}")));
     };
     // A copied symlink aimed at ~/.ssh or /etc would put a live handle to the
     // outside inside the work tree, for anything that touches it outside the
@@ -283,7 +316,9 @@ fn validate(source: &Path, rel: &str) {
         let target = fs::read_link(&full)
             .map(|t| t.to_string_lossy().into_owned())
             .unwrap_or_default();
-        refuse(&format!("REFUSING symlink: {rel} -> {target}"));
+        return Err(Fail::refuse(&format!(
+            "REFUSING symlink: {rel} -> {target}"
+        )));
     }
     // The named path is not the only place a link can hide. An intermediate
     // component does the same job: seeding "gate/creds.txt" where gate is a
@@ -291,24 +326,27 @@ fn validate(source: &Path, rel: &str) {
     // neither a symlink nor a directory, and a copy reads straight through
     // it. Resolving the whole chain and requiring it to stay under the source
     // root is the check that closes that, and every variant like it.
-    let root = fs::canonicalize(source)
-        .unwrap_or_else(|error| refuse(&format!("REFUSING unresolvable path: {rel} ({error})")));
-    let resolved = fs::canonicalize(&full)
-        .unwrap_or_else(|error| refuse(&format!("REFUSING unresolvable path: {rel} ({error})")));
+    let unresolvable =
+        |error: io::Error| Fail::refuse(&format!("REFUSING unresolvable path: {rel} ({error})"));
+    let root = fs::canonicalize(source).map_err(unresolvable)?;
+    let resolved = fs::canonicalize(&full).map_err(unresolvable)?;
     if !core::is_within(&root, &resolved) {
-        refuse(&format!(
+        return Err(Fail::refuse(&format!(
             "REFUSING path resolving outside the source: {rel} -> {}",
             resolved.display()
-        ));
+        )));
     }
     if meta.is_dir() {
         // Directories matter as much as files: a symlinked directory inside a
         // tree would be dereferenced by the copy and its target's contents
         // copied into the sandbox.
         if let Some(name) = first_symlink_within(&full) {
-            refuse(&format!("REFUSING {rel}: contains symlink {name}"));
+            return Err(Fail::refuse(&format!(
+                "REFUSING {rel}: contains symlink {name}"
+            )));
         }
     }
+    Ok(())
 }
 
 fn first_symlink_within(dir: &Path) -> Option<String> {
@@ -356,32 +394,31 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 /// Copy validated files from the source repo into the work tree.
-fn copy_in(sandbox: &Sandbox, source: &Path, relatives: &[String]) {
+fn copy_in(sandbox: &Sandbox, source: &Path, relatives: &[String]) -> Result<(), Fail> {
     for rel in relatives {
         let destination = sandbox.work.join(rel);
-        if let Some(parent) = destination.parent()
-            && let Err(error) = fs::create_dir_all(parent)
-        {
-            fail(1, &format!("cannot create {}: {error}", parent.display()));
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                Fail::diag(1, &format!("cannot create {}: {error}", parent.display()))
+            })?;
         }
         let origin = source.join(rel);
         let result = if origin.is_dir() {
             if destination.exists() {
-                rmtree_force(&destination);
+                rmtree_force(&destination)?;
             }
             copy_tree(&origin, &destination)
         } else {
             copy_file(&origin, &destination)
         };
-        if let Err(error) = result {
-            fail(1, &format!("cannot copy {rel}: {error}"));
-        }
+        result.map_err(|error| Fail::diag(1, &format!("cannot copy {rel}: {error}")))?;
         say(&format!("seeded {rel}"));
     }
+    Ok(())
 }
 
 /// Every file under a tree, skipping .git and .oxtmp, as sandbox-relative
-/// POSIX paths.
+/// POSIX paths, sorted.
 fn files_within(tree: &Path) -> Vec<String> {
     fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
         let Ok(entries) = fs::read_dir(dir) else {
@@ -413,126 +450,123 @@ fn files_within(tree: &Path) -> Vec<String> {
     found
 }
 
-fn op_create(sandbox: &Sandbox, paths: &[String]) -> i32 {
+fn op_create(sandbox: &Sandbox, paths: &[String]) -> Result<i32, Fail> {
     let Some((repo, relatives)) = paths.split_first() else {
-        say("--create needs the repo and at least one file");
-        return 2;
+        return Err(Fail::diag(
+            2,
+            "--create needs the repo and at least one file",
+        ));
     };
     if relatives.is_empty() {
-        say("--create needs the repo and at least one file");
-        return 2;
+        return Err(Fail::diag(
+            2,
+            "--create needs the repo and at least one file",
+        ));
     }
     let Ok(source) = fs::canonicalize(repo) else {
-        say(&format!("not a directory: {repo}"));
-        return 3;
+        return Err(Fail::diag(3, &format!("not a directory: {repo}")));
     };
     let source = core::canonicalize_lenient(&source);
     if !source.is_dir() {
-        say(&format!("not a directory: {repo}"));
-        return 3;
+        return Err(Fail::diag(3, &format!("not a directory: {repo}")));
     }
     // Validate everything BEFORE destroying anything: refusing partway
     // through would still have wiped the existing sandbox on the way to
     // saying no.
     for rel in relatives {
-        validate(&source, rel);
+        validate(&source, rel)?;
     }
     if sandbox.work.exists() {
-        rmtree_force(&sandbox.work);
+        rmtree_force(&sandbox.work)?;
     }
-    if let Err(error) = fs::create_dir_all(&sandbox.work) {
-        fail(
+    fs::create_dir_all(&sandbox.work).map_err(|error| {
+        Fail::diag(
             1,
             &format!("cannot create {}: {error}", sandbox.work.display()),
-        );
-    }
+        )
+    })?;
     if let Some(parent) = sandbox.source_record.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    if let Err(error) = fs::write(&sandbox.source_record, format!("{}\n", source.display())) {
-        fail(1, &format!("cannot record the source: {error}"));
-    }
-    copy_in(sandbox, &source, relatives);
-    sandbox.git(&["init", "-q"]);
-    sandbox.commit(&format!("pristine seed from {}", source.display()), &[]);
+    fs::write(&sandbox.source_record, format!("{}\n", source.display()))
+        .map_err(|error| Fail::diag(1, &format!("cannot record the source: {error}")))?;
+    copy_in(sandbox, &source, relatives)?;
+    sandbox.git(&["init", "-q"])?;
+    sandbox.commit(&format!("pristine seed from {}", source.display()), &[])?;
     say(&format!(
         "work={} (pristine commit recorded)",
         sandbox.work.display()
     ));
     say(&format!("source untouched: {}", source.display()));
-    0
+    Ok(0)
 }
 
-fn op_add(sandbox: &Sandbox, relatives: &[String]) -> i32 {
-    sandbox.require();
+fn op_add(sandbox: &Sandbox, relatives: &[String]) -> Result<i32, Fail> {
+    sandbox.require()?;
     if relatives.is_empty() {
-        say("--add needs at least one file");
-        return 2;
+        return Err(Fail::diag(2, "--add needs at least one file"));
     }
     let Ok(recorded) = fs::read_to_string(&sandbox.source_record) else {
-        say("no recorded source; this sandbox predates --add, so --create it again");
-        return 3;
+        return Err(Fail::diag(
+            3,
+            "no recorded source; this sandbox predates --add, so --create it again",
+        ));
     };
     let source = PathBuf::from(recorded.trim());
     if !source.is_dir() {
-        say(&format!(
-            "recorded source is not a directory: {}",
-            source.display()
+        return Err(Fail::diag(
+            3,
+            &format!("recorded source is not a directory: {}", source.display()),
         ));
-        return 3;
     }
     for rel in relatives {
-        validate(&source, rel);
+        validate(&source, rel)?;
     }
-    copy_in(sandbox, &source, relatives);
-    sandbox.commit(&format!("seed {}", relatives.join(" ")), relatives);
+    copy_in(sandbox, &source, relatives)?;
+    sandbox.commit(&format!("seed {}", relatives.join(" ")), relatives)?;
     say(&format!(
         "added from {} (baseline commit recorded)",
         source.display()
     ));
-    0
+    Ok(0)
 }
 
-fn op_remove(sandbox: &Sandbox, relatives: &[String]) -> i32 {
-    sandbox.require();
+fn op_remove(sandbox: &Sandbox, relatives: &[String]) -> Result<i32, Fail> {
+    sandbox.require()?;
     if relatives.is_empty() {
-        say("--remove needs at least one file");
-        return 2;
+        return Err(Fail::diag(2, "--remove needs at least one file"));
     }
-    let targets: Vec<PathBuf> = relatives
-        .iter()
-        .map(|rel| sandbox.work_path(rel, true))
-        .collect();
+    let mut targets = Vec::new();
+    for rel in relatives {
+        targets.push(sandbox.work_path(rel, true)?);
+    }
     for (rel, full) in relatives.iter().zip(&targets) {
-        let result = if full.is_dir() {
-            rmtree_force(full);
-            Ok(())
+        if full.is_dir() {
+            rmtree_force(full)?;
         } else {
             fs::remove_file(full)
-        };
-        if let Err(error) = result {
-            fail(1, &format!("cannot remove {rel}: {error}"));
+                .map_err(|error| Fail::diag(1, &format!("cannot remove {rel}: {error}")))?;
         }
         say(&format!("removed {rel}"));
     }
-    sandbox.commit(&format!("remove {}", relatives.join(" ")), relatives);
+    sandbox.commit(&format!("remove {}", relatives.join(" ")), relatives)?;
     say("baseline commit recorded");
-    0
+    Ok(0)
 }
 
-fn op_destroy(sandbox: &Sandbox, everything: bool) -> i32 {
+fn op_destroy(sandbox: &Sandbox, everything: bool) -> Result<i32, Fail> {
     if everything {
         if sandbox.root.exists() {
-            rmtree_force(&sandbox.root);
+            rmtree_force(&sandbox.root)?;
         }
         say(&format!(
             "removed {} and every sandbox in it",
             sandbox.root.display()
         ));
-        return 0;
+        return Ok(0);
     }
     if sandbox.work.exists() {
-        rmtree_force(&sandbox.work);
+        rmtree_force(&sandbox.work)?;
     }
     if sandbox.source_record.exists() {
         let _ = fs::remove_file(&sandbox.source_record);
@@ -541,13 +575,14 @@ fn op_destroy(sandbox: &Sandbox, everything: bool) -> i32 {
     // Leave no empty root behind, so the single-sandbox case ends the way it
     // always did: ./sandbox is gone.
     if sandbox.root.exists() && sandbox.sandboxes().is_empty() {
-        rmtree_force(&sandbox.root);
+        rmtree_force(&sandbox.root)?;
     }
-    0
+    Ok(0)
 }
 
-fn op_status(sandbox: &Sandbox) -> i32 {
-    println!(
+fn op_status(sandbox: &Sandbox, out: &mut dyn Write) -> Result<i32, Fail> {
+    let _ = writeln!(
+        out,
         "root {}  (from {})",
         sandbox.root.display(),
         sandbox.root_origin
@@ -574,111 +609,111 @@ fn op_status(sandbox: &Sandbox) -> i32 {
         let source = fs::read_to_string(sandbox.root.join(".sources").join(name))
             .map(|text| text.trim().to_string())
             .unwrap_or_else(|_| "?".to_string());
-        println!("{name}  {count} files  {state}  {source}");
+        let _ = writeln!(out, "{name}  {count} files  {state}  {source}");
     }
-    if names.is_empty() { 1 } else { 0 }
+    Ok(if names.is_empty() { 1 } else { 0 })
 }
 
-fn op_list(sandbox: &Sandbox) -> i32 {
-    sandbox.require();
+fn op_list(sandbox: &Sandbox, out: &mut dyn Write) -> Result<i32, Fail> {
+    sandbox.require()?;
     let found = files_within(&sandbox.work);
     for rel in &found {
-        println!("{rel}");
+        let _ = writeln!(out, "{rel}");
     }
-    if found.is_empty() { 1 } else { 0 }
+    Ok(if found.is_empty() { 1 } else { 0 })
 }
 
-fn op_read(sandbox: &Sandbox, relatives: &[String]) -> i32 {
-    sandbox.require();
+fn op_read(sandbox: &Sandbox, relatives: &[String], out: &mut dyn Write) -> Result<i32, Fail> {
+    sandbox.require()?;
     let [rel] = relatives else {
-        say("--read takes exactly one file");
-        return 2;
+        return Err(Fail::diag(2, "--read takes exactly one file"));
     };
-    let full = sandbox.work_path(rel, true);
+    let full = sandbox.work_path(rel, true)?;
     if full.is_dir() {
-        say(&format!("{rel} is a directory; --list shows it"));
-        return 2;
+        return Err(Fail::diag(
+            2,
+            &format!("{rel} is a directory; --list shows it"),
+        ));
     }
     // Bytes through, unchanged: no re-encoding and no line-ending rewrite.
-    let data = match fs::read(&full) {
-        Ok(data) => data,
-        Err(error) => fail(1, &format!("cannot read {rel}: {error}")),
-    };
-    let mut out = io::stdout().lock();
-    if out.write_all(&data).is_err() || out.flush().is_err() {
-        return 1;
-    }
-    0
+    let data =
+        fs::read(&full).map_err(|error| Fail::diag(1, &format!("cannot read {rel}: {error}")))?;
+    out.write_all(&data)
+        .and_then(|_| out.flush())
+        .map_err(|error| Fail::diag(1, &format!("cannot write stdout: {error}")))?;
+    Ok(0)
 }
 
-fn op_write(sandbox: &Sandbox, relatives: &[String]) -> i32 {
-    sandbox.require();
+fn op_write(
+    sandbox: &Sandbox,
+    relatives: &[String],
+    stdin_is_terminal: bool,
+    input: &mut dyn Read,
+) -> Result<i32, Fail> {
+    sandbox.require()?;
     let [rel] = relatives else {
-        say("--write takes exactly one file");
-        return 2;
+        return Err(Fail::diag(2, "--write takes exactly one file"));
     };
-    if io::stdin().is_terminal() {
-        say("--write reads the content from stdin; redirect or pipe it in");
-        return 2;
+    if stdin_is_terminal {
+        return Err(Fail::diag(
+            2,
+            "--write reads the content from stdin; redirect or pipe it in",
+        ));
     }
-    let full = sandbox.work_path(rel, false);
+    let full = sandbox.work_path(rel, false)?;
     if full.is_dir() {
-        say(&format!("{rel} is a directory"));
-        return 2;
+        return Err(Fail::diag(2, &format!("{rel} is a directory")));
     }
     let mut data = Vec::new();
-    if let Err(error) = io::stdin().lock().read_to_end(&mut data) {
-        fail(1, &format!("cannot read stdin: {error}"));
-    }
+    input
+        .read_to_end(&mut data)
+        .map_err(|error| Fail::diag(1, &format!("cannot read stdin: {error}")))?;
     if let Some(parent) = full.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    if let Err(error) = fs::write(&full, &data) {
-        fail(1, &format!("cannot write {rel}: {error}"));
-    }
+    fs::write(&full, &data)
+        .map_err(|error| Fail::diag(1, &format!("cannot write {rel}: {error}")))?;
     say(&format!(
         "wrote {} bytes to {rel} (not committed; git diff HEAD shows it)",
         data.len()
     ));
-    0
+    Ok(0)
 }
 
 const OPERATIONS: [&str; 8] = [
     "create", "add", "remove", "destroy", "list", "read", "write", "status",
 ];
 
-fn usage_error(message: &str) -> i32 {
-    eprintln!("oxbox sandbox: error: {message}");
-    2
+/// What a command line asks for.
+#[derive(Debug, PartialEq)]
+enum Parsed {
+    Help,
+    Version,
+    Skill,
+    Run {
+        name: String,
+        all: bool,
+        op: &'static str,
+        paths: Vec<String>,
+    },
 }
 
-fn main() {
-    process::exit(run());
-}
-
-fn run() -> i32 {
-    let args: Vec<String> = env::args().skip(1).collect();
+fn parse(args: &[String]) -> Result<Parsed, Fail> {
     let mut name = String::from("work");
     let mut all = false;
-    let mut op: Option<&str> = None;
+    let mut op: Option<&'static str> = None;
     let mut paths: Vec<String> = Vec::new();
 
     let mut index = 0;
     while index < args.len() {
         let arg = args[index].as_str();
         match arg {
-            "--help" | "-h" => {
-                print!("{USAGE}");
-                return 0;
-            }
-            "--version" => {
-                println!("{PROG} {}", core::VERSION);
-                return 0;
-            }
-            "--skill" => return core::print_skill(PROG),
+            "--help" | "-h" => return Ok(Parsed::Help),
+            "--version" => return Ok(Parsed::Version),
+            "--skill" => return Ok(Parsed::Skill),
             "--sandbox" => {
                 let Some(value) = args.get(index + 1) else {
-                    return usage_error("argument --sandbox: expected one argument");
+                    return Err(Fail::usage("argument --sandbox: expected one argument"));
                 };
                 name = value.clone();
                 index += 2;
@@ -688,14 +723,14 @@ fn run() -> i32 {
             _ if arg.starts_with("--") => {
                 let word = &arg[2..];
                 let Some(found) = OPERATIONS.iter().find(|&&candidate| candidate == word) else {
-                    return usage_error(&format!("unrecognized arguments: {arg}"));
+                    return Err(Fail::usage(&format!("unrecognized arguments: {arg}")));
                 };
                 if let Some(previous) = op
                     && previous != *found
                 {
-                    return usage_error(&format!(
+                    return Err(Fail::usage(&format!(
                         "argument --{found}: not allowed with argument --{previous}"
-                    ));
+                    )));
                 }
                 op = Some(found);
             }
@@ -703,47 +738,647 @@ fn run() -> i32 {
         }
         index += 1;
     }
-
     let Some(op) = op else {
-        return usage_error(&format!(
+        return Err(Fail::usage(&format!(
             "one of the arguments {} is required",
             OPERATIONS
                 .iter()
                 .map(|word| format!("--{word}"))
                 .collect::<Vec<_>>()
                 .join(" ")
-        ));
+        )));
     };
+    Ok(Parsed::Run {
+        name,
+        all,
+        op,
+        paths,
+    })
+}
 
-    let root = match core::sandbox_root() {
-        Ok(root) => root,
-        Err(message) => fail(1, &message),
-    };
-    let name = match core::sandbox_name(&name) {
-        Ok(name) => name,
-        Err(message) => {
-            say(&message);
-            return 2;
-        }
-    };
-    let sandbox = Sandbox::select(root, &name);
-
+/// Carry out one operation against the selected sandbox.
+fn execute(
+    sandbox: &Sandbox,
+    op: &str,
+    all: bool,
+    paths: &[String],
+    stdin_is_terminal: bool,
+    input: &mut dyn Read,
+    out: &mut dyn Write,
+) -> Result<i32, Fail> {
     if all && op != "destroy" {
-        say("--all goes with --destroy only");
-        return 2;
+        return Err(Fail::diag(2, "--all goes with --destroy only"));
     }
     match op {
-        "create" => op_create(&sandbox, &paths),
-        "add" => op_add(&sandbox, &paths),
-        "remove" => op_remove(&sandbox, &paths),
-        "read" => op_read(&sandbox, &paths),
-        "write" => op_write(&sandbox, &paths),
-        _ if !paths.is_empty() => {
-            say(&format!("--{op} takes no paths"));
-            2
+        "create" => op_create(sandbox, paths),
+        "add" => op_add(sandbox, paths),
+        "remove" => op_remove(sandbox, paths),
+        "read" => op_read(sandbox, paths, out),
+        "write" => op_write(sandbox, paths, stdin_is_terminal, input),
+        _ if !paths.is_empty() => Err(Fail::diag(2, &format!("--{op} takes no paths"))),
+        "destroy" => op_destroy(sandbox, all),
+        "status" => op_status(sandbox, out),
+        _ => op_list(sandbox, out),
+    }
+}
+
+fn main() {
+    let args: Vec<String> = env::args().skip(1).collect();
+    let code = match parse(&args) {
+        Ok(Parsed::Help) => {
+            print!("{USAGE}");
+            0
         }
-        "destroy" => op_destroy(&sandbox, all),
-        "status" => op_status(&sandbox),
-        _ => op_list(&sandbox),
+        Ok(Parsed::Version) => {
+            println!("{PROG} {}", core::VERSION);
+            0
+        }
+        Ok(Parsed::Skill) => core::print_skill(PROG),
+        Ok(Parsed::Run {
+            name,
+            all,
+            op,
+            paths,
+        }) => {
+            let outcome = core::sandbox_root()
+                .map_err(|message| Fail::diag(1, &message))
+                .and_then(|root| {
+                    let name =
+                        core::sandbox_name(&name).map_err(|message| Fail::diag(2, &message))?;
+                    let sandbox = Sandbox::select(root, &name);
+                    let stdin = io::stdin();
+                    let is_terminal = stdin.is_terminal();
+                    let mut input = stdin.lock();
+                    let mut out = io::stdout().lock();
+                    execute(&sandbox, op, all, &paths, is_terminal, &mut input, &mut out)
+                });
+            match outcome {
+                Ok(code) => code,
+                Err(fail) => {
+                    eprint!("{}", fail.text);
+                    fail.code
+                }
+            }
+        }
+        Err(fail) => {
+            eprint!("{}", fail.text);
+            fail.code
+        }
+    };
+    process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn args(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("oxbox-sandbox-{name}-{}", process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn sandbox_at(dir: &Path, name: &str) -> Sandbox {
+        Sandbox::select(
+            core::SandboxRoot {
+                path: dir.join("root"),
+                origin: "test".into(),
+            },
+            name,
+        )
+    }
+
+    /// A source repo with a.py, pkg/b.py and c.py.
+    fn source_at(dir: &Path) -> PathBuf {
+        let src = dir.join("src");
+        fs::create_dir_all(src.join("pkg")).unwrap();
+        fs::write(src.join("a.py"), b"a = 1\n").unwrap();
+        fs::write(src.join("pkg").join("b.py"), b"b = 2\n").unwrap();
+        fs::write(src.join("c.py"), b"c = 3\n").unwrap();
+        src
+    }
+
+    fn run_op(
+        sandbox: &Sandbox,
+        op: &str,
+        all: bool,
+        paths: &[&str],
+        stdin: &[u8],
+    ) -> (Result<i32, Fail>, String) {
+        let mut out = Vec::new();
+        let mut input = Cursor::new(stdin.to_vec());
+        let result = execute(sandbox, op, all, &args(paths), false, &mut input, &mut out);
+        (result, String::from_utf8_lossy(&out).into_owned())
+    }
+
+    fn git_changed(work: &Path) -> Vec<String> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(work)
+            .args(["diff", "--name-only", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn parsing_matches_argparse() {
+        assert_eq!(parse(&args(&["--help"])), Ok(Parsed::Help));
+        assert_eq!(parse(&args(&["-h"])), Ok(Parsed::Help));
+        assert_eq!(parse(&args(&["--version"])), Ok(Parsed::Version));
+        assert_eq!(parse(&args(&["--skill"])), Ok(Parsed::Skill));
+        assert_eq!(
+            parse(&args(&[
+                "--sandbox",
+                "alt",
+                "--create",
+                "/repo",
+                "a.py",
+                "pkg"
+            ])),
+            Ok(Parsed::Run {
+                name: "alt".into(),
+                all: false,
+                op: "create",
+                paths: args(&["/repo", "a.py", "pkg"]),
+            })
+        );
+        assert_eq!(
+            parse(&args(&["--destroy", "--all"])),
+            Ok(Parsed::Run {
+                name: "work".into(),
+                all: true,
+                op: "destroy",
+                paths: vec![],
+            })
+        );
+        // Repeating the same operation is fine; two different ones are not.
+        assert!(parse(&args(&["--list", "--list"])).is_ok());
+        for (bad, needle) in [
+            (
+                vec!["--list", "--destroy"],
+                "not allowed with argument --list",
+            ),
+            (vec![], "one of the arguments"),
+            (vec!["a.py"], "one of the arguments"),
+            (vec!["--sandbox"], "expected one argument"),
+            (vec!["--frobnicate"], "unrecognized arguments: --frobnicate"),
+        ] {
+            let fail = parse(&args(&bad)).unwrap_err();
+            assert_eq!(fail.code, 2, "{bad:?}");
+            assert!(fail.text.starts_with("oxbox sandbox: error:"), "{bad:?}");
+            assert!(fail.text.contains(needle), "{bad:?}: {}", fail.text);
+        }
+    }
+
+    #[test]
+    fn rooted_paths_are_recognized_in_every_spelling() {
+        for bad in [
+            "/etc/hosts",
+            "\\server\\share",
+            "~/x",
+            "C:\\boot.ini",
+            "c:x",
+        ] {
+            assert!(is_rooted(bad), "{bad}");
+        }
+        assert!(!is_rooted("a.py"));
+        assert!(!is_rooted("pkg/b.py"));
+        assert!(!is_rooted("..hidden"));
+    }
+
+    #[test]
+    fn diagnoses_refusals_and_usage_errors_have_their_shapes() {
+        assert_eq!(
+            Fail::diag(3, "a\nb").text,
+            "oxbox-sandbox: a\noxbox-sandbox: b\n"
+        );
+        assert_eq!(Fail::refuse("x").code, 78);
+        let usage = Fail::usage("bad");
+        assert_eq!(usage.code, 2);
+        assert_eq!(usage.text, "oxbox sandbox: error: bad\n");
+    }
+
+    #[test]
+    fn the_full_lifecycle_of_one_sandbox() {
+        let dir = scratch("life");
+        let src = source_at(&dir);
+        let sandbox = sandbox_at(&dir, "work");
+
+        let (result, _) = run_op(
+            &sandbox,
+            "create",
+            false,
+            &[src.to_str().unwrap(), "a.py", "pkg"],
+            b"",
+        );
+        assert_eq!(result, Ok(0));
+        assert!(sandbox.work.join(".git").is_dir());
+        assert_eq!(
+            fs::read_to_string(&sandbox.source_record).unwrap().trim(),
+            fs::canonicalize(&src).unwrap().to_string_lossy()
+        );
+
+        let (result, out) = run_op(&sandbox, "list", false, &[], b"");
+        assert_eq!(result, Ok(0));
+        assert_eq!(out, "a.py\npkg/b.py\n");
+
+        let (result, _) = run_op(&sandbox, "add", false, &["c.py"], b"");
+        assert_eq!(result, Ok(0));
+        assert!(git_changed(&sandbox.work).is_empty(), "add commits");
+
+        let (result, out) = run_op(&sandbox, "read", false, &["c.py"], b"");
+        assert_eq!(result, Ok(0));
+        assert_eq!(out, "c = 3\n");
+
+        let (result, _) = run_op(&sandbox, "write", false, &["c.py"], b"c = 4\r\n");
+        assert_eq!(result, Ok(0));
+        assert_eq!(fs::read(sandbox.work.join("c.py")).unwrap(), b"c = 4\r\n");
+        assert_eq!(
+            git_changed(&sandbox.work),
+            vec!["c.py".to_string()],
+            "write does not commit"
+        );
+
+        // A write can create a new file in a new directory.
+        let (result, _) = run_op(&sandbox, "write", false, &["new/dir/d.py"], b"d = 5\n");
+        assert_eq!(result, Ok(0));
+        assert!(sandbox.work.join("new").join("dir").join("d.py").is_file());
+
+        let (result, _) = run_op(&sandbox, "remove", false, &["pkg/b.py"], b"");
+        assert_eq!(result, Ok(0));
+        assert!(!sandbox.work.join("pkg").join("b.py").exists());
+        assert_eq!(
+            git_changed(&sandbox.work),
+            vec!["c.py".to_string()],
+            "remove commits only itself"
+        );
+
+        let (result, out) = run_op(&sandbox, "list", false, &[], b"");
+        assert_eq!(result, Ok(0));
+        assert_eq!(out, "a.py\nc.py\nnew/dir/d.py\n");
+
+        let (result, out) = run_op(&sandbox, "status", false, &[], b"");
+        assert_eq!(result, Ok(0));
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[0].starts_with("root "), "{out}");
+        assert!(lines[0].ends_with("(from test)"), "{out}");
+        assert!(lines[1].starts_with("work  3 files  modified  "), "{out}");
+
+        // Re-creating wipes the tree, and a tracked directory can be removed.
+        let (result, _) = run_op(
+            &sandbox,
+            "create",
+            false,
+            &[src.to_str().unwrap(), "a.py", "pkg"],
+            b"",
+        );
+        assert_eq!(result, Ok(0));
+        let (_, out) = run_op(&sandbox, "list", false, &[], b"");
+        assert_eq!(out, "a.py\npkg/b.py\n");
+        let (result, _) = run_op(&sandbox, "remove", false, &["pkg"], b"");
+        assert_eq!(result, Ok(0));
+        let (_, out) = run_op(&sandbox, "list", false, &[], b"");
+        assert_eq!(out, "a.py\n");
+
+        let (result, _) = run_op(&sandbox, "destroy", false, &[], b"");
+        assert_eq!(result, Ok(0));
+        assert!(!sandbox.work.exists());
+        assert!(!sandbox.root.exists(), "the empty root goes too");
+        let (result, _) = run_op(&sandbox, "list", false, &[], b"");
+        assert_eq!(result.unwrap_err().code, 3);
+        let (result, out) = run_op(&sandbox, "status", false, &[], b"");
+        assert_eq!(result, Ok(1));
+        assert_eq!(out.lines().count(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn several_sandboxes_share_a_root_and_destroy_all_removes_it() {
+        let dir = scratch("many");
+        let src = source_at(&dir);
+        let work = sandbox_at(&dir, "work");
+        let alt = sandbox_at(&dir, "alt");
+        run_op(
+            &work,
+            "create",
+            false,
+            &[src.to_str().unwrap(), "a.py"],
+            b"",
+        )
+        .0
+        .unwrap();
+        run_op(&alt, "create", false, &[src.to_str().unwrap(), "c.py"], b"")
+            .0
+            .unwrap();
+        assert_eq!(
+            work.sandboxes(),
+            vec!["alt".to_string(), "work".to_string()]
+        );
+        // Dot directories are the root's bookkeeping, not sandboxes.
+        assert!(work.root.join(".sources").is_dir());
+        run_op(&alt, "destroy", false, &[], b"").0.unwrap();
+        assert!(!alt.work.exists());
+        assert!(work.work.exists(), "destroying one leaves the other");
+        assert!(!alt.source_record.exists());
+        run_op(&work, "destroy", true, &[], b"").0.unwrap();
+        assert!(!work.root.exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn create_refuses_bad_paths_before_touching_anything() {
+        let dir = scratch("refuse");
+        let src = source_at(&dir);
+        let sandbox = sandbox_at(&dir, "work");
+        let repo = src.to_str().unwrap();
+        for (bad, code, needle) in [
+            ("../../etc/hosts", 78, "parent traversal"),
+            ("/etc/hosts", 78, "absolute path"),
+            ("C:/Windows/System32/drivers/etc/hosts", 78, "absolute path"),
+            ("\\\\server\\share\\payload", 78, "absolute path"),
+            ("..\\..\\payload", 78, "parent traversal"),
+            ("missing.py", 3, "missing in source"),
+        ] {
+            let (result, _) = run_op(&sandbox, "create", false, &[repo, bad], b"");
+            let fail = result.unwrap_err();
+            assert_eq!(fail.code, code, "{bad}");
+            assert!(fail.text.contains(needle), "{bad}: {}", fail.text);
+            assert!(!sandbox.work.exists(), "{bad}: nothing was created");
+        }
+        let (result, _) = run_op(&sandbox, "create", false, &[repo], b"");
+        assert_eq!(result.unwrap_err().code, 2);
+        let (result, _) = run_op(&sandbox, "create", false, &[], b"");
+        assert_eq!(result.unwrap_err().code, 2);
+        let (result, _) = run_op(
+            &sandbox,
+            "create",
+            false,
+            &[dir.join("nope").to_str().unwrap(), "a.py"],
+            b"",
+        );
+        assert_eq!(result.unwrap_err().code, 3);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_in_the_source_are_refused_wherever_they_hide() {
+        use std::os::unix::fs::symlink;
+        let dir = scratch("links");
+        let src = source_at(&dir);
+        let secret = dir.join("secret");
+        fs::create_dir_all(&secret).unwrap();
+        fs::write(secret.join("key.txt"), b"k").unwrap();
+        symlink(&secret, src.join("gate")).unwrap();
+        symlink(secret.join("key.txt"), src.join("key.link")).unwrap();
+        fs::create_dir_all(src.join("tree")).unwrap();
+        symlink(&secret, src.join("tree").join("inner")).unwrap();
+        let sandbox = sandbox_at(&dir, "work");
+        let repo = src.to_str().unwrap();
+        for bad in ["key.link", "gate/key.txt", "tree", "gate"] {
+            let (result, _) = run_op(&sandbox, "create", false, &[repo, bad], b"");
+            let fail = result.unwrap_err();
+            assert_eq!(fail.code, 78, "{bad}: {}", fail.text);
+            assert!(fail.text.contains("REFUSING"), "{bad}: {}", fail.text);
+        }
+        // A tree without links is fine.
+        let (result, _) = run_op(&sandbox, "create", false, &[repo, "pkg"], b"");
+        assert_eq!(result, Ok(0));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn working_tree_operations_refuse_the_same_paths() {
+        let dir = scratch("tend-refuse");
+        let src = source_at(&dir);
+        let sandbox = sandbox_at(&dir, "work");
+        run_op(
+            &sandbox,
+            "create",
+            false,
+            &[src.to_str().unwrap(), "a.py"],
+            b"",
+        )
+        .0
+        .unwrap();
+        for (op, path, code, needle) in [
+            ("read", "../src/c.py", 78, "parent traversal"),
+            ("read", "/etc/passwd", 78, "absolute path"),
+            ("write", ".git/config", 78, "inside .git"),
+            ("remove", "~/x", 78, "absolute path"),
+            ("read", "nope.py", 3, "no such file"),
+            ("remove", "nope.py", 3, "no such file"),
+        ] {
+            let (result, _) = run_op(&sandbox, op, false, &[path], b"x");
+            let fail = result.unwrap_err();
+            assert_eq!(fail.code, code, "{op} {path}: {}", fail.text);
+            assert!(fail.text.contains(needle), "{op} {path}: {}", fail.text);
+        }
+        // Arity and terminal checks.
+        assert_eq!(
+            run_op(&sandbox, "read", false, &[], b"")
+                .0
+                .unwrap_err()
+                .code,
+            2
+        );
+        assert_eq!(
+            run_op(&sandbox, "read", false, &["a.py", "b.py"], b"")
+                .0
+                .unwrap_err()
+                .code,
+            2
+        );
+        assert_eq!(
+            run_op(&sandbox, "write", false, &[], b"")
+                .0
+                .unwrap_err()
+                .code,
+            2
+        );
+        assert_eq!(
+            run_op(&sandbox, "add", false, &[], b"").0.unwrap_err().code,
+            2
+        );
+        assert_eq!(
+            run_op(&sandbox, "remove", false, &[], b"")
+                .0
+                .unwrap_err()
+                .code,
+            2
+        );
+        assert_eq!(
+            run_op(&sandbox, "list", false, &["a.py"], b"")
+                .0
+                .unwrap_err()
+                .code,
+            2
+        );
+        assert_eq!(
+            run_op(&sandbox, "list", true, &[], b"").0.unwrap_err().code,
+            2
+        );
+        let mut out = Vec::new();
+        let mut input = Cursor::new(Vec::new());
+        let fail = execute(
+            &sandbox,
+            "write",
+            false,
+            &args(&["a.py"]),
+            true,
+            &mut input,
+            &mut out,
+        )
+        .unwrap_err();
+        assert!(
+            fail.text.contains("reads the content from stdin"),
+            "{}",
+            fail.text
+        );
+        // Reading a directory is redirected to --list; writing one is refused.
+        fs::create_dir_all(sandbox.work.join("d")).unwrap();
+        assert!(
+            run_op(&sandbox, "read", false, &["d"], b"")
+                .0
+                .unwrap_err()
+                .text
+                .contains("--list")
+        );
+        assert!(
+            run_op(&sandbox, "write", false, &["d"], b"x")
+                .0
+                .unwrap_err()
+                .text
+                .contains("is a directory")
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_planted_in_the_tree_cannot_lead_a_write_out() {
+        use std::os::unix::fs::symlink;
+        let dir = scratch("planted");
+        let src = source_at(&dir);
+        let sandbox = sandbox_at(&dir, "work");
+        run_op(
+            &sandbox,
+            "create",
+            false,
+            &[src.to_str().unwrap(), "a.py"],
+            b"",
+        )
+        .0
+        .unwrap();
+        let outside = dir.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, sandbox.work.join("escape")).unwrap();
+        let (result, _) = run_op(&sandbox, "write", false, &["escape/pwned.txt"], b"x");
+        let fail = result.unwrap_err();
+        assert_eq!(fail.code, 78);
+        assert!(
+            fail.text.contains("resolving outside the sandbox"),
+            "{}",
+            fail.text
+        );
+        assert!(!outside.join("pwned.txt").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn add_needs_a_recorded_source_that_still_exists() {
+        let dir = scratch("add-source");
+        let src = source_at(&dir);
+        let sandbox = sandbox_at(&dir, "work");
+        run_op(
+            &sandbox,
+            "create",
+            false,
+            &[src.to_str().unwrap(), "a.py"],
+            b"",
+        )
+        .0
+        .unwrap();
+        fs::remove_file(&sandbox.source_record).unwrap();
+        let fail = run_op(&sandbox, "add", false, &["c.py"], b"")
+            .0
+            .unwrap_err();
+        assert_eq!(fail.code, 3);
+        assert!(fail.text.contains("no recorded source"), "{}", fail.text);
+        fs::write(
+            &sandbox.source_record,
+            dir.join("gone").to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        let fail = run_op(&sandbox, "add", false, &["c.py"], b"")
+            .0
+            .unwrap_err();
+        assert_eq!(fail.code, 3);
+        assert!(fail.text.contains("not a directory"), "{}", fail.text);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn operations_on_a_missing_sandbox_say_so() {
+        let dir = scratch("missing");
+        let sandbox = sandbox_at(&dir, "work");
+        for (op, paths) in [
+            ("add", vec!["a.py"]),
+            ("remove", vec!["a.py"]),
+            ("list", vec![]),
+            ("read", vec!["a.py"]),
+            ("write", vec!["a.py"]),
+        ] {
+            let (result, _) = run_op(&sandbox, op, false, &paths, b"x");
+            let fail = result.unwrap_err();
+            assert_eq!(fail.code, 3, "{op}");
+            assert!(fail.text.contains("no sandbox here"), "{op}: {}", fail.text);
+        }
+        // Destroying what is not there is fine.
+        assert_eq!(run_op(&sandbox, "destroy", false, &[], b"").0, Ok(0));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rmtree_force_removes_read_only_files() {
+        let dir = scratch("rmtree");
+        let tree = dir.join("tree").join("nested");
+        fs::create_dir_all(&tree).unwrap();
+        let file = tree.join("ro.txt");
+        fs::write(&file, b"x").unwrap();
+        let mut perms = fs::metadata(&file).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&file, perms).unwrap();
+        rmtree_force(&dir.join("tree")).unwrap();
+        assert!(!dir.join("tree").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn copies_keep_modification_times_and_files_within_skips_bookkeeping() {
+        let dir = scratch("copy");
+        let src = source_at(&dir);
+        let dest = dir.join("dest");
+        copy_tree(&src, &dest).unwrap();
+        let before = fs::metadata(src.join("a.py")).unwrap().modified().unwrap();
+        let after = fs::metadata(dest.join("a.py")).unwrap().modified().unwrap();
+        assert_eq!(before, after);
+        fs::create_dir_all(dest.join(".git")).unwrap();
+        fs::write(dest.join(".git").join("HEAD"), b"ref").unwrap();
+        fs::create_dir_all(dest.join(".oxtmp")).unwrap();
+        fs::write(dest.join(".oxtmp").join("tmp"), b"t").unwrap();
+        assert_eq!(files_within(&dest), vec!["a.py", "c.py", "pkg/b.py"]);
+        assert!(files_within(&dir.join("absent")).is_empty());
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

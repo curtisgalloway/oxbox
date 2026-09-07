@@ -67,15 +67,17 @@ Read the whole report; it is short and every section decides something.
   manifest entry this run may use (usually a key that is not exported). Fix that
   with the user; do not work around it by hand-picking a venue.
 
-If no manifest is found, ask the user for the current one rather than falling
-back to a bare `--venue`/`--model`. The manifest is the record of *why* a
-destination was chosen, and `oxbox-send` writes its sha256 into every run's `meta.json`
-for exactly that reason. Point `--manifest` or `OXBOX_MANIFEST` at the issue's
-file, or at its https URL: the survey serves the current issue's manifest at
-<https://oxbox.ai/manifests/latest.json>, and `oxbox-send` (0.5.0 or later) fetches it
-itself — https only, no redirects, no credential sent — and keeps the bytes it
-used as `manifest.json` in every run's log directory, so the audit trail
-survives the URL moving on to the next issue.
+When nothing names a manifest and none is on disk, preflight uses the survey's
+current issue at <https://oxbox.ai/manifests/latest.json> and says so in the
+report; pass that URL as `<MANIFEST>` below. Never fall back to a bare
+`--venue`/`--model` instead: the manifest is the record of *why* a destination
+was chosen, and `oxbox-send` writes its sha256 into every run's `meta.json` for
+exactly that reason. To pin a particular issue, point `--manifest` or
+`OXBOX_MANIFEST` at its file or https URL. `oxbox-send` (0.5.0 or later)
+fetches a URL itself — https only, no redirects, no credential sent — and keeps
+the bytes it used as `manifest.json` in every run's log directory, so the audit
+trail survives the URL moving on to the next issue. Only when the URL cannot be
+fetched either (offline, say) does preflight stop; then ask the user for a file.
 
 If the venue keys live in 1Password, set `OXBOX_ENV_FILE` to the `.env` file
 holding the `op://` references (or pass `--env-file`). Both scripts then run
@@ -327,8 +329,9 @@ project's `.claude/skills/`, or into `~/.claude/skills/` to have it everywhere,
 then make sure `oxbox send` is reachable: `oxbox` installed on `PATH` (the scripts run
 `oxbox send`), the `oxbox-send` script itself named by `OX`, or an oxbox checkout
 pointed at by `OXBOX_HOME`. Two more variables make it work from any project with no
-per-project setup: `OXBOX_MANIFEST`, the current manifest as a file or https
-URL, and `OXBOX_ENV_FILE`, the 1Password `.env` holding the venue keys.
+per-project setup: `OXBOX_MANIFEST`, the manifest to use as a file or https
+URL (unset, preflight uses the survey's current issue), and `OXBOX_ENV_FILE`,
+the 1Password `.env` holding the venue keys.
 
 Add `logs/` and `.ox-review/` to that project's `.gitignore`. Both hold the
 audit trail of what was sent and what came back; keep them, but keep them out of

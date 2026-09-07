@@ -48,13 +48,21 @@ SEARCH_DIRS = [
     Path.home() / ".local" / "share" / "oxbox" / "manifests",
 ]
 # A manifest may also be named by URL; the survey serves its current one at
-# https://oxbox.ai/manifests/latest.json. The fetch here only renders the
+# PUBLIC_MANIFEST_URL, and that is where preflight goes when nothing names
+# a manifest and none is on disk. An agent on a fresh project with no
+# environment set up used to stop here and ask a human for the manifest;
+# the survey's current issue is what the human would have answered, and a
+# manifest fetched by URL keeps the audit property the refusal protected,
+# since ox files the bytes and their digest with every run. A local file
+# or OXBOX_MANIFEST still wins, for anyone pinning an older issue on
+# purpose. The fetch here only renders the
 # listing. The destination is still decided by ox, which fetches the same
 # URL under its own rules: https only, no redirects, no credential, and the
 # bytes kept as manifest.json in the run's log directory. Those rules are
 # mirrored rather than shared -- ox is a script with no module to import --
 # so a mismatch surfaces as a listing ox then refuses, never as a
 # destination preflight approved on its own.
+PUBLIC_MANIFEST_URL = "https://oxbox.ai/manifests/latest.json"
 MANIFEST_MAX_BYTES = 1_048_576
 MANIFEST_TIMEOUT = 30
 USER_AGENT = "oxbox ox-review preflight (+https://github.com/curtisgalloway/oxbox)"
@@ -156,7 +164,8 @@ def manifest_candidates(explicit):
     "Current" means the newest issue the operator actually has, not the
     newest file: a manifest carries its own issue_date, and a re-download
     with a fresh mtime does not make an old issue current. mtime is only
-    the tiebreaker for files that never say.
+    the tiebreaker for files that never say. With nothing named and
+    nothing on disk, the survey's current issue at PUBLIC_MANIFEST_URL.
     """
     if explicit:
         return [describe_manifest(explicit)]
@@ -170,9 +179,13 @@ def manifest_candidates(explicit):
                 found.setdefault(path.resolve(), describe_manifest(path))
         except OSError:
             continue
-    return sorted(found.values(),
-                  key=lambda m: (m.get("issue_date") or "", m.get("mtime") or 0),
-                  reverse=True)
+    if found:
+        return sorted(found.values(),
+                      key=lambda m: (m.get("issue_date") or "", m.get("mtime") or 0),
+                      reverse=True)
+    fallback = describe_manifest(PUBLIC_MANIFEST_URL)
+    fallback["fallback"] = True
+    return [fallback]
 
 
 def describe_manifest(source):
@@ -298,12 +311,11 @@ def main():
         detail = "; ".join("%s: %s" % (m["path"], m["error"])
                            for m in manifests if m.get("error"))
         report["blockers"].append(
-            "no readable survey manifest found%s. Point --manifest or OXBOX_MANIFEST "
-            "at the issue's file or its https URL (the survey serves the current one "
-            "at https://oxbox.ai/manifests/latest.json), or drop the file beside the "
-            "project as %s. Searched: %s"
+            "no readable survey manifest%s. Point --manifest or OXBOX_MANIFEST "
+            "at the issue's file or its https URL, or drop the file beside the "
+            "project as %s. Searched: %s, then %s"
             % (" (%s)" % detail if detail else "", MANIFEST_GLOB,
-               ", ".join(str(d) for d in SEARCH_DIRS)))
+               ", ".join(str(d) for d in SEARCH_DIRS), PUBLIC_MANIFEST_URL))
     else:
         report["manifest"] = usable[0]
         report["other_manifests"] = usable[1:]
@@ -357,6 +369,10 @@ def render(report):
     else:
         print("current: %s" % manifest["path"])
         print("issue_date=%s  sha256=%s" % (manifest["issue_date"], manifest["sha256"]))
+        if manifest.get("fallback"):
+            print("nothing named and none on disk, so this is the survey's current "
+                  "issue; set OXBOX_MANIFEST or drop a file beside the project to "
+                  "pin one")
         if manifest.get("fetched"):
             print("fetched by URL; ox keeps the bytes it uses as manifest.json in "
                   "each run's log directory")

@@ -81,8 +81,16 @@ pub fn exe_dir() -> PathBuf {
 /// prefix but never `libexec/`, so anything looking for a sibling directory
 /// of `bin` has to start from where the file really is.
 pub fn real_exe_dir() -> PathBuf {
-    let dir = exe_dir();
-    canonicalize_lenient(&dir)
+    // The executable itself is resolved, then its parent taken: Homebrew's
+    // symlink is on the file (/opt/homebrew/bin/oxbox -> ../Cellar/...),
+    // and resolving the directory alone would leave it in /opt/homebrew/bin,
+    // beside a libexec that is not there. os.path.realpath(__file__) in the
+    // reference did the same.
+    env::current_exe()
+        .ok()
+        .map(|exe| canonicalize_lenient(&exe))
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| canonicalize_lenient(&exe_dir()))
 }
 
 /// `canonicalize` that tolerates a path which does not exist yet: the longest

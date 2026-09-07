@@ -283,6 +283,11 @@ jobs:
           test -f "$prefix/share/oxbox/ox-review/SKILL.md"
           workspace="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$GITHUB_WORKSPACE/Cargo.toml" | head -1)"
           [ "$("$prefix/bin/oxbox" send --version)" = "oxbox-send ${workspace}" ]
+          # Homebrew on Linux pours this tarball and links bin/oxbox: the
+          # helpers must be found from the real file, not from the link.
+          mkdir -p "$RUNNER_TEMP/linkbin"
+          ln -s "$prefix/bin/oxbox" "$RUNNER_TEMP/linkbin/oxbox"
+          [ "$("$RUNNER_TEMP/linkbin/oxbox" send --version)" = "oxbox-send ${workspace}" ]
           "$prefix/bin/oxbox" --skill 2>/dev/null | grep -q "$prefix/share/oxbox/ox-review/scripts/preflight.py"
 
   macos:
@@ -360,6 +365,11 @@ jobs:
           expected="oxbox-send ${workspace}"
           [ "$("$prefix/bin/oxbox" send --version)" = "$expected" ]
           [ "$("$prefix/bin/oxbox" helper send --version)" = "$expected" ]
+          # Homebrew's shape: bin/oxbox linked from elsewhere, with libexec
+          # only beside the real file. 1.0.0 shipped unable to do this.
+          mkdir -p "$RUNNER_TEMP/linkbin"
+          ln -s "$prefix/bin/oxbox" "$RUNNER_TEMP/linkbin/oxbox"
+          [ "$("$RUNNER_TEMP/linkbin/oxbox" send --version)" = "$expected" ]
           "$prefix/bin/oxbox" sandbox --create "$scratch/srcrepo" thing.py
           # --model is explicit: no venue carries a default, and this
           # asserts where the log lands rather than how a model is chosen.

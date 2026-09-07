@@ -223,7 +223,7 @@ executed inside it.
   exit codes): guardtest and wiretest take `OXBOX_UNDER_TEST=<dir of
   binaries>` and drive those instead of the scripts, and jailtest runs
   inside whichever jail launched it. CI verifies on macOS, Ubuntu and
-  Windows on every push (guards 88/88, wire 69/69; Windows 77/77 + 5
+  Windows on every push (guards 90/90, wire 69/69; Windows 77/77 + 7
   skipped, 68/68 + 1 skipped, jail refuses 78).
 - **Byte-for-byte agreement is not the goal.** Where the two differ and the
   suites do not pin it, the right behavior wins and both implementations

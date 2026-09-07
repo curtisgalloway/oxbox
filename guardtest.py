@@ -772,6 +772,24 @@ def main():
         report(done.returncode == 0 and done.stdout.strip() == versions["oxbox-send"],
                f"oxbox send finds oxbox-send in the {label} layout with nothing on PATH",
                f"exit={done.returncode} stderr={done.stderr.strip()!r}")
+        # Homebrew's shape: bin/oxbox is a symlink to the keg's file, and the
+        # keg is where libexec lives. The FILE has to be resolved before its
+        # directory is taken, or the lookup stays beside the link. 1.0.0
+        # shipped with exactly that defect and brew could not run a helper.
+        if sys.platform == "win32":
+            skip(f"a symlinked front door finds the {label} helpers",
+                 "creating symlinks needs a privilege on Windows")
+        else:
+            linkbin = temp / ("linkbin-" + label)
+            linkbin.mkdir()
+            os.symlink(str(staged_oxbox), str(linkbin / staged_oxbox.name))
+            linked = [str(linkbin / staged_oxbox.name)] if UNDER_TEST \
+                else [sys.executable, str(linkbin / staged_oxbox.name)]
+            done = subprocess.run(linked + ["send", "--version"], capture_output=True,
+                                  text=True, env=env)
+            report(done.returncode == 0 and done.stdout.strip() == versions["oxbox-send"],
+                   f"a symlinked front door finds the {label} helpers",
+                   f"exit={done.returncode} stderr={done.stderr.strip()!r}")
         done = subprocess.run(staged + ["helper", "send", "--skill"],
                               capture_output=True, text=True, env=env)
         # The provenance line carries the resolved path: oxbox resolves its

@@ -163,7 +163,8 @@ the adversary:
 - **The jail is a narrower srt.** It grants writes to one directory,
   denies all network, and offers no allow-lists. Those are the reasons to
   keep it, not claims that it does more: the jail has no dependencies
-  beyond the operating system's own sandbox, its policy is fixed rather
+  beyond the platform's own sandbox tool (`sandbox-exec`, which macOS
+  ships, or `bubblewrap`, one package on Linux), its policy is fixed rather
   than configured, and "no network" is a rule rather than a default. A
   pluggable backend, including srt itself, would not change what oxbox is,
   because the jail is one layer of five and the other four are where the

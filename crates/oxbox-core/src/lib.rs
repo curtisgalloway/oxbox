@@ -513,7 +513,11 @@ mod tests {
     #[test]
     fn canonicalize_lenient_resolves_the_existing_prefix() {
         let dir = scratch("canon");
-        let real = fs::canonicalize(&dir).unwrap();
+        // On Windows `fs::canonicalize` answers with a \\?\ verbatim prefix,
+        // which the lenient form strips so results print and compare like
+        // what the user typed; the expectation goes through the same strip.
+        let real = strip_verbatim(fs::canonicalize(&dir).unwrap());
+        assert!(!real.to_string_lossy().starts_with(r"\\?\"), "{real:?}");
         let missing = dir.join("not").join("yet");
         assert_eq!(canonicalize_lenient(&missing), real.join("not").join("yet"));
         assert_eq!(canonicalize_lenient(&dir), real);

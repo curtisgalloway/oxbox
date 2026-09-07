@@ -47,21 +47,30 @@ VENUES = {
         # outlived its subject silently. The survey is the list that gets
         # updated; ox points at it instead of guessing.
         "default_model": None,
+        # OpenRouter is a listing several upstream providers serve, and it
+        # takes a `provider` object in the request body to say which
+        # (order, only, ignore, allow_fallbacks, max_price, ...). The
+        # other venues route their own way and would drop the object
+        # silently, so a pin on them is refused rather than sent.
+        "provider_routing": True,
     },
     "zenmux": {
         "url": "https://zenmux.ai/api/v1/chat/completions",
         "key_env": "ZENMUX_API_KEY",
         "default_model": None,
+        "provider_routing": False,
     },
     "opencode": {
         "url": "https://opencode.ai/zen/v1/chat/completions",
         "key_env": "OPENCODE_ZEN_API_KEY",
         "default_model": None,
+        "provider_routing": False,
     },
     "requesty": {
         "url": "https://router.requesty.ai/v1/chat/completions",
         "key_env": "REQUESTY_API_KEY",
         "default_model": None,
+        "provider_routing": False,
     },
 }
 DEFAULT_VENUE = "openrouter"
@@ -91,7 +100,12 @@ DEFAULT_MAX_TOKENS = 100000
 # table here that would be stale by the next issue.
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 DEFAULT_EFFORT = "high"
-MANIFEST_VERSION = 0
+# 1 added the per-entry `provider` object. An ox that predates it refuses
+# a version-1 manifest with a pointer to update, which is the point of
+# the number: an older ox would otherwise drop the pin and send the same
+# request unpinned, and the caller would get an endpoint the survey did
+# not measure. A version-0 manifest carrying `provider` is honored too.
+MANIFEST_VERSION = 1
 # A manifest fetched by URL is a few kilobytes of JSON; anything past this cap
 # is not one. The fetch gets its own short timeout because it happens before
 # the run, not during it.
@@ -382,9 +396,13 @@ def manifest_effort(value, where):
     return None
 
 
-def load_manifest(path, allow_paid):
+def load_manifest(path, allow_paid, provider=None):
     """Read a survey manifest -- a file or an https URL -- and decide which
     entries this run may use.
+
+    `provider` is the --provider flag's object, if given: it applies to
+    every entry, over the entry's own, and an entry whose venue cannot
+    honor a pin is skipped rather than sent unpinned.
 
     The manifest chooses provider and model; it never chooses where a
     credential goes. `venue` must name an entry in ox's own VENUES table —
@@ -460,6 +478,12 @@ def load_manifest(path, allow_paid):
         if "effort" in params:
             params = dict(params, effort=manifest_effort(
                 params["effort"], "recommendation %d" % (index + 1)))
+        # The entry's routing pin, an OpenRouter provider object passed
+        # through verbatim. Absent, null or empty means no preference; a
+        # value of any other shape is a pin this ox cannot honor, and an
+        # entry whose pin cannot be honored is skipped, not sent unpinned.
+        pin = rec.get("provider")
+        bad_pin = pin is not None and not isinstance(pin, dict)
         entry = {
             "position": index + 1,
             "venue": rec.get("venue"),
@@ -470,6 +494,7 @@ def load_manifest(path, allow_paid):
             "cost": rec.get("cost") or "unknown",
             "why": rec.get("why") or "",
             "params": params,
+            "provider": pin if isinstance(pin, dict) and pin else None,
             "skip": None,
             "url": None,
             "key_env": None,
@@ -487,6 +512,11 @@ def load_manifest(path, allow_paid):
             entry["skip"] = "cost=%s (pass --allow-paid to use it)" % entry["cost"]
         elif not os.environ.get(spec["key_env"]):
             entry["skip"] = "%s not set" % spec["key_env"]
+        elif bad_pin:
+            entry["skip"] = "provider is not an object"
+        elif (provider or entry["provider"]) and not spec["provider_routing"]:
+            entry["skip"] = ("provider pin on venue %s, which does not honor one"
+                             % entry["venue"])
         else:
             entry["url"] = spec["url"]
             entry["key_env"] = spec["key_env"]
@@ -502,6 +532,26 @@ def load_manifest(path, allow_paid):
     info = {"path": str(path), "sha256": digest, "fetched": fetched, "raw": raw,
             "issue_date": data.get("issue_date"), "defaults": defaults}
     return entries, info
+
+
+def provider_object(text):
+    """argparse type for --provider: a JSON object, or nothing.
+
+    An empty value means "not given", the way every other flag here reads
+    one. Anything that is not a JSON object is refused at the parser: the
+    venue would take a string or a list without complaint and route by
+    its defaults, which is the unpinned request this flag exists to
+    prevent.
+    """
+    if not text:
+        return None
+    try:
+        value = json.loads(text)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("not a JSON object: %s" % error)
+    if not isinstance(value, dict):
+        raise argparse.ArgumentTypeError("not a JSON object: %s" % text)
+    return value or None
 
 
 def make_log_dir(base):
@@ -813,6 +863,23 @@ def run(status):
     # Defaulted to None for the reason --venue and --max-tokens are: a
     # manifest entry may name the level its model actually accepts, and
     # honoring that requires knowing whether the flag was typed or assumed.
+    # An OpenRouter model id is a pool of endpoints, and price, output cap
+    # and failure mode belong to the endpoint: the survey measured the
+    # same payload answered in 47 seconds by one provider and never by
+    # another, and a run billed at double the list price because it
+    # landed on an endpoint priced above it. The provider object is how
+    # OpenRouter lets a caller say which endpoint; ox passes it through
+    # without interpreting it, so a manifest entry can promise what the
+    # survey measured. Parsed here so a typo is an argparse error, not a
+    # request with a string where the venue expects an object.
+    parser.add_argument("--provider", type=provider_object, default=None,
+                        help="OpenRouter routing preference, a JSON object "
+                             "sent verbatim in the request body (order, only, "
+                             "ignore, allow_fallbacks, max_price, "
+                             "quantizations, sort, ...). Beats the manifest "
+                             "entry's provider; refused on a venue that does "
+                             "not honor one. See "
+                             "https://openrouter.ai/docs/features/provider-routing")
     parser.add_argument("--effort", choices=EFFORTS, default=None,
                         help="reasoning effort (default: %s, or the manifest's "
                              "value when --manifest is given). No model takes "
@@ -902,7 +969,8 @@ def run(status):
             if value:
                 sys.exit("oxbox-send: %s conflicts with --manifest; the manifest "
                          "chooses the destination" % name)
-        entries, manifest_info = load_manifest(args.manifest, args.allow_paid)
+        entries, manifest_info = load_manifest(args.manifest, args.allow_paid,
+                                               args.provider)
         status["manifest"] = {"path": manifest_info["path"],
                               "sha256": manifest_info["sha256"]}
     elif args.base_url:
@@ -918,14 +986,24 @@ def run(status):
                      "credential must not travel in cleartext" % args.base_url)
         if not args.model:
             sys.exit("oxbox-send: --model is required for venue 'custom' (no default)")
+        # An unlisted endpoint makes no promise about routing, so a pin
+        # there would be a request the caller believes is pinned and is not.
+        if args.provider:
+            sys.exit("oxbox-send: --provider does not apply with --base-url; an unlisted "
+                     "endpoint makes no promise about honoring it")
         entries = [{"position": 1, "venue": "custom", "model": args.model,
-                    "cost": None, "why": "", "params": {}, "skip": None,
-                    "url": args.base_url, "key_env": args.api_key_env}]
+                    "cost": None, "why": "", "params": {}, "provider": None,
+                    "skip": None, "url": args.base_url,
+                    "key_env": args.api_key_env}]
     else:
         if args.api_key_env:
             sys.exit("oxbox-send: --api-key-env only applies with --base-url; "
                      "a named venue already carries its own key variable")
         venue = args.venue or DEFAULT_VENUE
+        if args.provider and not VENUES[venue]["provider_routing"]:
+            sys.exit("oxbox-send: --provider is an OpenRouter routing preference; venue "
+                     "%r does not honor one, so the request would go out unpinned"
+                     % venue)
         model = args.model or VENUES[venue]["default_model"]
         if not model:
             sys.exit(
@@ -944,8 +1022,8 @@ def run(status):
                 "with the runs behind each recommendation: https://oxbox.ai"
                 % venue)
         entries = [{"position": 1, "venue": venue, "model": model,
-                    "cost": None, "why": "", "params": {}, "skip": None,
-                    "url": VENUES[venue]["url"],
+                    "cost": None, "why": "", "params": {}, "provider": None,
+                    "skip": None, "url": VENUES[venue]["url"],
                     "key_env": VENUES[venue]["key_env"]}]
 
     if not args.manifest and not os.environ.get(entries[0]["key_env"]) \
@@ -995,6 +1073,12 @@ def run(status):
         else:
             effort = DEFAULT_EFFORT
 
+        # The routing pin: the flag over the entry's own, and only where
+        # the venue honors one (load_manifest and the venue checks above
+        # have already refused the rest). Verbatim, uninterpreted: what
+        # the fields mean is OpenRouter's contract, not this script's.
+        provider = args.provider or entry["provider"]
+
         payload = {
             "model": entry["model"],
             "messages": [
@@ -1006,6 +1090,8 @@ def run(status):
             "reasoning": {"effort": effort},
             "include_reasoning": True,
         }
+        if provider:
+            payload["provider"] = provider
 
         stamp, log_dir = make_log_dir(Path(args.log_dir))
         status["log_dir"] = str(log_dir)
@@ -1025,6 +1111,7 @@ def run(status):
             "mode": args.mode,
             "effort": effort,
             "max_tokens": max_tokens,
+            "provider": provider,
             "files": paths,
             "context_bytes": total_bytes,
             "secret_scan_hits": findings,

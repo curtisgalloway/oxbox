@@ -42,6 +42,12 @@ struct Venue {
     name: &'static str,
     url: &'static str,
     key_env: &'static str,
+    /// Whether the venue takes a `provider` object in the request body
+    /// to choose among the upstream endpoints serving a model. OpenRouter
+    /// does (order, only, ignore, allow_fallbacks, max_price, ...); the
+    /// others route their own way and would drop the object silently, so
+    /// a pin on them is refused rather than sent.
+    provider_routing: bool,
 }
 
 const VENUES: [Venue; 4] = [
@@ -49,21 +55,25 @@ const VENUES: [Venue; 4] = [
         name: "openrouter",
         url: "https://openrouter.ai/api/v1/chat/completions",
         key_env: "OPENROUTER_API_KEY",
+        provider_routing: true,
     },
     Venue {
         name: "zenmux",
         url: "https://zenmux.ai/api/v1/chat/completions",
         key_env: "ZENMUX_API_KEY",
+        provider_routing: false,
     },
     Venue {
         name: "opencode",
         url: "https://opencode.ai/zen/v1/chat/completions",
         key_env: "OPENCODE_ZEN_API_KEY",
+        provider_routing: false,
     },
     Venue {
         name: "requesty",
         url: "https://router.requesty.ai/v1/chat/completions",
         key_env: "REQUESTY_API_KEY",
+        provider_routing: false,
     },
 ];
 const DEFAULT_VENUE: &str = "openrouter";
@@ -77,7 +87,12 @@ const DEFAULT_MAX_TOKENS: u64 = 100_000;
 /// per-model fact that belongs in the manifest entry beside max_tokens.
 const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const DEFAULT_EFFORT: &str = "high";
-const MANIFEST_VERSION: i64 = 0;
+/// 1 added the per-entry `provider` object. An ox that predates it refuses
+/// a version-1 manifest with a pointer to update, which is the point of the
+/// number: an older ox would otherwise drop the pin and send the same
+/// request unpinned, and the caller would get an endpoint the survey did
+/// not measure. A version-0 manifest carrying `provider` is honored too.
+const MANIFEST_VERSION: i64 = 1;
 /// A manifest fetched by URL is a few kilobytes of JSON; anything past this
 /// cap is not one.
 const MANIFEST_MAX_BYTES: usize = 1_048_576;
@@ -389,6 +404,9 @@ struct Entry {
     model: String,
     why: String,
     params: Map<String, Value>,
+    /// The entry's routing pin, an OpenRouter provider object passed
+    /// through verbatim. None when absent, null or empty.
+    provider: Option<Map<String, Value>>,
     skip: Option<String>,
     url: String,
     key_env: String,
@@ -504,7 +522,15 @@ fn python_repr(value: &Value) -> String {
 /// entries this run may use. The manifest chooses provider and model; it
 /// never chooses where a credential goes: `venue` must name an entry in the
 /// VENUES table, and a `base_url` in the file is documentation only.
-fn load_manifest(path: &str, allow_paid: bool) -> Result<(Vec<Entry>, ManifestInfo), Exit> {
+///
+/// `provider` is the --provider flag's object, if given: it applies to every
+/// entry, over the entry's own, and an entry whose venue cannot honor a pin
+/// is skipped rather than sent unpinned.
+fn load_manifest(
+    path: &str,
+    allow_paid: bool,
+    provider: Option<&Map<String, Value>>,
+) -> Result<(Vec<Entry>, ManifestInfo), Exit> {
     let fetched = path.contains("://");
     let raw = if fetched {
         fetch_manifest(path)?
@@ -591,6 +617,15 @@ fn load_manifest(path: &str, allow_paid: bool) -> Result<(Vec<Entry>, ManifestIn
                 manifest_effort(&effort, &format!("recommendation {}", index + 1)),
             );
         }
+        // The entry's routing pin. Absent, null or empty means no preference;
+        // a value of any other shape is a pin this ox cannot honor, and an
+        // entry whose pin cannot be honored is skipped, not sent unpinned.
+        let pin = rec.get("provider");
+        let bad_pin = pin.is_some_and(|p| !p.is_null() && !p.is_object());
+        let pin: Option<Map<String, Value>> = pin
+            .and_then(Value::as_object)
+            .filter(|map| !map.is_empty())
+            .cloned();
         let venue = rec
             .get("venue")
             .and_then(Value::as_str)
@@ -628,6 +663,7 @@ fn load_manifest(path: &str, allow_paid: bool) -> Result<(Vec<Entry>, ManifestIn
             model: model.clone(),
             why,
             params,
+            provider: pin,
             skip: None,
             url: String::new(),
             key_env: String::new(),
@@ -646,6 +682,14 @@ fn load_manifest(path: &str, allow_paid: bool) -> Result<(Vec<Entry>, ManifestIn
             }
             Some(spec) if env::var(spec.key_env).map(|v| v.is_empty()).unwrap_or(true) => {
                 entry.skip = Some(format!("{} not set", spec.key_env))
+            }
+            Some(_) if bad_pin => entry.skip = Some("provider is not an object".to_string()),
+            Some(spec)
+                if (provider.is_some() || entry.provider.is_some()) && !spec.provider_routing =>
+            {
+                entry.skip = Some(format!(
+                    "provider pin on venue {venue}, which does not honor one"
+                ))
             }
             Some(spec) => {
                 entry.url = venue_url(spec);
@@ -968,6 +1012,7 @@ struct Args {
     base_url: Option<String>,
     api_key_env: Option<String>,
     model: Option<String>,
+    provider: Option<Map<String, Value>>,
     effort: Option<String>,
     max_tokens: Option<u64>,
     temperature: f64,
@@ -984,7 +1029,8 @@ const USAGE_LINE: &str =
                   [--venue {opencode,openrouter,requesty,zenmux}]
                   [--manifest MANIFEST] [--allow-paid] [--failover]
                   [--base-url BASE_URL] [--api-key-env API_KEY_ENV]
-                  [--model MODEL] [--effort {low,medium,high,xhigh,max}]
+                  [--model MODEL] [--provider PROVIDER]
+                  [--effort {low,medium,high,xhigh,max}]
                   [--max-tokens MAX_TOKENS] [--temperature TEMPERATURE]
                   [--stdin] [--log-dir LOG_DIR] [--output OUTPUT]
                   [--status-file STATUS_FILE] [--force] [--dry-run] [--skill]
@@ -1028,6 +1074,12 @@ options:
   --model MODEL         model id to send to. There is no default -- see
                         https://oxbox.ai for what is currently worth pointing
                         at, or use --manifest
+  --provider PROVIDER   OpenRouter routing preference, a JSON object sent
+                        verbatim in the request body (order, only, ignore,
+                        allow_fallbacks, max_price, quantizations, sort, ...).
+                        Beats the manifest entry's provider; refused on a
+                        venue that does not honor one. See
+                        https://openrouter.ai/docs/features/provider-routing
   --effort {{low,medium,high,xhigh,max}}
                         reasoning effort (default: {DEFAULT_EFFORT}, or the
                         manifest's value when --manifest is given). No model
@@ -1084,6 +1136,7 @@ impl Args {
             base_url: None,
             api_key_env: None,
             model: None,
+            provider: None,
             effort: None,
             max_tokens: None,
             temperature: 0.2,
@@ -1096,6 +1149,27 @@ impl Args {
             force: false,
             dry_run: false,
         }
+    }
+}
+
+/// The --provider value: a JSON object, or nothing. An empty value means
+/// "not given", the way every other flag here reads one, and so does an
+/// empty object. Anything else that is not an object is refused at the
+/// parser: the venue would take a string or a list without complaint and
+/// route by its defaults, which is the unpinned request this flag exists to
+/// prevent.
+fn parse_provider(text: &str) -> Result<Option<Map<String, Value>>, String> {
+    if text.is_empty() {
+        return Ok(None);
+    }
+    match serde_json::from_str::<Value>(text) {
+        Ok(Value::Object(map)) => Ok(Some(map).filter(|map| !map.is_empty())),
+        Ok(_) => Err(usage(format!(
+            "argument --provider: not a JSON object: {text}"
+        ))),
+        Err(error) => Err(usage(format!(
+            "argument --provider: not a JSON object: {error}"
+        ))),
     }
 }
 
@@ -1159,6 +1233,10 @@ fn parse_args(raw: &[String]) -> Result<Parsed, String> {
             "--base-url" => args.base_url = Some(value_of()?),
             "--api-key-env" => args.api_key_env = Some(value_of()?),
             "--model" => args.model = Some(value_of()?),
+            "--provider" => {
+                let value = value_of()?;
+                args.provider = parse_provider(&value)?;
+            }
             "--effort" => {
                 let value = value_of()?;
                 if !EFFORTS.contains(&value.as_str()) {
@@ -1352,7 +1430,7 @@ fn run(
                 )));
             }
         }
-        let (entries, info) = load_manifest(manifest, args.allow_paid)?;
+        let (entries, info) = load_manifest(manifest, args.allow_paid, args.provider.as_ref())?;
         status.insert(
             "manifest".into(),
             json!({"path": info.path, "sha256": info.sha256}),
@@ -1377,12 +1455,21 @@ fn run(
         let Some(model) = &args.model else {
             return Err(quit("--model is required for venue 'custom' (no default)"));
         };
+        // An unlisted endpoint makes no promise about routing, so a pin
+        // there would be a request the caller believes is pinned and is not.
+        if args.provider.is_some() {
+            return Err(quit(
+                "--provider does not apply with --base-url; an unlisted endpoint makes no \
+                 promise about honoring it",
+            ));
+        }
         vec![Entry {
             position: 1,
             venue: "custom".into(),
             model: model.clone(),
             why: String::new(),
             params: Map::new(),
+            provider: None,
             skip: None,
             url: base_url.clone(),
             key_env: key_env.clone(),
@@ -1399,6 +1486,12 @@ fn run(
             .iter()
             .find(|venue| venue.name == venue_name)
             .expect("the venue was validated");
+        if args.provider.is_some() && !spec.provider_routing {
+            return Err(quit(format!(
+                "--provider is an OpenRouter routing preference; venue '{venue_name}' does \
+                 not honor one, so the request would go out unpinned"
+            )));
+        }
         let Some(model) = &args.model else {
             return Err(quit(format!(
                 "no model chosen, and '{venue_name}' has no default.\n\
@@ -1420,6 +1513,7 @@ fn run(
             model: model.clone(),
             why: String::new(),
             params: Map::new(),
+            provider: None,
             skip: None,
             url: venue_url(spec),
             key_env: spec.key_env.into(),
@@ -1493,7 +1587,13 @@ fn run(
                 .to_string(),
         };
 
-        let payload = json!({
+        // The routing pin: the flag over the entry's own, and only where the
+        // venue honors one (load_manifest and the venue checks above have
+        // already refused the rest). Verbatim, uninterpreted: what the
+        // fields mean is OpenRouter's contract, not this tool's.
+        let provider = args.provider.as_ref().or(entry.provider.as_ref());
+
+        let mut payload = json!({
             "model": entry.model,
             "messages": [
                 {"role": "system", "content": system_prompt(&args.mode)},
@@ -1504,6 +1604,9 @@ fn run(
             "reasoning": {"effort": effort},
             "include_reasoning": true,
         });
+        if let Some(pin) = provider {
+            payload["provider"] = Value::Object(pin.clone());
+        }
 
         let (stamp, log_dir) = make_log_dir(&args.log_dir)?;
         status.insert("log_dir".into(), json!(log_dir.to_string_lossy()));
@@ -1522,6 +1625,7 @@ fn run(
             "mode": args.mode,
             "effort": effort,
             "max_tokens": max_tokens,
+            "provider": provider,
             "files": paths,
             "context_bytes": context.total_bytes,
             "secret_scan_hits": context.findings,
@@ -2161,12 +2265,40 @@ mod tests {
                 vec!["--temperature", "warm"],
                 "argument --temperature: invalid float value: 'warm'",
             ),
+            (
+                vec!["--provider", "nope"],
+                "argument --provider: not a JSON object",
+            ),
+            (
+                vec!["--provider", "[\"novita\"]"],
+                "argument --provider: not a JSON object: [\"novita\"]",
+            ),
         ] {
             let error = parse_args(&args(&bad)).unwrap_err();
             assert!(error.contains(needle), "{bad:?}: {error}");
         }
         assert!(help_text().contains("--dry-run"));
         assert!(help_text().starts_with(USAGE_LINE));
+    }
+
+    #[test]
+    fn the_provider_flag_is_an_object_or_nothing() {
+        let pinned = parsed(&[
+            "--provider",
+            r#"{"order": ["novita"], "allow_fallbacks": false}"#,
+            "t",
+        ]);
+        let pin = pinned.provider.expect("an object");
+        assert_eq!(pin.get("order"), Some(&json!(["novita"])));
+        assert_eq!(pin.get("allow_fallbacks"), Some(&json!(false)));
+        let inline = parsed(&[r#"--provider={"sort":"price"}"#, "t"]);
+        assert_eq!(inline.provider.unwrap().get("sort"), Some(&json!("price")));
+        // Empty, and an empty object, are "not given".
+        assert!(parsed(&["--provider", "", "t"]).provider.is_none());
+        assert!(parsed(&["--provider", "{}", "t"]).provider.is_none());
+        assert!(parsed(&["t"]).provider.is_none());
+        assert!(help_text().contains("--provider PROVIDER"));
+        assert!(USAGE_LINE.contains("[--provider PROVIDER]"));
     }
 
     // ── the status record ─────────────────────────────────────────────────
@@ -2350,19 +2482,22 @@ mod tests {
         ];
         for (name, value, needle) in cases {
             let path = write_manifest(&dir, name, &value);
-            let error = message(load_manifest(&path, false).unwrap_err());
+            let error = message(load_manifest(&path, false, None).unwrap_err());
             assert!(error.contains(needle), "{name}: {error}");
         }
         fs::write(dir.join("not.json"), b"{not json").unwrap();
-        let error =
-            message(load_manifest(dir.join("not.json").to_str().unwrap(), false).unwrap_err());
+        let error = message(
+            load_manifest(dir.join("not.json").to_str().unwrap(), false, None).unwrap_err(),
+        );
         assert!(error.contains("is not valid JSON"), "{error}");
         fs::write(dir.join("bytes.json"), [0xff, 0xfe]).unwrap();
-        let error =
-            message(load_manifest(dir.join("bytes.json").to_str().unwrap(), false).unwrap_err());
+        let error = message(
+            load_manifest(dir.join("bytes.json").to_str().unwrap(), false, None).unwrap_err(),
+        );
         assert!(error.contains("is not valid JSON"), "{error}");
-        let error =
-            message(load_manifest(dir.join("absent.json").to_str().unwrap(), false).unwrap_err());
+        let error = message(
+            load_manifest(dir.join("absent.json").to_str().unwrap(), false, None).unwrap_err(),
+        );
         assert!(error.contains("cannot read manifest"), "{error}");
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -2388,7 +2523,7 @@ mod tests {
         with_env(
             &[("OPENROUTER_API_KEY", Some("k")), ("ZENMUX_API_KEY", None)],
             || {
-                let (entries, info) = load_manifest(&path, false).unwrap();
+                let (entries, info) = load_manifest(&path, false, None).unwrap();
                 assert_eq!(info.path, path);
                 assert_eq!(info.sha256.len(), 64);
                 assert!(!info.fetched);
@@ -2423,9 +2558,66 @@ mod tests {
                 assert_eq!(live.params.get("effort"), Some(&json!("low")));
                 assert_eq!(live.params.get("max_tokens"), Some(&json!(0)));
                 // --allow-paid admits paid and unknown alike.
-                let (entries, _) = load_manifest(&path, true).unwrap();
+                let (entries, _) = load_manifest(&path, true, None).unwrap();
                 assert_eq!(entries[2].skip, None);
                 assert_eq!(entries[3].skip, None);
+            },
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_provider_pin_is_kept_only_where_the_venue_honors_it() {
+        let dir = scratch("manifest-provider");
+        let pin = json!({"only": ["novita"], "allow_fallbacks": false});
+        let manifest = json!({
+            "manifest_version": 1,
+            "recommendations": [
+                {"venue": "openrouter", "model": "or/pinned", "cost": "free", "provider": pin},
+                {"venue": "zenmux", "model": "z/pinned", "cost": "free", "provider": pin},
+                {"venue": "openrouter", "model": "or/string", "cost": "free", "provider": "novita"},
+                {"venue": "openrouter", "model": "or/empty", "cost": "free", "provider": {}},
+                {"venue": "openrouter", "model": "or/null", "cost": "free", "provider": null},
+                {"venue": "zenmux", "model": "z/plain", "cost": "free"},
+            ]
+        });
+        let path = write_manifest(&dir, "m.json", &manifest);
+        with_env(
+            &[
+                ("OPENROUTER_API_KEY", Some("k")),
+                ("ZENMUX_API_KEY", Some("k")),
+            ],
+            || {
+                // A version-1 manifest is this ox's own version, so it is read.
+                let (entries, _) = load_manifest(&path, false, None).unwrap();
+                let skips: Vec<Option<String>> = entries.iter().map(|e| e.skip.clone()).collect();
+                assert_eq!(skips[0], None);
+                assert_eq!(
+                    entries[0].provider.as_ref().map(|p| json!(p)),
+                    Some(pin.clone())
+                );
+                assert_eq!(
+                    skips[1].as_deref(),
+                    Some("provider pin on venue zenmux, which does not honor one")
+                );
+                assert_eq!(skips[2].as_deref(), Some("provider is not an object"));
+                assert_eq!(skips[3], None);
+                assert_eq!(
+                    entries[3].provider, None,
+                    "an empty object is no preference"
+                );
+                assert_eq!(skips[4], None);
+                assert_eq!(entries[4].provider, None);
+                assert_eq!(skips[5], None);
+                // The flag applies to every entry: a venue that cannot honor it
+                // is skipped even when the entry itself carries no pin.
+                let flag = pin.as_object().unwrap();
+                let (entries, _) = load_manifest(&path, false, Some(flag)).unwrap();
+                assert_eq!(entries[0].skip, None);
+                assert_eq!(
+                    entries[5].skip.as_deref(),
+                    Some("provider pin on venue zenmux, which does not honor one")
+                );
             },
         );
         fs::remove_dir_all(&dir).unwrap();
@@ -2436,7 +2628,8 @@ mod tests {
         with_env(&[("OXBOX_TEST_ALLOW_HTTP", None)], || {
             let error = message(fetch_manifest("http://example.invalid/m.json").unwrap_err());
             assert!(error.contains("must be https://"), "{error}");
-            let error = message(load_manifest("http://example.invalid/m.json", false).unwrap_err());
+            let error =
+                message(load_manifest("http://example.invalid/m.json", false, None).unwrap_err());
             assert!(error.contains("must be https://"), "{error}");
         });
     }
@@ -2466,7 +2659,7 @@ mod tests {
             || {
                 assert!(!https_required());
                 let address = format!("{url}/m.json");
-                let (entries, info) = load_manifest(&address, false).unwrap();
+                let (entries, info) = load_manifest(&address, false, None).unwrap();
                 assert!(info.fetched);
                 assert_eq!(info.raw, body);
                 assert_eq!(entries[0].skip, None);
@@ -2673,6 +2866,86 @@ mod tests {
         let mut out = Vec::new();
         let result = run(&args, &mut status, &mut input, &mut out);
         (result, status, String::from_utf8_lossy(&out).into_owned())
+    }
+
+    #[test]
+    fn a_provider_pin_rides_in_the_request_and_the_meta() {
+        let dir = scratch("dry-provider");
+        let logs = dir.join("logs").to_string_lossy().into_owned();
+        let pin = r#"{"only": ["novita"], "allow_fallbacks": false}"#;
+        with_env(&[("OPENROUTER_API_KEY", None)], || {
+            let (result, status, out) = run_with(
+                &[
+                    "--dry-run",
+                    "--model",
+                    "m",
+                    "--provider",
+                    pin,
+                    "--log-dir",
+                    &logs,
+                    "hi",
+                ],
+                "",
+            );
+            assert_eq!(result, Ok(()));
+            let printed: Value = serde_json::from_str(&out).unwrap();
+            let expected: Value = serde_json::from_str(pin).unwrap();
+            assert_eq!(printed["provider"], expected, "verbatim");
+            let log_dir = PathBuf::from(status["log_dir"].as_str().unwrap());
+            let meta: Value =
+                serde_json::from_slice(&fs::read(log_dir.join("meta.json")).unwrap()).unwrap();
+            assert_eq!(meta["provider"], expected);
+
+            // Without the flag: no key in the request, null in the meta.
+            let (result, status, out) =
+                run_with(&["--dry-run", "--model", "m", "--log-dir", &logs, "hi"], "");
+            assert_eq!(result, Ok(()));
+            let printed: Value = serde_json::from_str(&out).unwrap();
+            assert!(printed.get("provider").is_none());
+            let log_dir = PathBuf::from(status["log_dir"].as_str().unwrap());
+            let meta: Value =
+                serde_json::from_slice(&fs::read(log_dir.join("meta.json")).unwrap()).unwrap();
+            assert_eq!(meta["provider"], Value::Null);
+
+            // A venue that does not honor a pin refuses it before anything
+            // is built, and so does an unlisted endpoint.
+            let (result, _, _) = run_with(
+                &[
+                    "--dry-run",
+                    "--venue",
+                    "zenmux",
+                    "--model",
+                    "m",
+                    "--provider",
+                    pin,
+                    "hi",
+                ],
+                "",
+            );
+            let error = message(result.unwrap_err());
+            assert!(
+                error.contains("venue 'zenmux' does not honor one"),
+                "{error}"
+            );
+            let (result, _, _) = run_with(
+                &[
+                    "--dry-run",
+                    "--base-url",
+                    "https://x.example/v1",
+                    "--api-key-env",
+                    "K",
+                    "--model",
+                    "m",
+                    "--provider",
+                    pin,
+                    "hi",
+                ],
+                "",
+            );
+            let error = message(result.unwrap_err());
+            assert!(error.contains("does not apply with --base-url"), "{error}");
+        });
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

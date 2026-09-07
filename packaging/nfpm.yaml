@@ -4,9 +4,10 @@
 # nfpm manifest for the Linux .deb (built by .github/workflows/release.yml,
 # once per architecture inside a debian:bookworm container so the binaries
 # link against a glibc every supported Debian and Ubuntu carries).
-# VERSION, ARCH and BINDIR are injected as environment variables by the
-# workflow: the package version, the Debian architecture name (amd64 or
-# arm64), and the directory holding the five release binaries.
+# VERSION and ARCH are injected as environment variables by the workflow:
+# the package version and the Debian architecture name (amd64 or arm64).
+# The binaries come from target/release, spelled out because nfpm expands
+# variables in its metadata fields but not in content paths.
 #
 # Layout matches what the tools expect when installed (see helper_dirs and
 # the skill lookup in oxbox-core): oxbox on PATH, the four helpers it runs in
@@ -47,26 +48,26 @@ depends:
 recommends:
   - python3
 contents:
-  - src: ${BINDIR}/oxbox
+  - src: target/release/oxbox
     dst: /usr/bin/oxbox
     file_info:
       mode: 0o755
   # The helpers live off PATH. oxbox finds them at <prefix>/libexec/oxbox/bin
   # from its own location (helper_dirs); `oxbox <sub>` execs oxbox-<sub>,
   # and `oxbox helper <sub>` runs one directly.
-  - src: ${BINDIR}/oxbox-sandbox
+  - src: target/release/oxbox-sandbox
     dst: /usr/libexec/oxbox/bin/oxbox-sandbox
     file_info:
       mode: 0o755
-  - src: ${BINDIR}/oxbox-send
+  - src: target/release/oxbox-send
     dst: /usr/libexec/oxbox/bin/oxbox-send
     file_info:
       mode: 0o755
-  - src: ${BINDIR}/oxbox-patch
+  - src: target/release/oxbox-patch
     dst: /usr/libexec/oxbox/bin/oxbox-patch
     file_info:
       mode: 0o755
-  - src: ${BINDIR}/oxbox-jail
+  - src: target/release/oxbox-jail
     dst: /usr/libexec/oxbox/bin/oxbox-jail
     file_info:
       mode: 0o755

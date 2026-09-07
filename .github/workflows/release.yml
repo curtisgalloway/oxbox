@@ -139,7 +139,6 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
           ARCH: ${{ matrix.arch }}
-          BINDIR: target/release
         run: |
           mkdir -p dist
           nfpm package -f packaging/nfpm.yaml -p deb \

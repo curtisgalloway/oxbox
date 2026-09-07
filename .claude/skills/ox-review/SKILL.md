@@ -73,7 +73,9 @@ report; pass that URL as `<MANIFEST>` below. Never fall back to a bare
 `--venue`/`--model` instead: the manifest is the record of *why* a destination
 was chosen, and `oxbox-send` writes its sha256 into every run's `meta.json` for
 exactly that reason. To pin a particular issue, point `--manifest` or
-`OXBOX_MANIFEST` at its file or https URL. `oxbox-send` (0.5.0 or later)
+`OXBOX_MANIFEST` at its file or https URL, or set it once as `manifest` under
+`[send]` in `~/.config/oxbox/config.ini`, which `oxbox send` itself also reads
+when nothing on its command line names a destination. `oxbox-send` (0.5.0 or later)
 fetches a URL itself — https only, no redirects, no credential sent — and keeps
 the bytes it used as `manifest.json` in every run's log directory, so the audit
 trail survives the URL moving on to the next issue. Only when the URL cannot be

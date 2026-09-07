@@ -10,6 +10,7 @@ anything touches a real tree.
 """
 
 import argparse
+import configparser
 import hashlib
 import json
 import os
@@ -534,6 +535,38 @@ def load_manifest(path, allow_paid, provider=None):
     return entries, info
 
 
+# The config file the sandbox tools read for their root; oxbox-send reads
+# one setting of its own from it. The path logic is the block those three
+# carry, for the reason they carry it: each script is standalone.
+CONFIG_FILE = "config.ini"
+
+
+def config_path():
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.join(
+            os.path.expanduser("~"), "AppData", "Roaming")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+            os.path.expanduser("~"), ".config")
+    return os.path.join(base, "oxbox", CONFIG_FILE)
+
+
+def config_manifest():
+    """`manifest` under [send] in the config file, and the file, or (None, None).
+
+    A file that cannot be parsed is an error, not "unset": a typo in a
+    setting should not silently turn into a run with no manifest.
+    """
+    path = config_path()
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read(path, encoding="utf-8")
+    except configparser.Error as error:
+        sys.exit("oxbox-send: cannot parse %s: %s" % (path, error))
+    value = parser.get("send", "manifest", fallback=None)
+    return (value, path) if value else (None, None)
+
+
 def provider_object(text):
     """argparse type for --provider: a JSON object, or nothing.
 
@@ -957,10 +990,21 @@ def run(status):
     # key it may have, and a manifest may only name venues from ox's own
     # table, so no credential travels somewhere by default.
     manifest_info = None
-    if args.failover and not args.manifest:
+    # A configured manifest stands in for --manifest when nothing on the
+    # command line names a destination, and only then: a typed --model or
+    # --venue is a choice, and a config file does not overrule what was
+    # typed. Announced, so a run's stderr says where the destination came
+    # from; the audit trail then carries the manifest like any other.
+    manifest = args.manifest
+    if not manifest and not (args.venue or args.model or args.base_url
+                             or args.api_key_env):
+        manifest, origin = config_manifest()
+        if manifest:
+            sys.stderr.write("oxbox-send: manifest from %s: %s\n" % (origin, manifest))
+    if args.failover and not manifest:
         sys.exit("oxbox-send: --failover requires --manifest; a single destination "
                  "has nothing to fail over to")
-    if args.manifest:
+    if manifest:
         # The manifest chooses provider and model; every other destination
         # flag conflicts with it rather than silently mixing.
         for value, name in ((args.venue, "--venue"), (args.model, "--model"),
@@ -969,7 +1013,7 @@ def run(status):
             if value:
                 sys.exit("oxbox-send: %s conflicts with --manifest; the manifest "
                          "chooses the destination" % name)
-        entries, manifest_info = load_manifest(args.manifest, args.allow_paid,
+        entries, manifest_info = load_manifest(manifest, args.allow_paid,
                                                args.provider)
         status["manifest"] = {"path": manifest_info["path"],
                               "sha256": manifest_info["sha256"]}
@@ -1018,6 +1062,9 @@ def run(status):
                 "  --model <id>"
                 "                                        a model you chose\n"
                 "\n"
+                "Or set the first one once, as `manifest = <file or URL>` under\n"
+                "[send] in ~/.config/oxbox/config.ini.\n"
+                "\n"
                 "The Oxbox Survey publishes what is currently worth trying,\n"
                 "with the runs behind each recommendation: https://oxbox.ai"
                 % venue)
@@ -1026,7 +1073,7 @@ def run(status):
                     "skip": None, "url": VENUES[venue]["url"],
                     "key_env": VENUES[venue]["key_env"]}]
 
-    if not args.manifest and not os.environ.get(entries[0]["key_env"]) \
+    if not manifest and not os.environ.get(entries[0]["key_env"]) \
             and not args.dry_run:
         sys.exit("oxbox-send: %s not set (run under: op run --env-file .env -- oxbox send ...)"
                  % entries[0]["key_env"])

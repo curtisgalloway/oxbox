@@ -1411,13 +1411,29 @@ fn run(
     // independently: an unlisted host requires you to name the variable
     // whose key it may have, and a manifest may only name venues from the
     // table, so no credential travels somewhere by default.
-    if args.failover && args.manifest.is_none() {
+    // A configured manifest stands in for --manifest when nothing on the
+    // command line names a destination, and only then: a typed --model or
+    // --venue is a choice, and a config file does not overrule what was
+    // typed. Announced, so a run's stderr says where the destination came
+    // from; the audit trail then carries the manifest like any other.
+    let mut manifest_choice = args.manifest.clone();
+    if manifest_choice.is_none()
+        && args.venue.is_none()
+        && args.model.is_none()
+        && args.base_url.is_none()
+        && args.api_key_env.is_none()
+        && let Some((value, path)) = core::config_get("send", "manifest").map_err(quit)?
+    {
+        say(&format!("manifest from {}: {value}", path.display()));
+        manifest_choice = Some(value);
+    }
+    if args.failover && manifest_choice.is_none() {
         return Err(quit(
             "--failover requires --manifest; a single destination has nothing to fail over to",
         ));
     }
     let mut manifest_info: Option<ManifestInfo> = None;
-    let entries: Vec<Entry> = if let Some(manifest) = &args.manifest {
+    let entries: Vec<Entry> = if let Some(manifest) = &manifest_choice {
         for (value, name) in [
             (&args.venue, "--venue"),
             (&args.model, "--model"),
@@ -1503,6 +1519,9 @@ fn run(
                  \x20 --manifest https://oxbox.ai/manifests/latest.json   this week's pick\n\
                  \x20 --model <id>                                        a model you chose\n\
                  \n\
+                 Or set the first one once, as `manifest = <file or URL>` under\n\
+                 [send] in ~/.config/oxbox/config.ini.\n\
+                 \n\
                  The Oxbox Survey publishes what is currently worth trying,\n\
                  with the runs behind each recommendation: https://oxbox.ai"
             )));
@@ -1520,7 +1539,7 @@ fn run(
         }]
     };
 
-    if args.manifest.is_none()
+    if manifest_choice.is_none()
         && !args.dry_run
         && env::var(&entries[0].key_env)
             .map(|v| v.is_empty())
@@ -2866,6 +2885,62 @@ mod tests {
         let mut out = Vec::new();
         let result = run(&args, &mut status, &mut input, &mut out);
         (result, status, String::from_utf8_lossy(&out).into_owned())
+    }
+
+    #[test]
+    fn a_configured_manifest_stands_in_for_the_flag_until_a_destination_is_typed() {
+        let dir = scratch("config-manifest");
+        let logs = dir.join("logs").to_string_lossy().into_owned();
+        let manifest = write_manifest(
+            &dir,
+            "m.json",
+            &json!({"manifest_version": 0, "recommendations": [
+                {"venue": "openrouter", "model": "or/configured", "cost": "free"}]}),
+        );
+        let cfg = dir.join("oxbox");
+        fs::create_dir_all(&cfg).unwrap();
+        fs::write(
+            cfg.join(core::CONFIG_FILE),
+            format!("[send]\nmanifest = {manifest}\n"),
+        )
+        .unwrap();
+        let dir_text = dir.to_string_lossy().into_owned();
+        with_env(
+            &[
+                ("XDG_CONFIG_HOME", Some(&dir_text)),
+                ("APPDATA", Some(&dir_text)),
+                ("OPENROUTER_API_KEY", Some("k")),
+            ],
+            || {
+                // Nothing typed: the configured manifest chooses, and
+                // --failover is allowed because a manifest is in play.
+                let (result, status, _) =
+                    run_with(&["--dry-run", "--failover", "--log-dir", &logs, "hi"], "");
+                assert_eq!(result, Ok(()));
+                assert_eq!(status["manifest"]["path"], json!(manifest));
+                assert_eq!(status["model"], json!("or/configured"));
+                // A typed destination wins over the config file.
+                let (result, status, _) = run_with(
+                    &["--dry-run", "--model", "typed", "--log-dir", &logs, "hi"],
+                    "",
+                );
+                assert_eq!(result, Ok(()));
+                assert_eq!(status["manifest"], Value::Null);
+                assert_eq!(status["model"], json!("typed"));
+                // An empty value is unset, and the no-model refusal names the key.
+                fs::write(cfg.join(core::CONFIG_FILE), "[send]\nmanifest =\n").unwrap();
+                let (result, _, _) = run_with(&["--dry-run", "--log-dir", &logs, "hi"], "");
+                let error = message(result.unwrap_err());
+                assert!(error.contains("no model chosen"), "{error}");
+                assert!(error.contains("[send]"), "{error}");
+                // A config file that cannot be parsed is an error, not "unset".
+                fs::write(cfg.join(core::CONFIG_FILE), "[send]\nbroken\n").unwrap();
+                let (result, _, _) = run_with(&["--dry-run", "--log-dir", &logs, "hi"], "");
+                let error = message(result.unwrap_err());
+                assert!(error.contains("cannot parse"), "{error}");
+            },
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

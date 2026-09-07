@@ -379,8 +379,13 @@ def main():
     # --dry-run so the case cannot reach the network even when it fails: the
     # no-model exit happens before the dry-run branch, so the assertion is
     # unchanged, but a regression that restores a default sends nothing.
+    # An empty config home, so a developer's own `[send] manifest` cannot
+    # turn this refusal into a run.
+    empty_cfg = tmp / "empty-cfg"
+    empty_cfg.mkdir()
     result = run_ox(["--mode", "ask", "--dry-run", "hello"],
-                    env={"OPENROUTER_API_KEY": "sk-should-not-be-used"})
+                    env={"OPENROUTER_API_KEY": "sk-should-not-be-used",
+                         "XDG_CONFIG_HOME": str(empty_cfg), "APPDATA": str(empty_cfg)})
     report(result.returncode != 0
            and "no model chosen" in result.stderr
            and "oxbox.ai" in result.stderr,
@@ -779,6 +784,37 @@ def main():
                            "(pass --allow-paid to use it)"],
            "an all-skipped manifest exits with each entry's reason",
            repr(summary))
+    print("\n=== a configured manifest stands in for --manifest ===")
+
+    # `manifest` under [send] in config.ini is the manifest a run uses when
+    # nothing on the command line names a destination. A typed --model or
+    # --venue is a choice the config file does not overrule.
+    cfg_home = tmp / "cfg-home"
+    (cfg_home / "oxbox").mkdir(parents=True)
+    (cfg_home / "oxbox" / "config.ini").write_text(
+        "[send]\nmanifest = %s\n" % manifest, encoding="utf-8")
+    cfg_env = dict(menv, XDG_CONFIG_HOME=str(cfg_home), APPDATA=str(cfg_home))
+    solid.clear()
+    result = run_rewired(manifest_ox, ["--failover", "--mode", "ask",
+         "--status-file", str(sfile), "--log-dir", str(tmp / "mlogs"), "hello"],
+         env=cfg_env)
+    stat = json.loads(sfile.read_text()) if sfile.exists() else {}
+    report(result.returncode == 0 and stat.get("model") == "solid-free"
+           and (stat.get("manifest") or {}).get("path") == str(manifest)
+           and "manifest from" in result.stderr,
+           "with nothing typed, the configured manifest chooses and is announced",
+           "exit=%s model=%r stderr=%r" % (result.returncode, stat.get("model"),
+                                            result.stderr[-160:]))
+    result = run_rewired(manifest_ox, ["--model", "typed", "--mode", "ask", "--dry-run",
+         "--status-file", str(sfile), "--log-dir", str(tmp / "mlogs"), "hello"],
+         env=cfg_env)
+    stat = json.loads(sfile.read_text()) if sfile.exists() else {}
+    report(result.returncode == 0 and stat.get("model") == "typed"
+           and stat.get("manifest") is None,
+           "a typed --model beats the configured manifest",
+           "exit=%s model=%r manifest=%r" % (result.returncode, stat.get("model"),
+                                             stat.get("manifest")))
+
     print("\n=== a provider pin rides through verbatim, or is refused ===")
 
     # An OpenRouter model id is a pool of endpoints, and price, output cap

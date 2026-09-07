@@ -542,10 +542,10 @@ work out across subagents, and merges what comes back. Copy the directory into
 another project's `.claude/skills/` to use it there; the scripts are stdlib-only
 Python 3.9+ like everything else here, and they find `oxbox-send` through `oxbox` on
 `PATH` (as `oxbox send`), directly via `OX`, or in the checkout named by
-`OXBOX_HOME`. `OXBOX_MANIFEST` names the current
-manifest — a file or the survey's https URL — and `OXBOX_ENV_FILE` the
-1Password `.env` holding the venue keys, so one environment serves every
-project.
+`OXBOX_HOME`. `OXBOX_MANIFEST` pins the manifest — a file or the survey's
+https URL; unset, and with none on disk, preflight uses the survey's current
+issue — and `OXBOX_ENV_FILE` names the 1Password `.env` holding the venue
+keys, so one environment serves every project.
 
 An agent that has never seen this README finds it a different way: `--skill` is
 in every tool's `--help`, and printing it substitutes the script paths of the

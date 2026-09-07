@@ -25,7 +25,7 @@ SANDBOX = HERE / "sandbox"
 WORK = SANDBOX / "work"
 
 # Two implementations, one suite. By default this drives the Python scripts
-# in the checkout, via the interpreter rather than the shebang (Windows does
+# in the checkout's python/ directory, via the interpreter rather than the shebang (Windows does
 # not honor shebang lines). With OXBOX_UNDER_TEST naming a directory of built
 # executables -- a Cargo target dir, an unpacked package -- it drives those
 # instead, unchanged: the suite is the acceptance test for the port.
@@ -35,7 +35,7 @@ UNDER_TEST = os.environ.get("OXBOX_UNDER_TEST")
 def tool_path(name):
     if UNDER_TEST:
         return Path(UNDER_TEST) / (name + (".exe" if sys.platform == "win32" else ""))
-    return HERE / name
+    return HERE / "python" / name
 
 
 def tool_argv(name):

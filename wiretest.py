@@ -29,7 +29,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 # Two implementations, one suite. By default this drives the Python scripts
-# in the checkout; with OXBOX_UNDER_TEST naming a directory of built
+# in the checkout's python/ directory; with OXBOX_UNDER_TEST naming a directory of built
 # executables it drives those instead. The Python source is still read as the
 # reference (load_ox, the VERSION check), and the binary's behavior is held
 # to it. The binary has to be built with the `test-overrides` feature, which
@@ -42,7 +42,7 @@ UNDER_TEST = os.environ.get("OXBOX_UNDER_TEST")
 def tool_path(name):
     if UNDER_TEST:
         return Path(UNDER_TEST) / (name + (".exe" if sys.platform == "win32" else ""))
-    return HERE / name
+    return HERE / "python" / name
 
 
 def tool_argv(name):
@@ -123,14 +123,14 @@ def capture_handler(store, status=200, body=None, headers=None):
 
 def load_ox():
     """Import ox as a module without running main()."""
-    source = (HERE / "oxbox-send").read_text(encoding="utf-8")
+    source = (HERE / "python" / "oxbox-send").read_text(encoding="utf-8")
     source = source.replace('if __name__ == "__main__":', "if False:")
     # __file__ too, not just __name__: a real import provides both, and ox
     # anchors its script-relative asset lookup (find_skill) on __file__ the
     # way oxbox anchors find_profile. A namespace missing it does not fail
     # like the real module, it fails at import with a NameError.
-    namespace = {"__name__": "oxmod", "__file__": str(HERE / "oxbox-send")}
-    exec(compile(source, str(HERE / "oxbox-send"), "exec"), namespace)
+    namespace = {"__name__": "oxmod", "__file__": str(HERE / "python" / "oxbox-send")}
+    exec(compile(source, str(HERE / "python" / "oxbox-send"), "exec"), namespace)
     return namespace
 
 
@@ -179,7 +179,7 @@ def rewired_ox(tmp, name, allow_http=False, venue_urls=None, manifest_cap=None):
         if manifest_cap is not None:
             env["OXBOX_TEST_MANIFEST_MAX_BYTES"] = str(manifest_cap)
         return list(OX), env
-    source = (HERE / "oxbox-send").read_text(encoding="utf-8")
+    source = (HERE / "python" / "oxbox-send").read_text(encoding="utf-8")
     if allow_http:
         source = source.replace('if not args.base_url.startswith("https://"):', "if False:")
         source = source.replace('if not url.startswith("https://"):', "if False:")
@@ -238,7 +238,7 @@ def main():
     import re as _re
     versions = {}
     for tool in ("oxbox", "oxbox-send", "oxbox-patch", "oxbox-sandbox", "oxbox-jail"):
-        match = _re.search(r'^VERSION = "([^"]+)"', (HERE / tool).read_text(encoding="utf-8"),
+        match = _re.search(r'^VERSION = "([^"]+)"', (HERE / "python" / tool).read_text(encoding="utf-8"),
                            _re.MULTILINE)
         versions[tool] = match.group(1) if match else None
     report(len(set(versions.values())) == 1 and None not in versions.values(),
@@ -806,7 +806,7 @@ def main():
 
     # As with send_to_local: relax only the scheme guard, in a copy or a test
     # build, so the loopback listener can stand in for the survey's https host.
-    reference = (HERE / "oxbox-send").read_text(encoding="utf-8")
+    reference = (HERE / "python" / "oxbox-send").read_text(encoding="utf-8")
     guard = 'if not url.startswith("https://"):'
     report(reference.count(guard) == 1, "the manifest scheme guard is one line, patchable")
     url_ox = rewired_ox(tmp, "ox_manifest_url", allow_http=True, venue_urls=local_venues)

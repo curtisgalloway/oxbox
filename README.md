@@ -319,8 +319,9 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 Either way, the tools operate on the **working directory**: `oxbox sandbox`
 builds `./sandbox/`, `oxbox send` logs to `./logs/`, and `oxbox jail` runs in
 `./sandbox/work` — so stand in the project directory you are working from (a
-source checkout run from its root behaves the same as always, with `./oxbox`
-in place of `oxbox`). The test suites assert against the checkout layout, so
+source checkout run from its root behaves the same, with `target/release/oxbox`
+after `cargo build --release`, or `python3 python/oxbox` for the reference
+scripts, in place of `oxbox`). The test suites assert against the checkout layout, so
 verifying the jail on a new machine is a git-clone operation even when the
 tools came from a package.
 
@@ -638,7 +639,7 @@ The five tools exist twice in this repository: a Rust workspace under
 `oxbox-sandbox`, `oxbox-send`, `oxbox-patch`, `oxbox-jail`, with the shared
 pieces (version, the embedded runbook, the sandbox root and name rules, the
 libexec lookup) in one library crate instead of a copy per file — and the
-Python scripts at the root, which are the reference implementation the
+Python scripts under `python/`, which are the reference implementation the
 binaries are held to. The structure is the same because it was designed for
 this: one command on `PATH`, four executables in `libexec`, each a process
 of its own so a process listing says which piece is running.

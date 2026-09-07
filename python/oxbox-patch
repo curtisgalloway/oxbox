@@ -141,8 +141,9 @@ def find_skill():
     """The ox-review runbook, wherever this tool is installed.
 
     Same two-location rule as oxbox's seatbelt profile: a source checkout
-    carries it at .claude/skills/ox-review next to the script, where Claude
-    Code finds it on its own; a package installs oxbox into <prefix>/bin, the
+    carries it at .claude/skills/ox-review one level above python/, where
+    Claude Code finds it on its own; a package installs oxbox into
+    <prefix>/bin, the
     helpers into <prefix>/libexec/bin (the .deb: <prefix>/libexec/oxbox/bin)
     and the skill into <prefix>/share/oxbox/ox-review -- one, two or three
     levels up from the script. Code assets anchor at the script — only state
@@ -154,7 +155,7 @@ def find_skill():
     which is what keeps four copies of one document from drifting.
     """
     candidates = [
-        os.path.join(HERE, ".claude", "skills", SKILL_NAME),
+        os.path.normpath(os.path.join(HERE, "..", ".claude", "skills", SKILL_NAME)),
         os.path.normpath(os.path.join(HERE, "..", "share", "oxbox", SKILL_NAME)),
         os.path.normpath(os.path.join(HERE, "..", "..", "share", "oxbox", SKILL_NAME)),
         os.path.normpath(os.path.join(HERE, "..", "..", "..", "share", "oxbox", SKILL_NAME)),

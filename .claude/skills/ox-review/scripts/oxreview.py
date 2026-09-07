@@ -73,9 +73,12 @@ def find_ox(explicit):
     front_door = shutil.which("oxbox")
     if front_door:
         return as_command(front_door) + ["send"]
+    # A checkout keeps the reference scripts under python/; a bare
+    # oxbox-send beside the base is an unpacked libexec directory.
     for base in (Path.cwd(), Path(os.environ.get("OXBOX_HOME") or Path.cwd())):
-        if (base / "oxbox-send").exists():
-            return as_command(base / "oxbox-send")
+        for candidate in (base / "oxbox-send", base / "python" / "oxbox-send"):
+            if candidate.exists():
+                return as_command(candidate)
     sys.exit("oxreview: cannot find ox — install it, set OX=/path/to/ox, or run "
              "from a checkout that contains ./ox")
 

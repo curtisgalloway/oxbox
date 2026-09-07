@@ -171,4 +171,4 @@ jobs:
       # /usr/bin/python3 on both platforms: /usr is bound read-only inside the
       # jail, and bwrap --clearenv means PATH lookups are not worth relying on.
       - name: jailtest (probing from inside the jail)
-        run: python3 oxbox jail -- /usr/bin/python3 jailtest.py
+        run: python3 python/oxbox jail -- /usr/bin/python3 jailtest.py

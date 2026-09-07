@@ -182,6 +182,7 @@ fn parse(args: &[String], root: &core::SandboxRoot) -> Result<Request, Fail> {
     })
 }
 
+#[cfg(unix)]
 /// The seatbelt profile, wherever this oxbox is installed.
 ///
 /// A source checkout carries it at `profiles/jail.sb` beside the tools; a
@@ -219,6 +220,7 @@ fn find_profile() -> Result<PathBuf, Fail> {
     Err(Fail::diag(1, message.trim_end()))
 }
 
+#[cfg(unix)]
 /// Paths jailtest should try to read, per platform. Existence is decided
 /// HERE, outside the jail: inside, `stat()` is denied, so every hidden path
 /// looks absent and a probe that checks for itself would skip rather than
@@ -250,6 +252,7 @@ fn sensitive_paths(real_home: &Path, project_root: &Path) -> Vec<PathBuf> {
     paths
 }
 
+#[cfg(unix)]
 /// Whether this host can route to the internet at all, decided outside the
 /// jail like the sensitive-path list is. Inside the jail a blocked connect
 /// and an offline host fail the same way -- bubblewrap's `--unshare-net`
@@ -326,6 +329,7 @@ fn probe_descriptors() -> Vec<(&'static str, Option<PathBuf>)> {
     ]
 }
 
+#[cfg(unix)]
 /// The named descriptors that point at regular files outside the sandbox
 /// root.
 ///
@@ -343,6 +347,7 @@ fn escaping_descriptors(root: &Path, descriptors: &[(&str, Option<PathBuf>)]) ->
         .collect()
 }
 
+#[cfg(unix)]
 /// The environment the jailed command sees: a fresh one, not the caller's.
 /// The parent shell routinely holds OPENROUTER_API_KEY (via `op run`), and
 /// inheriting it would hand jailed code the key.
@@ -386,6 +391,7 @@ fn jail_env(
     ]
 }
 
+#[cfg(unix)]
 /// `sandbox-exec -f <profile> -D WORK=<work> <command...>`.
 fn macos_argv(profile: &Path, work: &Path, command: &[String]) -> Vec<String> {
     let mut argv = vec![
@@ -399,6 +405,7 @@ fn macos_argv(profile: &Path, work: &Path, command: &[String]) -> Vec<String> {
     argv
 }
 
+#[cfg(unix)]
 /// The bubblewrap invocation: every namespace unshared, the system bound
 /// read-only, the work dir bound writable, the environment cleared and
 /// rebuilt from `env` inside.
@@ -469,6 +476,7 @@ fn linux_argv(
     argv
 }
 
+#[cfg(unix)]
 /// Everything decided before the backend starts.
 #[derive(Debug)]
 struct Plan {
@@ -480,6 +488,7 @@ struct Plan {
     warnings: Vec<String>,
 }
 
+#[cfg(unix)]
 /// Every check, then the argument vector and environment. `descriptors` is
 /// where stdout and stderr point, passed in so the check can be exercised
 /// without redirecting the test runner's own streams.
@@ -785,6 +794,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_profile_is_found_from_a_build_tree() {
         // Under `cargo test` the binary sits three levels below the checkout,
@@ -809,6 +819,7 @@ mod tests {
         assert!(profile.is_file());
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_sensitive_list_matches_the_platform_and_ends_with_the_projects_env() {
         let home = Path::new("/h");
@@ -827,6 +838,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_route_probe_answers_without_sending() {
         // Either answer is right for some host; the property is that the
@@ -850,6 +862,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn escapes_are_files_outside_the_root() {
         let root = Path::new("/r");
@@ -865,6 +878,7 @@ mod tests {
         assert!(escaping_descriptors(root, &[("stdout", None)]).is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_jailed_environment_is_exactly_what_jailtest_expects() {
         let env = jail_env(
@@ -905,6 +919,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_seatbelt_argument_vector() {
         let argv = macos_argv(
@@ -926,6 +941,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_bubblewrap_argument_vector() {
         let env = vec![("HOME".to_string(), "/r/work".to_string())];
@@ -963,6 +979,7 @@ mod tests {
         assert!(argv.iter().any(|a| a == "--ro-bind" || a == "--symlink"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_plan_refuses_a_work_dir_outside_the_root_and_a_missing_one() {
         let dir = scratch("plan-refuse");
@@ -987,6 +1004,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_plan_refuses_an_escaping_descriptor_unless_allowed() {
         let dir = scratch("plan-fd");

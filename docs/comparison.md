@@ -5,12 +5,16 @@ SPDX-License-Identifier: Apache-2.0
 
 # How oxbox compares
 
-People meeting oxbox tend to assume it duplicates one of two things: a
-sandbox for coding agents, such as Anthropic's `srt`, or a coding agent
-itself, such as OpenHands. It is neither, and the reason is the direction of
-the threat model rather than any feature. This page lays that out so a reader
-can reach the conclusion from the facts, and it is candid about the one layer
-where oxbox does overlap and is the narrower tool.
+oxbox is a supervised review and patch harness for unfamiliar models. It
+combines explicit context selection, credential checks, an audit trail,
+patch quarantine, and offline execution in a disposable workspace. Its
+value is the integration of those steps under a small, tested contract.
+
+It overlaps with process sandboxes and complements autonomous coding
+agents. The useful distinction is what capabilities the consulted model
+receives and how its output reaches execution. Other sandboxes also defend
+against dangerous or compromised processes; granting an agent tools inside
+a boundary does not mean trusting it outside that boundary.
 
 Every statement here about another project was checked against that
 project's repository or documentation on 2026-09-06. Software moves; the
@@ -31,35 +35,35 @@ gateways speak.
 
 ## The question each tool answers
 
-Most tools in this space answer: how do I stop a coding agent from wrecking
-my machine? The agent is trusted to act; the sandbox limits what its tool
-loop can reach. The model drives a shell, edits files, fetches pages, and the
-fence decides which of those touch the real filesystem or the real network.
+Agent sandboxes restrict what a process can read, write, execute, and
+reach over the network. An agent can explore and iterate within those
+restrictions. That is useful for autonomous development, and the boundary
+must hold even when the process behaves dangerously.
 
-oxbox answers a different question: how do I get a review or a patch from a
-model I do not trust at all? The model gets no tool loop. `oxbox send` posts
-one chat-completions request with no `tools` array, so the model cannot ask
-for anything to be run, read or written; it reads the files it was handed
-and emits text. A human reads that text. Only then does `oxbox patch` apply
-it into a disposable copy, and only then does `oxbox jail` run the result
-with no network and no writes outside that copy. The jail exists to run the
-model's *output* after review, not to fence the model while it works.
+oxbox serves a narrower workflow: obtain a review or a proposed patch from
+a model, then inspect and test it separately. `oxbox send` sends chat
+completions without registering tools. The model receives selected context
+and returns text; it cannot independently read more files or run commands.
+A human or supervising agent reviews that text before applying a patch into
+a disposable copy and testing it with `oxbox jail`.
 
-That difference is the whole comparison. Where another tool's sandbox is
-stronger than oxbox's jail, it is stronger at fencing an agent that oxbox
-never lets exist.
+The review step is a workflow requirement, not a technical proof of safety.
+The commands do not prove that a reviewer inspected a patch. A malicious
+answer can still persuade a supervisor to take an unsafe action, and code
+accepted for testing still needs containment. A stronger execution backend
+would therefore benefit oxbox too.
 
 ## Side by side
 
-| Tool | Who is trusted | What the model can do | Isolation primitive | Network inside | Model access | Overlap with oxbox |
-|---|---|---|---|---|---|---|
-| **oxbox** | nobody: the model is treated as adversarial | emit text; no `tools` array is ever sent | seatbelt on macOS, bubblewrap on Linux, refusal on native Windows; the jail runs the reviewed output, not the model | none inside the jail; `oxbox send` itself reaches only the chosen venue over https | OpenRouter, ZenMux, OpenCode Zen, Requesty; one key variable per venue; any chat-completions endpoint with `--base-url` plus `--api-key-env` | — |
-| **srt** (Anthropic) | the agent | whatever the wrapped process does | seatbelt; bubblewrap plus seccomp; on Windows a dedicated `srt-sandbox` local user with a WFP egress fence | denied by default; domain allow-list through host-side HTTP and SOCKS proxies | not applicable; it wraps any process | the jail layer only; srt is the broader jail |
-| **OpenHands** | the agent | shell, file edits, web browsing, API calls; the browser tool set is on by default outside CLI mode | Docker container (an "agent server" backend; can also run without a sandbox or on a VM) | open | any model via LiteLLM naming, OpenRouter included | none on threat model; it protects the host from a trusted agent |
-| **Codex CLI** (OpenAI) | the agent | shell and writes inside the workspace | seatbelt; Landlock on Linux; a restricted token on Windows | off in `workspace-write` | only the Responses request shape (`WireApi` has one variant); OpenRouter works through that shape, and its catalog parsing bug #24286 is open as of v0.153.4 | jail primitives similar; the agent loop is the difference |
-| **Docker Sandboxes** (`sbx`, runs Claude Code, Codex, OpenCode and others) | the agent | a full development loop, including its own Docker daemon | microVM per sandbox | proxied, with per-host allow and block rules; organization-wide policies are the paid tier | whatever the agent inside supports | the strongest host isolation on this list; the model still drives tools |
-| **microsandbox** | the agent, or code | run code | microVM via libkrun, Apache-2.0; Apple Silicon and Linux with KVM | configurable | not applicable | a possible stricter jail backend; no review harness |
-| **Cleanroom** (Buildkite) | the agent | run CI-style repo workloads | microVM; deny-by-default egress; a host-side gateway that brokers credentials into the guest | denied by default | not applicable | closest in spirit on egress and credential handling; a different job |
+| Tool | Primary workflow | Execution boundary | Relationship to oxbox |
+|---|---|---|---|
+| **oxbox** | Selected context in, review or patch out; supervised application and testing | seatbelt on macOS, bubblewrap on Linux; native Windows execution refused | Packages disclosure controls, audit artifacts, quarantine, and a fixed offline jail |
+| **srt** (Anthropic) | Restrict arbitrary processes, including agent tools | OS sandbox with configurable filesystem and network policy | Substantial overlap with the jail layer; broader configuration and embedding options |
+| **OpenHands** | Autonomous coding with shell, editing, and browsing tools | Depends on the selected agent-server backend | Supports exploration and iteration that oxbox leaves to the supervisor |
+| **Codex CLI** (OpenAI) | Interactive or autonomous coding with tools | Platform sandbox and permission policy | Can serve as a supervisor; its agent loop is a different workflow |
+| **Docker Sandboxes** | Run coding agents in disposable development environments | Separate microVM kernel, network policy, credential proxy | Stronger host isolation than oxbox's native jail; supports full development loops |
+| **microsandbox** | Execute untrusted workloads | microVM via libkrun | A potential execution substrate for a supervised harness |
+| **Cleanroom** (Buildkite) | Run policy-controlled repository workloads | microVM, deny-by-default egress, credential gateway | Overlap in containment goals; focused on workload execution |
 
 ## Each tool, briefly
 
@@ -83,9 +87,9 @@ an agent-server backend that runs locally, in Docker, or on a VM. The model
 drives a tool set that includes a shell, file editing and a browser; in the
 SDK's default preset the browser tools are enabled unless the agent is in
 CLI mode. Any model the LiteLLM naming scheme covers can be used, OpenRouter
-among them. It shares nothing with oxbox's threat model: OpenHands protects
-your machine from what a trusted agent does, and the sandbox is the agent's
-workspace. Checked: README "Option 2: With a Docker Sandbox" and
+among them. Its sandbox is the agent's workspace for exploration and
+iteration; oxbox separates consultation from patch application and testing.
+Checked: README "Option 2: With a Docker Sandbox" and
 `software-agent-sdk` `openhands-tools/openhands/tools/preset/default.py`
 (`enable_browser: bool = True`, `enable_browser=not cli_mode`).
 
@@ -108,9 +112,9 @@ host-side proxy with a network panel for allowing or blocking hosts, and
 credentials can be injected by that proxy without the agent seeing them.
 The `sbx` CLI is free, including for commercial work; organization-wide
 governance of network, filesystem and MCP policies is a separate paid
-subscription. It is the strongest host isolation on this list, and the
-model inside still drives tools. Checked: docs.docker.com/ai/sandboxes and
-its usage page.
+subscription. Its separate kernel provides a stronger host boundary than
+oxbox's native jail, while the model inside can still drive tools. Checked:
+docs.docker.com/ai/sandboxes and its usage page.
 
 **microsandbox** (`superradcompany/microsandbox`, formerly under
 `zerocore-ai`). A microVM runtime and library on libkrun, Apache-2.0, for
@@ -127,14 +131,16 @@ closest to oxbox in spirit, in that egress is denied unless named and
 credentials never sit inside the sandbox, but it is a CI substrate rather
 than a review tool. Checked: README as of the 2026-09-06 push.
 
-## What is only in oxbox
+## What oxbox packages together
 
-None of the tools above has these, because none of them treats the model as
-the adversary:
+These safeguards are not exclusive inventions. A plain API client can omit
+tools, and existing software can provide scanning, logging, disposable
+workspaces, and containment. oxbox makes them a repeatable workflow and tests
+the boundaries between them:
 
 - **No tool loop, by construction.** The request carries no `tools`,
   `functions` or `tool_choice`. wiretest asserts this on the bytes that
-  reach the wire, every run.
+  reach the wire when the suite runs.
 - **A key goes only to its own venue.** `oxbox send` reads the one key
   variable that belongs to the venue you asked for; `--base-url` requires
   `--api-key-env` beside it; a manifest may name a venue but never a URL a
@@ -151,9 +157,10 @@ the adversary:
   Survey's current issue, `--allow-paid` is an explicit step, and an entry
   of unknown cost counts as paid.
 - **An audit trail that says why.** Each run records venue, endpoint, key
-  variable, the manifest's digest and bytes, the entry chosen, what the
-  venue said it charged, and which upstream provider it routed to.
-- **The fence is probed, not asserted.** jailtest runs inside the jail on
+  variable, the manifest's digest and bytes when a manifest is used, and the
+  entry chosen. Cost and upstream-provider information are recorded when the
+  venue returns them.
+- **Containment regression tests.** jailtest runs inside the jail on
   every platform that has one; guardtest exercises every refusal from
   outside, with positive controls. The counts differ by host and the docs
   say why.
@@ -180,8 +187,32 @@ the adversary:
   escapes it. The README's "Known limitations" says so; the threat model is
   an unreliable, opaque model, not an adversary with a kernel exploit.
 
-## A constraint worth writing down
+## Tradeoffs and evidence of usefulness
 
-If oxbox ever grew a tool loop, it would become a smaller OpenHands with a
-weaker sandbox, and every property in "What is only in oxbox" would stop
-being true. The absence of the loop is the design.
+Explicit context selection and supervised patch handling take time. They
+fit bounded reviews and small changes better than tasks that require broad
+repository exploration, repeated tool use, or network-dependent tests. A
+caller must supply additional context when the initial selection is not
+enough, and install dependencies outside the offline jail.
+
+The secret scanner catches recognizable credential patterns. It does not
+make proprietary source safe to disclose: code can be confidential without
+containing any credentials. The provider sees every byte sent, and cloaked
+listings share prompts and completions with an unnamed model owner.
+
+Cheap inference alone does not establish a useful workflow. Evaluation
+should count verified findings and accepted patches alongside false
+positives, rejected patches, inference cost, and supervisory time. A useful
+comparison is the same supervising model working alone versus consulting
+another model through oxbox on comparable tasks. Preserved requests and
+responses make those results inspectable; containment tests alone do not
+show that a second opinion improves the outcome.
+
+## Keep consultation bounded
+
+Adding a tool loop would change the consulted model's authority and require
+reconsidering context disclosure and execution policy. Logging, credential
+binding, and quarantine could still be useful, but the current guarantee
+that the consulted model cannot independently act would be lost. Keeping
+consultation separate from action preserves the workflow oxbox is designed
+for.

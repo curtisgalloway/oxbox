@@ -24,8 +24,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # oxbox
 
-A small harness for pointing an **untrusted** LLM at your code without giving it
-your machine.
+A supervised review and patch harness for **untrusted** models. Select the
+code they see, inspect their answers, and test proposed changes in an offline
+jail inside a disposable workspace.
 
 There is a steady supply of "cloaked" models on OpenRouter — anonymous,
 free, suspiciously capable. Free is the tell: you are paying in data, and you
@@ -75,13 +76,18 @@ supervising agent) reads that text before any of it executes.
 
 ## The five layers
 
-This is the point where oxbox is usually mistaken for a sandbox for coding
-agents, or for a coding agent. It is neither: those tools fence a trusted
-agent's actions, and oxbox gives an untrusted model no actions at all. How
-that plays out against `srt`, OpenHands, Codex CLI, Docker Sandboxes,
-microsandbox and Cleanroom, including the one layer where oxbox is the
-narrower tool, is a page of its own: [How oxbox compares](docs/comparison.md).
+oxbox packages explicit disclosure, credential checks, audit artifacts,
+patch quarantine, and offline execution into one workflow. It is useful for
+bounded second opinions and model evaluation, with a human or another agent
+supervising the result. Context selection and verification take time; a
+cheap answer is useful only when checking it is worth the effort.
 
+Existing agent sandboxes also protect against dangerous processes. oxbox's
+distinction is the consulted model's limited authority: it receives selected
+context and returns text, with application and execution handled separately.
+Its native jail shares the host kernel; microVM tools provide a stronger
+execution boundary. See [How oxbox compares](docs/comparison.md) for the
+overlap, tradeoffs, and what would demonstrate the workflow's usefulness.
 
 `oxbox` is the one command. Each step of the workflow is a subcommand —
 `oxbox sandbox`, `oxbox send`, `oxbox patch`, `oxbox jail` — handed to a
@@ -826,6 +832,11 @@ shape — a check that quietly stops checking:
   a formality.
 - **The secret scanner is pattern-based**, so it catches recognizable key
   formats and misses bespoke ones. It reduces accidents; it is not a guarantee.
+  Proprietary code can be confidential without containing any credentials.
+- **Review remains a trust boundary.** A malicious answer can persuade a human
+  or supervising agent to take an unsafe action. The commands do not enforce
+  that a patch was reviewed, and a passing test does not establish that the
+  patch is safe to adopt.
 - **No jail on native Windows.** `oxbox` refuses there; use WSL2, which is
   tested, runs on every edition including Home, and gives you the full Linux
   backend. See Platforms above.

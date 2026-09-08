@@ -47,13 +47,13 @@ that does it; the bare form is the jail.
                                  outside ./sandbox/work        (oxbox-jail)
   helper  [NAME] [args...]       list the scripts with the path each resolved
                                  to, or run one directly
-  skill                          print the ox-review agent skill
+  skill                          print the oxbox-review agent skill
 
 Every subcommand answers --help. Sandboxes live under OXBOX_SANDBOX_ROOT,
 else `root` under [sandbox] in ~/.config/oxbox/config.ini, else ./sandbox;
 sandbox, patch and jail take --sandbox NAME to pick one (default: work).
 
-  --skill                   print the ox-review agent skill and exit
+  --skill                   print the oxbox-review agent skill and exit
   --version                 print the version and exit
   --help                    print this and exit
 

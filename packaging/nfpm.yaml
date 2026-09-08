@@ -20,7 +20,7 @@
 # against a source checkout's layout; verifying the jail on a new machine is
 # a git-clone operation, and README says so.
 #
-# Packaged, though it is not an executable: the ox-review skill, because
+# Packaged, though it is not an executable: the oxbox-review skill, because
 # `oxbox --skill` has to find it on an installed system as well as in a
 # checkout. Its helper scripts are Python, which is why python3 is
 # recommended rather than depended on: the five tools themselves need no
@@ -71,22 +71,22 @@ contents:
     dst: /usr/libexec/oxbox/bin/oxbox-jail
     file_info:
       mode: 0o755
-  # The ox-review agent skill. `oxbox --skill` prints it, and looks for it
+  # The oxbox-review agent skill. `oxbox --skill` prints it, and looks for it
   # here when installed — the same rule oxbox-jail uses for jail.sb. A
   # package that ships the tools without it turns --skill into a refusal, so
   # the release smoke test runs --skill against the installed copy.
-  - src: .claude/skills/ox-review/SKILL.md
-    dst: /usr/share/oxbox/ox-review/SKILL.md
-  - src: .claude/skills/ox-review/scripts/preflight.py
-    dst: /usr/share/oxbox/ox-review/scripts/preflight.py
+  - src: .claude/skills/oxbox-review/SKILL.md
+    dst: /usr/share/oxbox/oxbox-review/SKILL.md
+  - src: .claude/skills/oxbox-review/scripts/preflight.py
+    dst: /usr/share/oxbox/oxbox-review/scripts/preflight.py
     file_info:
       mode: 0o755
-  - src: .claude/skills/ox-review/scripts/exposure.py
-    dst: /usr/share/oxbox/ox-review/scripts/exposure.py
+  - src: .claude/skills/oxbox-review/scripts/exposure.py
+    dst: /usr/share/oxbox/oxbox-review/scripts/exposure.py
     file_info:
       mode: 0o755
-  - src: .claude/skills/ox-review/scripts/oxreview.py
-    dst: /usr/share/oxbox/ox-review/scripts/oxreview.py
+  - src: .claude/skills/oxbox-review/scripts/oxreview.py
+    dst: /usr/share/oxbox/oxbox-review/scripts/oxreview.py
     file_info:
       mode: 0o755
   - src: LICENSE

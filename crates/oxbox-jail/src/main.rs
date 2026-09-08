@@ -41,7 +41,7 @@ Run a command in a jail with no network and no writes outside the work dir.
   --allow-external-output   permit stdout/stderr already redirected outside
                             the sandbox; refused by default, because an
                             inherited descriptor writes straight past the jail
-  --skill                   print the ox-review agent skill and exit
+  --skill                   print the oxbox-review agent skill and exit
   --version                 print the version and exit
   --help                    print this and exit
 

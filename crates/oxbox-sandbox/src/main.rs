@@ -59,7 +59,7 @@ model's patch would:
   --status                one line per sandbox under the root: name, file
                           count, clean or modified, and source
 
-  --skill                 print the ox-review agent skill and exit
+  --skill                 print the oxbox-review agent skill and exit
   --version               print the version and exit
   --help                  print this and exit
 

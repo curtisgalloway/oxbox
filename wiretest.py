@@ -283,12 +283,12 @@ def main():
     report(all(prefixes.values()),
            "each tool names itself on the provenance line", repr(prefixes))
 
-    # Third copy of the same hazard: the ox-review batch script re-declares
+    # Third copy of the same hazard: the oxbox-review batch script re-declares
     # ox's effort ladder because it is standalone, and a run that passes
     # --effort through a level ox no longer accepts dies at argparse after
     # the queue lock is taken. Compare what each program advertises, not
     # the two source lines: --help is what a caller reads.
-    oxreview = HERE / ".claude" / "skills" / "ox-review" / "scripts" / "oxreview.py"
+    oxreview = HERE / ".claude" / "skills" / "oxbox-review" / "scripts" / "oxreview.py"
     ladders = {}
     for name, argv in (("ox", OX), ("oxreview", [sys.executable, str(oxreview)])):
         done = subprocess.run(argv + ["--help"], capture_output=True,

@@ -1100,7 +1100,7 @@ options:
                         relying on pipeline exit codes
   --force               send even if the secret scan or size guard trips
   --dry-run             build and log the request, print it, send nothing
-  --skill               print the ox-review agent skill — a runbook for driving
+  --skill               print the oxbox-review agent skill — a runbook for driving
                         a review from an agent, with the script paths this
                         installation actually uses — and exit
 "
@@ -1866,7 +1866,7 @@ mod tests {
     use std::io::{BufRead, BufReader, Cursor};
     use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
     use std::thread;
 
     /// Tests that set environment variables take this lock; the process has
@@ -1877,9 +1877,43 @@ mod tests {
         ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// Point this test binary's config home at an empty directory.
+    ///
+    /// `run` reads `[send] manifest` and `[send] allow_paid` from
+    /// `~/.config/oxbox/config.ini`, so without this a developer's own
+    /// settings decide what these tests observe. Both leaks are real:
+    /// `allow_paid = true` opens the cost gate, and the manifest dry run
+    /// then records a paid entry where the case expects the free one; a
+    /// configured `manifest` gives a run with nothing typed a destination
+    /// where a case expects a refusal. Neither shows up on a CI runner,
+    /// which has no config file -- the suite passes there and fails on the
+    /// maintainer's machine, which is the worst way for a test to be wrong.
+    /// wiretest closed the same leak for the Python suite by handing every
+    /// ox it starts an empty config home; this is that, for runs in process.
+    ///
+    /// Set once and never restored: nothing in this binary should read the
+    /// real file. The cases that do test these settings pin their own home
+    /// through `with_env`, which applies its variables after this and so
+    /// still wins. The writes happen inside `get_or_init` so that a thread
+    /// leaving this function is guaranteed to see them.
+    fn isolate_config_home() {
+        static EMPTY_CONFIG_HOME: OnceLock<PathBuf> = OnceLock::new();
+        EMPTY_CONFIG_HOME.get_or_init(|| {
+            let dir = env::temp_dir().join(format!("oxbox-send-no-config-{}", process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            unsafe {
+                env::set_var("XDG_CONFIG_HOME", &dir);
+                env::set_var("APPDATA", &dir);
+            }
+            dir
+        });
+    }
+
     /// Run `body` with the given variables set, then restore the previous
     /// values, whether or not `body` panics.
     fn with_env<T>(vars: &[(&str, Option<&str>)], body: impl FnOnce() -> T) -> T {
+        isolate_config_home();
         let _guard = lock_env();
         let previous: Vec<(String, Option<String>)> = vars
             .iter()
@@ -2890,6 +2924,7 @@ mod tests {
     // ── the run ───────────────────────────────────────────────────────────
 
     fn run_with(words: &[&str], stdin: &str) -> (Result<(), Exit>, Map<String, Value>, String) {
+        isolate_config_home();
         let args = parsed(words);
         let mut status = new_status();
         let mut input = Cursor::new(stdin.as_bytes().to_vec());

@@ -372,7 +372,7 @@ def main():
     # one -- a host answering /info/refs with a 302 to any public repo's ref
     # advertisement made a private repo read as world-clonable, while the
     # report still named the original host.
-    gate = HERE / ".claude" / "skills" / "ox-review" / "scripts" / "exposure.py"
+    gate = HERE / ".claude" / "skills" / "oxbox-review" / "scripts" / "exposure.py"
     if not gate.is_file():
         skip("exposure gate redirect containment", "skill scripts not in this tree")
     else:
@@ -501,11 +501,11 @@ def main():
     report(bool(raw) and b"\r\n" not in raw and "—" in text,
            "oxbox-send --skill emits UTF-8 with LF endings",
            "bytes=%d crlf=%s decoded=%s" % (len(raw), b"\r\n" in raw, bool(text)))
-    report(code == 0 and text.startswith("---") and "name: ox-review" in text,
+    report(code == 0 and text.startswith("---") and "name: oxbox-review" in text,
            "oxbox-send --skill prints the runbook", f"exit={code} bytes={len(text)}")
     # The printed copy has to name scripts where this ox found them, or the
     # commands an agent reads are commands it cannot run.
-    report(str(HERE / ".claude" / "skills" / "ox-review") in text,
+    report(str(HERE / ".claude" / "skills" / "oxbox-review") in text,
            "oxbox-send --skill rewrites the script paths to this installation")
     report(not skill_logs.exists() and not skill_status.exists(),
            "oxbox-send --skill opens no run: no log directory, no status record",
@@ -750,7 +750,7 @@ def main():
     # layout; a lookup that quietly fell back to the checkout or to an
     # installed copy would pass for the wrong reason. The release workflow
     # proves the same thing against real packages, but only on a tag.
-    skill_source = HERE / ".claude" / "skills" / "ox-review" / "SKILL.md"
+    skill_source = HERE / ".claude" / "skills" / "oxbox-review" / "SKILL.md"
     for label, helper_sub in (("keg", ("libexec", "bin")),
                               ("fhs", ("libexec", "oxbox", "bin"))):
         prefix = temp / ("prefix-" + label)
@@ -759,7 +759,7 @@ def main():
         helper_dir = prefix.joinpath(*helper_sub)
         helper_dir.mkdir(parents=True)
         shutil.copy(tool_path("oxbox-send"), helper_dir / tool_path("oxbox-send").name)
-        skill_dir = prefix / "share" / "oxbox" / "ox-review"
+        skill_dir = prefix / "share" / "oxbox" / "oxbox-review"
         skill_dir.mkdir(parents=True)
         shutil.copy(skill_source, skill_dir / "SKILL.md")
         empty = temp / "empty-path"

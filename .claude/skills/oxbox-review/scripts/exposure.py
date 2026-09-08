@@ -36,7 +36,7 @@ import urllib.parse
 import urllib.request
 
 TIMEOUT = 15
-USER_AGENT = "oxbox ox-review exposure probe (+https://github.com/curtisgalloway/oxbox)"
+USER_AGENT = "oxbox oxbox-review exposure probe (+https://github.com/curtisgalloway/oxbox)"
 
 # Hosts whose API answers "is this repository public" precisely, including a
 # license and a fork flag the operator may want to weigh. Anything not listed

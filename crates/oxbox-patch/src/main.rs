@@ -37,7 +37,7 @@ and anything that would land outside the work tree.
   --sandbox NAME  the sandbox to patch: <root>/NAME (default: work)
   --work DIR      a work dir to patch instead; must be inside the sandbox root
   --commit        commit the applied patch in the sandbox git repo
-  --skill         print the ox-review agent skill and exit
+  --skill         print the oxbox-review agent skill and exit
   --version       print the version and exit
   --help          print this and exit
 

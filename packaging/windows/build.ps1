@@ -52,7 +52,7 @@ if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
 
 $BinStage = Join-Path $Stage "bin"
 $LibexecDir = Join-Path $Stage "libexec\bin"
-$SkillDir = Join-Path $Stage "share\oxbox\ox-review"
+$SkillDir = Join-Path $Stage "share\oxbox\oxbox-review"
 $ScriptsDir = Join-Path $SkillDir "scripts"
 $DocDir = Join-Path $Stage "doc"
 $DocDocsDir = Join-Path $DocDir "docs"
@@ -65,9 +65,9 @@ foreach ($helper in @("oxbox-sandbox", "oxbox-send", "oxbox-patch", "oxbox-jail"
     Copy-Item (Join-Path $BinDir "$helper.exe") (Join-Path $LibexecDir "$helper.exe")
 }
 
-Copy-Item (Join-Path $Repo ".claude\skills\ox-review\SKILL.md") (Join-Path $SkillDir "SKILL.md")
+Copy-Item (Join-Path $Repo ".claude\skills\oxbox-review\SKILL.md") (Join-Path $SkillDir "SKILL.md")
 foreach ($script in @("preflight.py", "exposure.py", "oxreview.py")) {
-    Copy-Item (Join-Path $Repo ".claude\skills\ox-review\scripts\$script") (Join-Path $ScriptsDir $script)
+    Copy-Item (Join-Path $Repo ".claude\skills\oxbox-review\scripts\$script") (Join-Path $ScriptsDir $script)
 }
 Copy-Item (Join-Path $Repo "LICENSE") (Join-Path $DocDir "LICENSE")
 Copy-Item (Join-Path $Repo "README.md") (Join-Path $DocDir "README.md")

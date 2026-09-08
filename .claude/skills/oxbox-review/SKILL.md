@@ -1,5 +1,5 @@
 ---
-name: ox-review
+name: oxbox-review
 description: >-
   Get a second-opinion code review from an outside model through `oxbox send`,
   fanned out across subagents that each verify the findings against the real
@@ -56,7 +56,7 @@ directory: `logs/` and the queue live beside the code under review.
 ## 1. Preflight
 
 ```bash
-python3 .claude/skills/ox-review/scripts/preflight.py
+python3 .claude/skills/oxbox-review/scripts/preflight.py
 ```
 
 Read the whole report; it is short and every section decides something.
@@ -179,10 +179,10 @@ Review one batch of files with oxbox and verify what comes back.
 
 1. From the project root, run:
 
-   python3 .claude/skills/ox-review/scripts/oxreview.py \
+   python3 .claude/skills/oxbox-review/scripts/oxreview.py \
      --manifest <MANIFEST> \
      --label <BATCH-LABEL> \
-     --out .ox-review/<BATCH-LABEL> \
+     --out .oxbox-review/<BATCH-LABEL> \
      --file <PATH1> --file <PATH2> \
      --task "Review these files for correctness bugs, security issues, resource
              leaks, race conditions and incorrect error handling. Context: <ONE
@@ -201,13 +201,13 @@ Review one batch of files with oxbox and verify what comes back.
    and re-runs fires a second request into the same pool and collides with its
    own first one. If you are cut off, wait for the file instead of re-running:
 
-       until [ -f .ox-review/<BATCH-LABEL>/review.md ]; do sleep 10; done
+       until [ -f .oxbox-review/<BATCH-LABEL>/review.md ]; do sleep 10; done
 
-2. If it exits non-zero, read .ox-review/<BATCH-LABEL>/run.json, report the
+2. If it exits non-zero, read .oxbox-review/<BATCH-LABEL>/run.json, report the
    `diagnosis` field, and stop. Do not retry by hand; the retry policy is
    already in the script.
 
-3. Read .ox-review/<BATCH-LABEL>/review.md. Then verify every finding against
+3. Read .oxbox-review/<BATCH-LABEL>/review.md. Then verify every finding against
    the actual file before you pass it on. Open the source, check the line, and
    decide: does the failure scenario actually happen?
 
@@ -217,7 +217,33 @@ Review one batch of files with oxbox and verify what comes back.
    and a confident finding about code that does not exist. A finding you did not
    check is a rumor.
 
-4. Return only this, and nothing else — no file edits, no patches, no fixes:
+4. Record what you decided, so it outlives this conversation:
+
+       python3 .claude/skills/oxbox-review/scripts/oxreview.py --record \
+         --out .oxbox-review/<BATCH-LABEL> \
+         --label <BATCH-LABEL> \
+         --checker <YOUR MODEL ID> <<'JSON'
+       [{"file": "src/auth.rs", "line": 42,
+         "defect": "<the one-sentence defect>",
+         "verdict": "CONFIRMED",
+         "evidence": "<what you read in the source that settles it>"}]
+       JSON
+
+   `line` is optional; the other four fields are required and the verdict
+   must be one of the three. Pass `[]` for a batch where nothing survived
+   checking — an empty list says "reviewed and found nothing", where a
+   missing file says "never checked", and the survey needs to tell those
+   apart. `--checker` is the harness model id spelled the way the survey
+   spells `harness_model`, e.g. `claude-fable-5-1`; it is passed rather than
+   guessed because an agent does not reliably know its own model id. If you
+   do not know yours, ask the operator rather than inventing one.
+
+   The script writes `verdicts.json` beside the review and beside the
+   successful attempt's run log, picks up truncation from run.json, and
+   refuses a batch that never produced a review. It is the only record of
+   your verification that survives the session.
+
+5. Return only this, and nothing else — no file edits, no patches, no fixes:
 
    ## batch <BATCH-LABEL> — <files>
    destination: <venue>/<model> from run.json
@@ -270,6 +296,16 @@ evidence: the Oxbox Survey reads these directories to establish which manifest
 entry actually served a piece of work, and a recommendation the survey cannot
 point at a run for is a recommendation resting on a model card rather than on
 measurement. Deleting a log costs more than the disk it frees.
+
+Step 4 adds one more file to the successful attempt's directory:
+`verdicts.json`, the findings this run produced and what checking them
+against the source concluded. Everything else in the directory is what left
+the machine and what came back; this one is harness output, written
+afterwards, which is why every record names the `checker` that decided it.
+It is what lets the survey count a review as real work without anyone
+rewriting the verdicts by hand — and its absence means the run was never
+checked, which is a different thing from a run that was checked and found
+nothing.
 
 **Keep runs for at least 14 days.** The survey's cycle is weekly, so a
 seven-day horizon means one missed cycle silently destroys the input to the
@@ -329,7 +365,7 @@ third-party packages — the same floor the rest of oxbox holds to). An agent th
 only has `oxbox` on `PATH` can work straight from `oxbox --skill` — or
 `oxbox helper send --skill`, which prints the same thing — whose commands
 already point at the installed scripts. To make Claude Code load this
-as a skill in another project, copy `.claude/skills/ox-review/` into that
+as a skill in another project, copy `.claude/skills/oxbox-review/` into that
 project's `.claude/skills/`, or into `~/.claude/skills/` to have it everywhere,
 then make sure `oxbox send` is reachable: `oxbox` installed on `PATH` (the scripts run
 `oxbox send`), the `oxbox-send` script itself named by `OX`, or an oxbox checkout
@@ -338,7 +374,7 @@ per-project setup: `OXBOX_MANIFEST`, the manifest to use as a file or https
 URL (unset, preflight uses the survey's current issue), and `OXBOX_ENV_FILE`,
 the 1Password `.env` holding the venue keys.
 
-Add `logs/` and `.ox-review/` to that project's `.gitignore`. Both hold the
+Add `logs/` and `.oxbox-review/` to that project's `.gitignore`. Both hold the
 audit trail of what was sent and what came back; keep them, but keep them out of
 the history. Ignored is not the same as disposable — see **Keeping the logs**
 above before anything sweeps them.

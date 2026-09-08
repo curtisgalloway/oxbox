@@ -22,14 +22,22 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The agent runbook, embedded at build time so all five executables print
 /// the same bytes. Python read it from disk and a test compared five copies;
 /// `include_str!` makes the comparison unnecessary.
-pub const SKILL_MD: &str = include_str!("../../../.claude/skills/ox-review/SKILL.md");
+pub const SKILL_MD: &str = include_str!("../../../.claude/skills/oxbox-review/SKILL.md");
 
-pub const SKILL_NAME: &str = "ox-review";
+pub const SKILL_NAME: &str = "oxbox-review";
+
+/// What the skill directory was called before 0.7.0's rebranding reached it.
+/// Only the lookup keeps it: an in-place upgrade over an unpacked tarball
+/// replaces the executables but leaves the old `share/oxbox/ox-review` behind,
+/// and a binary that hunts only for the new spelling would refuse `--skill`
+/// while the runbook it wants sits one directory over. Retire it once the
+/// packages that shipped the old layout are gone.
+pub const SKILL_NAME_LEGACY: &str = "ox-review";
 
 /// The path the runbook uses to name its own scripts. It is written for a
 /// checkout, where the skill sits where Claude Code looks for it; `--skill`
 /// rewrites it to wherever this installation actually keeps the skill.
-pub const SKILL_PATH_IN_TEXT: &str = ".claude/skills/ox-review";
+pub const SKILL_PATH_IN_TEXT: &str = ".claude/skills/oxbox-review";
 
 /// The runbook with LF endings whatever git checked out. `include_str!`
 /// embeds the file byte for byte, and a Windows checkout with
@@ -161,16 +169,20 @@ fn expand_tilde(value: &str) -> PathBuf {
 
 // ── the runbook ─────────────────────────────────────────────────────────────
 
-/// Where the ox-review skill directory is, for this installation.
+/// Where the oxbox-review skill directory is, for this installation.
 ///
-/// A source checkout carries it at `.claude/skills/ox-review` beside the
+/// A source checkout carries it at `.claude/skills/oxbox-review` beside the
 /// tools, where Claude Code finds it on its own; a package installs `oxbox`
 /// into `<prefix>/bin`, the other executables into `<prefix>/libexec/bin`
 /// (the .deb: `<prefix>/libexec/oxbox/bin`) and the skill into
-/// `<prefix>/share/oxbox/ox-review`, one, two or three levels up. A build
+/// `<prefix>/share/oxbox/oxbox-review`, one, two or three levels up. A build
 /// tree puts the executables in `target/debug`, two levels below the
 /// checkout. Every one of those is "walk up from the executable and look for
-/// either spelling", so that is the rule.
+/// either layout", so that is the rule -- under both the current directory
+/// name and [`SKILL_NAME_LEGACY`], so an upgrade that left the pre-rename
+/// directory in place still finds a runbook instead of refusing. The current
+/// spelling is tried first at every level, so a prefix holding both wins with
+/// the new one.
 pub fn find_skill_dir() -> Result<PathBuf, Vec<PathBuf>> {
     let mut candidates = Vec::new();
     for start in [exe_dir(), real_exe_dir()] {
@@ -180,6 +192,8 @@ pub fn find_skill_dir() -> Result<PathBuf, Vec<PathBuf>> {
             for candidate in [
                 dir.join(".claude").join("skills").join(SKILL_NAME),
                 dir.join("share").join("oxbox").join(SKILL_NAME),
+                dir.join(".claude").join("skills").join(SKILL_NAME_LEGACY),
+                dir.join("share").join("oxbox").join(SKILL_NAME_LEGACY),
             ] {
                 if !candidates.contains(&candidate) {
                     candidates.push(candidate);

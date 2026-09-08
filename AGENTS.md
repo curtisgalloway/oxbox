@@ -356,13 +356,15 @@ executed inside it.
   layout; a tap that installs only the executables leaves `--skill`
   refusing on brew installs.
 - **Four channels, one layout.** The release ships a `.deb` (Linux, a `/usr`
-  prefix, `packaging/nfpm.yaml`), a macOS tarball (a relocatable `bin/`
-  beside `libexec/` and `share/`, `packaging/macos-tarball.sh`) and a Windows
-  MSI (per-user under `%LOCALAPPDATA%\Programs\oxbox`, `packaging/windows/`);
-  the Homebrew formula installs that same prefix into the Cellar. All four
-  are the same shape because the lookups know one prefix — `oxbox` in `bin`,
-  the scripts in `libexec/bin` (`libexec/oxbox/bin` for the `.deb`, the FHS
-  spelling), assets in `share/oxbox` — so a change to that resolution breaks
+  prefix, `packaging/nfpm.yaml`), a relocatable tarball for Linux and macOS
+  alike (`bin/` beside `libexec/` and `share/`, `packaging/tarball.sh`, which
+  the release calls once per Linux arch and once for the universal macOS
+  build) and a Windows MSI (per-user under `%LOCALAPPDATA%\Programs\oxbox`,
+  `packaging/windows/`); the Homebrew formula installs that same prefix into
+  the Cellar. All four are the same shape because the lookups know one
+  prefix — `oxbox` in `bin`, the scripts in `libexec/bin`
+  (`libexec/oxbox/bin` for the `.deb`, the FHS spelling), assets in
+  `share/oxbox` — so a change to that resolution breaks
   four packages at once, and a new asset has to be added in four places. Each
   is smoke-tested by the job that builds it, installed for real; the macOS
   tarball is unpacked into a scratch prefix rather than copied over

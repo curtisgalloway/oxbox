@@ -27,7 +27,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 USAGE = """\
 usage: oxbox sandbox [--sandbox NAME] --create /path/to/repo file1 [file2 ...]

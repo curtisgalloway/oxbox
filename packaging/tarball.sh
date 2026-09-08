@@ -17,7 +17,7 @@
 # level up in libexec/bin, and the jail and the skill printer look up from
 # the executable for share/oxbox. Unpack it anywhere and run bin/oxbox in
 # place, or copy the contents over /usr/local; either way the helpers, the
-# seatbelt profile and the ox-review skill are where the tools expect them.
+# seatbelt profile and the oxbox-review skill are where the tools expect them.
 # It is the same layout the Homebrew formula pours, on purpose: on macOS and
 # on Linux the formula installs THIS archive, so a layout bug here is a
 # layout bug there and the release smoke test catches both.
@@ -42,7 +42,7 @@ name="oxbox-${version}-${suffix}"
 stage="${outdir}/${name}"
 
 rm -rf "$stage"
-mkdir -p "$stage/bin" "$stage/libexec/bin" "$stage/share/oxbox/ox-review/scripts" \
+mkdir -p "$stage/bin" "$stage/libexec/bin" "$stage/share/oxbox/oxbox-review/scripts" \
     "$stage/share/doc/oxbox/docs"
 
 install -m 0755 "$bindir/oxbox" "$stage/bin/oxbox"
@@ -56,13 +56,13 @@ done
 
 install -m 0644 "$root/profiles/jail.sb" "$stage/share/oxbox/jail.sb"
 
-# The ox-review skill, listed file by file rather than copied wholesale so a
+# The oxbox-review skill, listed file by file rather than copied wholesale so a
 # stray __pycache__ in the checkout cannot end up in a release artifact.
-install -m 0644 "$root/.claude/skills/ox-review/SKILL.md" \
-    "$stage/share/oxbox/ox-review/SKILL.md"
+install -m 0644 "$root/.claude/skills/oxbox-review/SKILL.md" \
+    "$stage/share/oxbox/oxbox-review/SKILL.md"
 for script in preflight.py exposure.py oxreview.py; do
-    install -m 0755 "$root/.claude/skills/ox-review/scripts/$script" \
-        "$stage/share/oxbox/ox-review/scripts/$script"
+    install -m 0755 "$root/.claude/skills/oxbox-review/scripts/$script" \
+        "$stage/share/oxbox/oxbox-review/scripts/$script"
 done
 
 install -m 0644 "$root/LICENSE" "$stage/share/doc/oxbox/LICENSE"

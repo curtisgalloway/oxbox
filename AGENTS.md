@@ -144,7 +144,7 @@ executed inside it.
   moves with each issue and the survey reads runs back by manifest, so a
   digest alone would leave the audit trail pointing at a document that no
   longer says what it said. wiretest covers all four properties; the
-  ox-review scripts mirror the fetch rules for their listing and leave the
+  oxbox-review scripts mirror the fetch rules for their listing and leave the
   destination to ox.
 - **A provider pin is honored or refused, never dropped.** `--provider` and
   a manifest entry's `provider` are OpenRouter's routing object, passed
@@ -174,7 +174,7 @@ executed inside it.
   even after `oxbox-send` stopped using it — it asserted a property of the test. Every
   assertion in `wiretest.py` has been mutation-checked: break the behavior in
   `oxbox-send` and confirm the test goes red before trusting it.
-- **A review fan-out stops at the queue.** `.claude/skills/ox-review` lets
+- **A review fan-out stops at the queue.** `.claude/skills/oxbox-review` lets
   several subagents work one review, and every one of them sends through
   `oxreview.py`'s lock, so exactly one request is on the wire at a time. That
   is not caution, it is the measurement above: concurrent calls against a
@@ -307,9 +307,9 @@ executed inside it.
   assets are script-relative, and both use the same two-location pattern:
   the seatbelt profile (`profiles/jail.sb` one level above the script in a
   checkout, or `../share/oxbox/jail.sb` in an installed prefix —
-  `find_profile` in `oxbox-jail`) and the ox-review skill
-  (`.claude/skills/ox-review` one level above the script in a checkout, or
-  `share/oxbox/ox-review` one, two or three levels up —
+  `find_profile` in `oxbox-jail`) and the oxbox-review skill
+  (`.claude/skills/oxbox-review` one level above the script in a checkout, or
+  `share/oxbox/oxbox-review` one, two or three levels up —
   `find_skill`, carried by all five tools, because the scripts sit in
   `libexec/bin` or `libexec/oxbox/bin` below the prefix). A third asset is
   the scripts themselves, which `oxbox` resolves from its own location
@@ -334,7 +334,7 @@ executed inside it.
   `oxbox -- cmd` form stays the jail so nothing that worked stops, and a
   helper's flag typed at `oxbox` (`oxbox --manifest`, the first thing a
   reader tried) is answered with the subcommand that takes it, exit 2. The
-  ox-review scripts find `oxbox send` as `oxbox send` when only `oxbox` is on PATH,
+  oxbox-review scripts find `oxbox send` as `oxbox send` when only `oxbox` is on PATH,
   after trying a bare `oxbox-send` — a bare `oxbox-send` on PATH means an install from
   before the rename, whose `oxbox` has no subcommands. guardtest stages both
   installed layouts with an emptied PATH; the release smoke tests prove the
@@ -352,7 +352,7 @@ executed inside it.
   workflow runs `--skill` against the installed `oxbox send` and greps for the
   rewritten script path, which fails both when the file is missing and when
   the path rewriting stops working. The Homebrew formula lives in
-  `curtisgalloway/homebrew-tap` and needs the same `share/oxbox/ox-review`
+  `curtisgalloway/homebrew-tap` and needs the same `share/oxbox/oxbox-review`
   layout; a tap that installs only the executables leaves `--skill`
   refusing on brew installs.
 - **Four channels, one layout.** The release ships a `.deb` (Linux, a `/usr`
@@ -426,7 +426,7 @@ executed inside it.
   execution environments and `sys.platform` tells them apart.
 - **Python 3.9 is the floor for the scripts.** The shipped tools are native
   executables and need no interpreter; the reference scripts, the suites and
-  the ox-review skill's helpers are Python. The system `python3` on macOS is still 3.9, so
+  the oxbox-review skill's helpers are Python. The system `python3` on macOS is still 3.9, so
   no 3.10+ APIs: no `Path.write_text(newline=...)`, and `shutil.rmtree(onexc=)`
   stays behind its version check.
 - **Write patches and audit artifacts with explicit newlines.** Python's text

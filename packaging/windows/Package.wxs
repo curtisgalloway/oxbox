@@ -57,7 +57,7 @@ Design notes:
           </Directory>
           <Directory Id="ShareDir" Name="share">
             <Directory Id="ShareOxboxDir" Name="oxbox">
-              <Directory Id="SkillDir" Name="ox-review">
+              <Directory Id="SkillDir" Name="oxbox-review">
                 <Directory Id="SkillScriptsDir" Name="scripts" />
               </Directory>
             </Directory>
@@ -71,7 +71,7 @@ Design notes:
 
     <ComponentGroup Id="OxboxComponents">
       <!-- The front door, and the PATH entry that makes it typeable. The
-           skill lookup resolves ..\share\oxbox\ox-review from the
+           skill lookup resolves ..\share\oxbox\oxbox-review from the
            executable's own directory, which is what makes this layout the
            same one the .deb and the tarballs use. -->
       <Component Id="cmpBin" Directory="BINFOLDER" Guid="3CDF51ED-AB68-4987-84E7-0691E0A5E3D8">
@@ -101,11 +101,11 @@ Design notes:
         <RemoveFolder Id="rmLibexecDir" Directory="LibexecDir" On="uninstall" />
       </Component>
 
-      <!-- The ox-review runbook. Without it all five tools refuse the skill
+      <!-- The oxbox-review runbook. Without it all five tools refuse the skill
            flag, which is the failure a package is most likely to ship
            silently. -->
       <Component Id="cmpSkill" Directory="SkillDir" Guid="E6A8C3CB-A381-4094-9B79-639A88C2A264">
-        <File Id="filSkillMd" Name="SKILL.md" Source="$(var.StageDir)\share\oxbox\ox-review\SKILL.md" />
+        <File Id="filSkillMd" Name="SKILL.md" Source="$(var.StageDir)\share\oxbox\oxbox-review\SKILL.md" />
         <RegistryValue Root="HKCU" Key="Software\oxbox\msi" Name="skill"
                        Value="1" Type="integer" KeyPath="yes" />
         <RemoveFolder Id="rmSkillDir" Directory="SkillDir" On="uninstall" />
@@ -114,9 +114,9 @@ Design notes:
       </Component>
 
       <Component Id="cmpSkillScripts" Directory="SkillScriptsDir" Guid="6DAD7A38-683E-4E02-A71E-79D398742801">
-        <File Id="filPreflight" Name="preflight.py" Source="$(var.StageDir)\share\oxbox\ox-review\scripts\preflight.py" />
-        <File Id="filExposure" Name="exposure.py" Source="$(var.StageDir)\share\oxbox\ox-review\scripts\exposure.py" />
-        <File Id="filOxreview" Name="oxreview.py" Source="$(var.StageDir)\share\oxbox\ox-review\scripts\oxreview.py" />
+        <File Id="filPreflight" Name="preflight.py" Source="$(var.StageDir)\share\oxbox\oxbox-review\scripts\preflight.py" />
+        <File Id="filExposure" Name="exposure.py" Source="$(var.StageDir)\share\oxbox\oxbox-review\scripts\exposure.py" />
+        <File Id="filOxreview" Name="oxreview.py" Source="$(var.StageDir)\share\oxbox\oxbox-review\scripts\oxreview.py" />
         <RegistryValue Root="HKCU" Key="Software\oxbox\msi" Name="skill-scripts"
                        Value="1" Type="integer" KeyPath="yes" />
         <RemoveFolder Id="rmSkillScriptsDir" Directory="SkillScriptsDir" On="uninstall" />

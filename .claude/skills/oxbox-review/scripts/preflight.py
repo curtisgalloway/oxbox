@@ -70,7 +70,7 @@ PUBLIC_MANIFEST_URL = "https://oxbox.ai/manifests/latest.json"
 CONFIG_FILE = "config.ini"
 MANIFEST_MAX_BYTES = 1_048_576
 MANIFEST_TIMEOUT = 30
-USER_AGENT = "oxbox ox-review preflight (+https://github.com/curtisgalloway/oxbox)"
+USER_AGENT = "oxbox oxbox-review preflight (+https://github.com/curtisgalloway/oxbox)"
 # Where the venue keys live when they live in 1Password: a .env of op://
 # references. Set, it wraps every ox call in `op run --env-file <file> --`.
 ENV_FILE_VAR = "OXBOX_ENV_FILE"

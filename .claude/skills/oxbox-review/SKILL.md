@@ -1,5 +1,5 @@
 ---
-name: ox-review
+name: oxbox-review
 description: >-
   Get a second-opinion code review from an outside model through `oxbox send`,
   fanned out across subagents that each verify the findings against the real
@@ -56,7 +56,7 @@ directory: `logs/` and the queue live beside the code under review.
 ## 1. Preflight
 
 ```bash
-python3 .claude/skills/ox-review/scripts/preflight.py
+python3 .claude/skills/oxbox-review/scripts/preflight.py
 ```
 
 Read the whole report; it is short and every section decides something.
@@ -179,7 +179,7 @@ Review one batch of files with oxbox and verify what comes back.
 
 1. From the project root, run:
 
-   python3 .claude/skills/ox-review/scripts/oxreview.py \
+   python3 .claude/skills/oxbox-review/scripts/oxreview.py \
      --manifest <MANIFEST> \
      --label <BATCH-LABEL> \
      --out .ox-review/<BATCH-LABEL> \
@@ -329,7 +329,7 @@ third-party packages — the same floor the rest of oxbox holds to). An agent th
 only has `oxbox` on `PATH` can work straight from `oxbox --skill` — or
 `oxbox helper send --skill`, which prints the same thing — whose commands
 already point at the installed scripts. To make Claude Code load this
-as a skill in another project, copy `.claude/skills/ox-review/` into that
+as a skill in another project, copy `.claude/skills/oxbox-review/` into that
 project's `.claude/skills/`, or into `~/.claude/skills/` to have it everywhere,
 then make sure `oxbox send` is reachable: `oxbox` installed on `PATH` (the scripts run
 `oxbox send`), the `oxbox-send` script itself named by `OX`, or an oxbox checkout

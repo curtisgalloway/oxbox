@@ -245,11 +245,11 @@ jobs:
             /usr/bin/oxbox helper "$sub" --skill 2>/dev/null > "skill-$sub.md"
           done
           for tool in oxbox sandbox send patch jail; do
-            grep -q '^name: ox-review' "skill-$tool.md"
-            grep -q '/usr/share/oxbox/ox-review/scripts/preflight.py' "skill-$tool.md"
+            grep -q '^name: oxbox-review' "skill-$tool.md"
+            grep -q '/usr/share/oxbox/oxbox-review/scripts/preflight.py' "skill-$tool.md"
             cmp -s skill-oxbox.md "skill-$tool.md"
           done
-          test -f /usr/share/oxbox/ox-review/scripts/exposure.py
+          test -f /usr/share/oxbox/oxbox-review/scripts/exposure.py
           # The front door's own guard, against the installed copy: the flag
           # a reader types first has to be answered with the command that
           # takes it.
@@ -280,7 +280,7 @@ jobs:
             test -x "$prefix/libexec/bin/$tool"
             test ! -e "$prefix/bin/$tool"
           done
-          test -f "$prefix/share/oxbox/ox-review/SKILL.md"
+          test -f "$prefix/share/oxbox/oxbox-review/SKILL.md"
           workspace="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$GITHUB_WORKSPACE/Cargo.toml" | head -1)"
           [ "$("$prefix/bin/oxbox" send --version)" = "oxbox-send ${workspace}" ]
           # Homebrew on Linux pours this tarball and links bin/oxbox: the
@@ -288,7 +288,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/linkbin"
           ln -s "$prefix/bin/oxbox" "$RUNNER_TEMP/linkbin/oxbox"
           [ "$("$RUNNER_TEMP/linkbin/oxbox" send --version)" = "oxbox-send ${workspace}" ]
-          "$prefix/bin/oxbox" --skill 2>/dev/null | grep -q "$prefix/share/oxbox/ox-review/scripts/preflight.py"
+          "$prefix/bin/oxbox" --skill 2>/dev/null | grep -q "$prefix/share/oxbox/oxbox-review/scripts/preflight.py"
 
   macos:
     name: macOS universal tarball and smoke test
@@ -380,12 +380,12 @@ jobs:
             "$prefix/bin/oxbox" helper "$sub" --skill 2>/dev/null > "skill-$sub.md"
           done
           for tool in oxbox sandbox send patch jail; do
-            grep -q '^name: ox-review' "skill-$tool.md"
-            grep -q "$prefix/share/oxbox/ox-review/scripts/preflight.py" \
+            grep -q '^name: oxbox-review' "skill-$tool.md"
+            grep -q "$prefix/share/oxbox/oxbox-review/scripts/preflight.py" \
               "skill-$tool.md"
             cmp -s skill-oxbox.md "skill-$tool.md"
           done
-          test -f "$prefix/share/oxbox/ox-review/scripts/exposure.py"
+          test -f "$prefix/share/oxbox/oxbox-review/scripts/exposure.py"
           # The full in-jail probe suite, under seatbelt, against the
           # unpacked oxbox and the profile it found beside itself.
           cp "$GITHUB_WORKSPACE/jailtest.py" sandbox/work/jailtest.py
@@ -525,8 +525,8 @@ jobs:
           }
           if (-not (Test-Path "$prefix\doc\LICENSE")) { throw "the package shipped no LICENSE" }
           if (-not (Test-Path "$prefix\doc\docs\comparison.md")) { throw "the package shipped no comparison page" }
-          if (-not (Test-Path "$prefix\share\oxbox\ox-review\scripts\exposure.py")) {
-            throw "the package shipped an incomplete ox-review skill"
+          if (-not (Test-Path "$prefix\share\oxbox\oxbox-review\scripts\exposure.py")) {
+            throw "the package shipped an incomplete oxbox-review skill"
           }
 
           # Against the checkout's workspace version for the same reason the
@@ -580,10 +580,10 @@ jobs:
           foreach ($tool in 'oxbox', 'sandbox', 'send', 'patch', 'jail') {
             $form = $forms[$tool]
             $text = (& $oxbox @form) -join "`n"
-            if ($text -notmatch '(?m)^name: ox-review') {
+            if ($text -notmatch '(?m)^name: oxbox-review') {
               throw "$tool --skill did not print the runbook"
             }
-            if (-not $text.Contains("$prefix\share\oxbox\ox-review")) {
+            if (-not $text.Contains("$prefix\share\oxbox\oxbox-review")) {
               throw "$tool --skill did not rewrite the paths to this installation"
             }
             if ($null -eq $first) { $first = $text }

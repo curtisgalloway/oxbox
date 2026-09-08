@@ -1100,7 +1100,7 @@ options:
                         relying on pipeline exit codes
   --force               send even if the secret scan or size guard trips
   --dry-run             build and log the request, print it, send nothing
-  --skill               print the ox-review agent skill — a runbook for driving
+  --skill               print the oxbox-review agent skill — a runbook for driving
                         a review from an agent, with the script paths this
                         installation actually uses — and exit
 "

@@ -281,7 +281,7 @@ Stated exactly, because the difference matters:
 ## Setup
 
 Requires git, plus `bubblewrap` on Linux. The tools are native executables;
-nothing else has to be installed first. (The `ox-review` agent skill's helper
+nothing else has to be installed first. (The `oxbox-review` agent skill's helper
 scripts, and the test suites, are Python 3.9+.)
 
 **Install from a package:**
@@ -357,7 +357,7 @@ answers with the subcommand that takes it.
 
 If you use 1Password, copy `.env.example` to `.env`, point it at your item, and
 prefix commands with `op run --env-file .env --`. Any method that puts
-`OPENROUTER_API_KEY` in the environment works. The ox-review skill's scripts
+`OPENROUTER_API_KEY` in the environment works. The oxbox-review skill's scripts
 do the prefixing themselves when `OXBOX_ENV_FILE` names that file, so an
 agent driving a review never holds the key in its own environment.
 
@@ -450,7 +450,7 @@ To make a manifest the default, name it once as `manifest` under `[send]` in
 stands in for `--manifest` when nothing on the command line names a
 destination — a typed `--model`, `--venue` or `--base-url` is a choice the
 config file does not overrule — and the run announces on stderr where the
-manifest came from. The ox-review skill's preflight reads the same key.
+manifest came from. The oxbox-review skill's preflight reads the same key.
 `allow_paid = true` beside it opens the cost gate once, exactly as passing
 `--allow-paid` on every call would, for someone who has decided paid entries
 are fine; the run says `allow_paid from <file>` when the file is what opened
@@ -552,7 +552,7 @@ oxbox --skill       # print the runbook, with this installation's paths
 (`oxbox helper send --skill`), so an agent that reached for any of them first
 still finds it.
 
-`.claude/skills/ox-review/` is a Claude Code skill that hands the whole review
+`.claude/skills/oxbox-review/` is a Claude Code skill that hands the whole review
 loop to an agent: it picks the current manifest, batches the files, fans the
 work out across subagents, and merges what comes back. Copy the directory into
 another project's `.claude/skills/` to use it there; the scripts are stdlib-only
@@ -565,8 +565,8 @@ keys, so one environment serves every project.
 
 An agent that has never seen this README finds it a different way: `--skill` is
 in every tool's `--help`, and printing it substitutes the script paths of the
-installation it is standing in — a checkout's `.claude/skills/ox-review`, or
-`/usr/share/oxbox/ox-review` from the package — so the commands it reads are
+installation it is standing in — a checkout's `.claude/skills/oxbox-review`, or
+`/usr/share/oxbox/oxbox-review` from the package — so the commands it reads are
 commands it can run. The document goes to stdout and the path it came from to
 stderr, so `oxbox --skill > runbook.md` yields the document alone. wiretest asserts
 the five print the same bytes, the same way it asserts they declare one
@@ -583,8 +583,8 @@ request is in flight and backs off on the 120-second floor. Batches pipeline;
 requests do not overlap.
 
 ```bash
-python3 .claude/skills/ox-review/scripts/preflight.py   # oxbox send, manifest, gate
-python3 .claude/skills/ox-review/scripts/oxreview.py \
+python3 .claude/skills/oxbox-review/scripts/preflight.py   # oxbox send, manifest, gate
+python3 .claude/skills/oxbox-review/scripts/oxreview.py \
     --manifest oxbox-manifest-2026-08-27.json \
     --label auth --out .ox-review/auth --file src/auth.py \
     --task "Review for correctness bugs and incorrect error handling."
@@ -600,7 +600,7 @@ install at `github.example.com` looks exactly like the public one, and only the
 probe can tell them apart.
 
 ```
-$ python3 .claude/skills/ox-review/scripts/exposure.py
+$ python3 .claude/skills/oxbox-review/scripts/exposure.py
 verdict: public
 curtisgalloway/oxbox on github.com is publicly readable: anyone can already clone this code
 ```

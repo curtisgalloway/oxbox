@@ -586,9 +586,25 @@ requests do not overlap.
 python3 .claude/skills/oxbox-review/scripts/preflight.py   # oxbox send, manifest, gate
 python3 .claude/skills/oxbox-review/scripts/oxreview.py \
     --manifest oxbox-manifest-2026-08-27.json \
-    --label auth --out .ox-review/auth --file src/auth.py \
+    --label auth --out .oxbox-review/auth --file src/auth.py \
     --task "Review for correctness bugs and incorrect error handling."
 ```
+
+Then the subagent checks each finding against the source and records what it
+concluded, so the verification survives the conversation it happened in:
+
+```bash
+python3 .claude/skills/oxbox-review/scripts/oxreview.py --record \
+    --out .oxbox-review/auth --label auth --checker claude-fable-5-1 \
+    <<'JSON'
+[{"file": "src/auth.py", "line": 42, "defect": "token compared with ==",
+  "verdict": "CONFIRMED", "evidence": "line 42 uses == on a secret"}]
+JSON
+```
+
+That writes `verdicts.json` beside the review and beside the run's log, where
+the survey can read it. An empty list is a real answer — reviewed, nothing
+survived checking — and is not the same as no file at all.
 
 **It asks before publishing your code.** The venues log prompts and share them
 with whoever owns the model, so sending a private repository publishes it, and

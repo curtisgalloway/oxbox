@@ -1,4 +1,7 @@
 logs/
+.oxbox-review/
+# The pre-rename spelling, kept so batch directories written by an older
+# checkout stay ignored instead of turning up as untracked files.
 .ox-review/
 sandbox/
 .env

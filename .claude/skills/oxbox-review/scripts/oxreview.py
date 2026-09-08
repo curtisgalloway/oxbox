@@ -42,6 +42,16 @@ LOCK_SLACK = 120
 RETRY_FLOOR = 120
 DEFAULT_ATTEMPTS = 3
 
+# The three answers step 3 of the runbook asks for. A verdict outside this
+# set is a typo or an invented grade, and either way the survey cannot count
+# it, so --record refuses rather than storing it.
+VERDICTS = ("CONFIRMED", "REFUTED", "UNCERTAIN")
+# Exactly the record the issue asked for. `line` is optional because a
+# finding about a whole file has no line to name; everything else is what
+# makes a verdict checkable by someone who was not here.
+FINDING_REQUIRED = ("file", "defect", "verdict", "evidence")
+FINDING_OPTIONAL = ("line",)
+
 
 def as_command(path):
     """Turn a path to ox into an argv prefix.
@@ -350,13 +360,150 @@ def read_status(path):
         return {}
 
 
+def load_findings(source):
+    """The verdict list, from a file or stdin, checked field by field.
+
+    The runbook asks a subagent to emit this after it has read the source
+    and settled every claim. It is the least reliable moment to demand a
+    strict format from a model, which is exactly why the checking lives
+    here: a typo in a verdict, a missing evidence line or a stray key is
+    reported with the index of the offending record, not stored and not
+    silently dropped.
+    """
+    text = Path(source).read_text(encoding="utf-8") if source else sys.stdin.read()
+    if not text.strip():
+        sys.exit("oxreview: --record read nothing; pass a JSON list on stdin, or "
+                 "[] for a batch that produced no findings worth keeping")
+    try:
+        findings = json.loads(text)
+    except ValueError as error:
+        sys.exit("oxreview: --record could not parse the verdicts as JSON: %s" % error)
+    if not isinstance(findings, list):
+        sys.exit("oxreview: --record wants a JSON list of findings, got %s"
+                 % type(findings).__name__)
+    allowed = set(FINDING_REQUIRED) | set(FINDING_OPTIONAL)
+    for index, finding in enumerate(findings):
+        where = "finding %d" % index
+        if not isinstance(finding, dict):
+            sys.exit("oxreview: %s is %s, not an object"
+                     % (where, type(finding).__name__))
+        missing = [k for k in FINDING_REQUIRED
+                   if not str(finding.get(k, "")).strip()]
+        if missing:
+            sys.exit("oxreview: %s is missing %s" % (where, ", ".join(missing)))
+        extra = sorted(set(finding) - allowed)
+        if extra:
+            sys.exit("oxreview: %s has unknown field(s) %s; the record is %s"
+                     % (where, ", ".join(extra),
+                        ", ".join(FINDING_REQUIRED + FINDING_OPTIONAL)))
+        if finding["verdict"] not in VERDICTS:
+            sys.exit("oxreview: %s has verdict %r; expected one of %s"
+                     % (where, finding["verdict"], ", ".join(VERDICTS)))
+    return findings
+
+
+def successful_attempt(record):
+    """The attempt whose log directory holds the review these verdicts judge.
+
+    A batch that retried has several log directories, one per try, and only
+    the last one carries the answer that was actually read -- so "next to
+    status.json" is ambiguous until this picks the try that exited clean.
+    """
+    for attempt in reversed(record.get("attempts") or []):
+        if attempt.get("exit_code") == 0 and attempt.get("log_dir"):
+            return attempt
+    return None
+
+
+def record_verdicts(args):
+    """Write the verified verdicts beside the review and beside the run log.
+
+    Step 3 of the runbook has every finding checked against the source
+    before it is passed on, and until now that work existed only in the
+    agent's reply: the batch directory kept the model's raw output and the
+    run kept what went over the wire, and nothing kept the judgment. The
+    survey could see that a review had happened and not what it concluded,
+    so a real-work run could only enter the evidence tier by someone
+    rewriting the verdicts by hand.
+
+    Two copies, on purpose. `<out>/verdicts.json` sits with the review it
+    judges, which is where a person looking at the batch will want it; the
+    copy in the run's log directory is what the survey sweeps, next to the
+    status.json its log contract already binds. The file is harness output,
+    not provider output -- it records what the checker concluded after
+    reading the reply, which is why every record names its `checker` and why
+    the log contract should read it as an optional, harness-produced input.
+    """
+    out = Path(args.out)
+    run_path = out / "run.json"
+    try:
+        record = json.loads(run_path.read_text(encoding="utf-8"))
+    except OSError:
+        sys.exit("oxreview: no run.json in %s; --record judges a batch that ran, "
+                 "so run the batch first" % out)
+    except ValueError as error:
+        sys.exit("oxreview: %s is not readable JSON: %s" % (run_path, error))
+
+    attempt = successful_attempt(record)
+    if attempt is None:
+        # Verdicts on a batch that produced no review would be verdicts on
+        # nothing, and the survey would count the run as real work on the
+        # strength of them. run.json already records why it failed.
+        sys.exit("oxreview: %s has no attempt that exited clean, so there is no "
+                 "review to judge; run.json says: %s"
+                 % (args.label, record.get("diagnosis") or "no diagnosis recorded"))
+
+    findings = load_findings(args.verdicts_file)
+    for finding in findings:
+        finding["checker"] = args.checker
+
+    truncated = bool(attempt.get("truncated"))
+    verdicts = {
+        "label": record.get("label", args.label),
+        "files": record.get("files", []),
+        "venue": attempt.get("venue"),
+        "model": attempt.get("model"),
+        "log_dir": attempt.get("log_dir"),
+        "checker": args.checker,
+        "recorded": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        # An empty list is an answer: this batch was reviewed and nothing
+        # survived checking. The absence of the file is the other answer.
+        "findings": findings,
+        # Findings past the cut were never in the review, so a count taken
+        # from a truncated batch is a floor, not a total.
+        "truncated": truncated,
+        "diagnosis": record.get("diagnosis") if truncated else None,
+    }
+
+    body = json.dumps(verdicts, indent=2) + "\n"
+    written = [out / "verdicts.json"]
+    log_dir = Path(attempt["log_dir"])
+    if log_dir.is_dir():
+        written.append(log_dir / "verdicts.json")
+    else:
+        # Not fatal: the batch copy is still worth having, and a pruned or
+        # moved log directory is a retention problem, not a recording one.
+        sys.stderr.write("oxreview: [%s] log directory %s is gone; recording only "
+                         "beside the review\n" % (args.label, log_dir))
+    for path in written:
+        path.write_text(body, encoding="utf-8")
+
+    kept = len(findings)
+    sys.stderr.write("oxreview: [%s] recorded %d verdict%s%s -> %s\n" % (
+        args.label, kept, "" if kept == 1 else "s",
+        " (from a truncated review)" if truncated else "",
+        ", ".join(str(p) for p in written)))
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run one serialized ox review batch, with measured backoff.")
     parser.add_argument("--out", required=True,
                         help="directory for this batch's review.md, status.json and run.json")
     parser.add_argument("--file", action="append", default=[], dest="files",
-                        required=True, help="a file to review (repeat per file)")
+                        help="a file to review (repeat per file); required "
+                             "unless --record")
     parser.add_argument("--manifest", help="survey manifest choosing venue and model "
                                            "(a file, or an https:// URL)")
     parser.add_argument("--task", help="the review task text")
@@ -382,10 +529,10 @@ def main():
     parser.add_argument("--max-tokens", type=int)
     parser.add_argument("--venue")
     parser.add_argument("--model")
-    parser.add_argument("--state-dir", default=".ox-review",
+    parser.add_argument("--state-dir", default=".oxbox-review",
                         help="where the queue lock lives. Every batch that must not "
                              "collide at the venue has to name the same directory "
-                             "(default: .ox-review, beside the batch outputs)")
+                             "(default: .oxbox-review, beside the batch outputs)")
     parser.add_argument("--ox", help="path to the ox executable")
     parser.add_argument("--env-file", default=os.environ.get("OXBOX_ENV_FILE"),
                         help="a .env of 1Password op:// references holding the "
@@ -393,7 +540,34 @@ def main():
                              "(default: $OXBOX_ENV_FILE)")
     parser.add_argument("--dry-run", action="store_true",
                         help="build and log the request without sending it")
+    # Recording mode. Not a subcommand: this script's --help is compared
+    # against ox's by wiretest, and a subparser would move the flags it
+    # reads out of the top-level listing.
+    parser.add_argument("--record", action="store_true",
+                        help="record verified verdicts for a batch that already "
+                             "ran, instead of running one: reads a JSON list of "
+                             "findings on stdin (or --verdicts-file) and writes "
+                             "verdicts.json beside the review and beside the "
+                             "successful attempt's run log")
+    parser.add_argument("--checker",
+                        help="with --record: the harness model that checked the "
+                             "findings, spelled as the survey spells "
+                             "harness_model (e.g. claude-fable-5-1). Passed "
+                             "rather than guessed -- an agent does not reliably "
+                             "know its own model id")
+    parser.add_argument("--verdicts-file",
+                        help="with --record: read the findings from this file "
+                             "instead of stdin")
     args = parser.parse_args()
+
+    if args.record:
+        if not args.checker:
+            sys.exit("oxreview: --record needs --checker naming the model that "
+                     "verified the findings; without it the verdict cannot be "
+                     "attributed to a reviewer")
+        return record_verdicts(args)
+    if not args.files:
+        sys.exit("oxreview: name the files to review with --file (repeat per file)")
 
     # ox rejects these together, in microseconds, and used to do it *after*
     # this script had already spent its turn in the machine-wide queue: one

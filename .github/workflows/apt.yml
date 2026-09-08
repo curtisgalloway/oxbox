@@ -1,0 +1,128 @@
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+
+# Publish the signed apt repository to GitHub Pages under /apt/, assembled by
+# packaging/scripts/build-apt-repo.sh from the .debs of recent GitHub
+# Releases. release.yml dispatches this workflow after each release so the new
+# packages land in the pool.
+#
+# A GitHub Release on its own is not an upgrade path: `apt install ./oxbox.deb`
+# installs a package apt will never update. This is what makes `apt upgrade`
+# work on Debian and Raspberry Pi OS, the way `brew upgrade` already does
+# everywhere Homebrew is the right answer.
+#
+# Requires repo Settings -> Pages -> Source set to "GitHub Actions", and an
+# APT_SIGNING_KEY secret holding a passphrase-less armored secret key.
+
+name: apt
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packaging/scripts/build-apt-repo.sh"
+      - ".github/workflows/apt.yml"
+  workflow_dispatch:
+  # Weekly rebuild. The apt Release file carries a 30-day Valid-Until
+  # (packaging/scripts/build-apt-repo.sh), so a month with no release and no
+  # push here would expire the repo and fail every client's `apt update`. This
+  # schedule is load-bearing, not tidiness.
+  schedule:
+    - cron: "23 6 * * 1"
+
+# Read-only by default. Only the deploy job gets the Pages and OIDC grants:
+# the build job runs the assembly over release artifacts and must not be able
+# to publish on its own.
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: assemble the pool
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Stateless: the pool is rebuilt from the .debs of the newest
+      # $APT_POOL_RELEASES releases on every deploy, so the live repo always
+      # mirrors what is actually released -- deleting a release drops it,
+      # older versions age out, and there is no pool state to corrupt or
+      # migrate. It also keeps the site far below the Pages 1 GB cap.
+      #
+      # A Pages deploy replaces the entire site, so on the canonical repo a
+      # missing signing key FAILS rather than publishing a site without /apt/:
+      # that would 404 every apt client on its next `apt update`, which is
+      # worse than shipping no update at all. Forks without the secret skip
+      # the step instead.
+      - name: Assemble apt repository
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          APT_POOL_RELEASES: "5"
+        run: |
+          if [ -z "$APT_SIGNING_KEY" ]; then
+            if [ "$GITHUB_REPOSITORY" = "curtisgalloway/oxbox" ]; then
+              echo "::error::APT_SIGNING_KEY secret is not set — refusing to deploy a site without /apt/."
+              exit 1
+            fi
+            echo "::warning::APT_SIGNING_KEY not set (fork?) — skipping apt repo assembly."
+            exit 0
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dpkg-dev apt-utils
+          mkdir -p /tmp/apt-debs
+          # --pattern '*.deb' matches names actually ending in .deb, so the
+          # .deb.sha256 sidecars the release also carries are left behind.
+          gh release list --repo "$GITHUB_REPOSITORY" \
+            --exclude-drafts --exclude-pre-releases \
+            --limit "$APT_POOL_RELEASES" --json tagName --jq '.[].tagName' \
+          | while read -r tag; do
+              gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+                --pattern '*.deb' --dir /tmp/apt-debs \
+                || echo "::warning::no .deb assets on $tag — skipped"
+            done
+          printf '%s' "$APT_SIGNING_KEY" | gpg --batch --import
+          fpr=$(gpg --batch --list-secret-keys --with-colons \
+                | awk -F: '/^fpr:/ {print $10; exit}')
+          packaging/scripts/build-apt-repo.sh /tmp/apt-debs _site/apt "$fpr"
+
+      # The Pages site exists only to serve /apt/, so give the root something
+      # that says so rather than a 404 for anyone who trims the URL.
+      - name: Root page
+        run: |
+          cat > _site/index.html <<'EOF'
+          <!DOCTYPE html>
+          <html lang="en"><head><meta charset="utf-8"><title>oxbox</title></head>
+          <body><h1>oxbox</h1>
+          <p>This site serves the signed <a href="apt/">apt repository</a> for
+          <a href="https://github.com/curtisgalloway/oxbox">oxbox</a>.
+          Documentation lives in the repository; the survey it reads is at
+          <a href="https://oxbox.ai">oxbox.ai</a>.</p>
+          </body></html>
+          EOF
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+
+  deploy:
+    name: deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

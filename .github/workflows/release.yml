@@ -755,6 +755,27 @@ jobs:
             -d "{\"event_type\":\"oxbox-release\",\"client_payload\":{\"tag\":\"${TAG}\"}}"
           echo "Dispatched oxbox-release (${TAG}) to homebrew-tap."
 
+  refresh-apt-repo:
+    name: refresh Pages apt repo
+    if: github.ref_type == 'tag'
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      # The Pages site is the apt repository, and a Pages deploy replaces the
+      # whole site -- so once the new .debs are attached to the Release,
+      # re-run apt.yml to rebuild the pool around them. Without this the
+      # repository keeps serving the previous version and `apt upgrade` finds
+      # nothing, which looks exactly like a release that did not happen.
+      # The dispatch is explicit because a push made with the default
+      # GITHUB_TOKEN cannot trigger another workflow on its own.
+      - name: Dispatch the apt workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run apt.yml --repo "$GITHUB_REPOSITORY" --ref main
+
   winget:
     name: publish to winget
     # Gated on a repo VARIABLE, not just on the tag and the token, because a

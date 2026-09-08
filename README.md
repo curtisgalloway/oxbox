@@ -322,6 +322,34 @@ tar xzf oxbox-<version>-linux-amd64.tar.gz
 msiexec /i oxbox-<version>.msi /qn
 ```
 
+**About the apt repository.** The two commands above that write files are
+doing one thing each, and both are the form Debian itself uses for its own
+sources (`/etc/apt/sources.list.d/debian.sources` has the same shape):
+`/etc/apt/keyrings/oxbox.asc` is the public key apt checks releases against,
+and `/etc/apt/sources.list.d/oxbox.sources` tells apt where the packages are
+and — through `Signed-By` — that *only* that key may sign them. `apt-key` is
+not involved; it was deprecated and is gone from Debian 13.
+
+If you already installed a one-off `.deb`, adding the repository is still the
+right move and nothing has to be undone — apt adopts the package it finds
+installed, and `sudo apt update && sudo apt upgrade` carries it forward from
+whatever version it was stuck at.
+
+The pool keeps the last few releases rather than only the newest, so an
+older one can be installed deliberately:
+
+```bash
+apt-cache policy oxbox          # what is available
+sudo apt install oxbox=1.2.0    # install a specific release
+```
+
+Going *backwards* from a newer version needs `--allow-downgrades`, which apt
+requires so a downgrade is never something a command does by accident:
+
+```bash
+sudo apt install --allow-downgrades oxbox=1.2.0
+```
+
 **Or run from a checkout:**
 
 ```bash

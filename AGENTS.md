@@ -355,6 +355,22 @@ executed inside it.
   `curtisgalloway/homebrew-tap` and needs the same `share/oxbox/oxbox-review`
   layout; a tap that installs only the executables leaves `--skill`
   refusing on brew installs.
+- **The apt repository is what makes Debian upgrade.** A GitHub Release is
+  not an upgrade path: `apt install ./oxbox_1.3.0_amd64.deb` installs a
+  package apt will never update, so the box sits on that version until
+  someone remembers it. `.github/workflows/apt.yml` publishes a signed,
+  pooled repo to GitHub Pages under `/apt/`, assembled by
+  `packaging/scripts/build-apt-repo.sh` from the `.debs` of the newest
+  `APT_POOL_RELEASES` releases. Three things about it are load-bearing and
+  none are obvious from the file: the assembly is **stateless**, rebuilt from
+  the releases every time, so the live repo always mirrors what shipped and
+  there is no pool to corrupt; `release.yml`'s `refresh-apt-repo` must
+  re-dispatch it after a release, because the *Pages deploy* publishes the
+  pool and a release alone does not; and the weekly `schedule` is required,
+  because the apt `Release` file carries a 30-day `Valid-Until` and a quiet
+  month breaks `apt update` on every client. A missing `APT_SIGNING_KEY`
+  **fails** the build on this repo rather than deploying, since a Pages
+  deploy replaces the whole site and one without `/apt/` 404s every client.
 - **Four channels, one layout.** The release ships a `.deb` (Linux, a `/usr`
   prefix, `packaging/nfpm.yaml`), a relocatable tarball for Linux and macOS
   alike (`bin/` beside `libexec/` and `share/`, `packaging/tarball.sh`, which

@@ -295,7 +295,21 @@ brew install curtisgalloway/tap/oxbox
 tar xzf oxbox-<version>-macos-universal.tar.gz
 sudo cp -R oxbox-<version>-macos-universal/ /usr/local/
 
-# Debian/Ubuntu: the .deb for your architecture from the latest GitHub Release
+# Debian/Ubuntu: the apt repository, so `apt upgrade` carries new releases.
+# The one-off `.deb` below installs a package apt will never update.
+sudo install -d /etc/apt/keyrings
+sudo curl -fsSL -o /etc/apt/keyrings/oxbox.asc \
+    https://curtisgalloway.github.io/oxbox/apt/oxbox.asc
+sudo tee /etc/apt/sources.list.d/oxbox.sources >/dev/null <<'EOF'
+Types: deb
+URIs: https://curtisgalloway.github.io/oxbox/apt
+Suites: stable
+Components: main
+Signed-By: /etc/apt/keyrings/oxbox.asc
+EOF
+sudo apt update && sudo apt install oxbox
+
+# Or the .deb for your architecture from the latest GitHub Release, one-off
 sudo apt install ./oxbox_<version>_amd64.deb
 
 # Any other Linux: the same prefix layout as the macOS tarball

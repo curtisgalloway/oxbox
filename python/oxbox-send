@@ -55,6 +55,28 @@ VENUES = {
         # silently, so a pin on them is refused rather than sent.
         "provider_routing": True,
     },
+    # OpenRouter's US in-region endpoint: the request is decrypted inside the
+    # region and served only by provider endpoints in it. A separate venue
+    # rather than a `--base-url`, because `--base-url` refuses `--provider`
+    # and the region has to survive into the record -- an observation that
+    # says `openrouter` when the request was pinned to a region is wrong
+    # about where the code went, which is the one thing the log is for.
+    #
+    # It fails closed: a model with no in-region endpoint returns an error
+    # instead of falling back to a global one, so the refusal is the finding
+    # and must not be smoothed over. Business or Enterprise plans only.
+    # https://openrouter.ai/docs/guides/features/in-region-routing
+    #
+    # Shares OPENROUTER_API_KEY with `openrouter`, the only pair that shares
+    # one: same account, same vendor, two of its own hostnames. The rule that
+    # matters is that a key never crosses a vendor boundary, and this does
+    # not. EU is the same entry with `eu.`, left out until something needs it.
+    "openrouter-us": {
+        "url": "https://us.openrouter.ai/api/v1/chat/completions",
+        "key_env": "OPENROUTER_API_KEY",
+        "default_model": None,
+        "provider_routing": True,
+    },
     "zenmux": {
         "url": "https://zenmux.ai/api/v1/chat/completions",
         "key_env": "ZENMUX_API_KEY",

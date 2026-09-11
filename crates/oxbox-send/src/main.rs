@@ -35,6 +35,14 @@ const PROG: &str = "oxbox-send";
 /// each venue to its own environment variable makes that impossible by
 /// construction: asking for zenmux reads ZENMUX_API_KEY and nothing else.
 ///
+/// Two venues may share a key variable, and exactly two do: `openrouter` and
+/// `openrouter-us` are the same account reached through two of OpenRouter's
+/// own hostnames. What the rule actually protects is a credential crossing a
+/// vendor boundary, and these do not cross one. The pairing stays one-way --
+/// a venue names one variable, never a choice of them -- so the guarantee
+/// wiretest checks (which variable was read, and which URL it went to) is
+/// unchanged.
+///
 /// No venue names a default model, on purpose: the listings worth pointing
 /// this at change week to week, and a default that names one goes stale
 /// without saying so. The survey is the list that gets updated.
@@ -50,10 +58,30 @@ struct Venue {
     provider_routing: bool,
 }
 
-const VENUES: [Venue; 4] = [
+const VENUES: [Venue; 5] = [
     Venue {
         name: "openrouter",
         url: "https://openrouter.ai/api/v1/chat/completions",
+        key_env: "OPENROUTER_API_KEY",
+        provider_routing: true,
+    },
+    // OpenRouter's US in-region endpoint: the request is decrypted inside the
+    // region and served only by provider endpoints in it. A separate venue
+    // rather than a `--base-url`, because `--base-url` refuses `--provider`
+    // and the region has to survive into the record -- an observation that
+    // says `openrouter` when the request was pinned to a region is wrong
+    // about where the code went, which is the one thing the log is for.
+    //
+    // It fails closed: a model with no in-region endpoint returns an error
+    // instead of falling back to a global one, so the refusal is the finding
+    // and must not be smoothed over. Business or Enterprise plans only.
+    // https://openrouter.ai/docs/guides/features/in-region-routing
+    //
+    // EU is the same table row with `eu.` and would be added the same way;
+    // it is left out until something needs it, rather than shipped untested.
+    Venue {
+        name: "openrouter-us",
+        url: "https://us.openrouter.ai/api/v1/chat/completions",
         key_env: "OPENROUTER_API_KEY",
         provider_routing: true,
     },
@@ -1026,7 +1054,7 @@ struct Args {
 
 const USAGE_LINE: &str =
     "usage: oxbox send [-h] [--version] [--files FILES] [--mode {ask,diff,review}]
-                  [--venue {opencode,openrouter,requesty,zenmux}]
+                  [--venue {opencode,openrouter,openrouter-us,requesty,zenmux}]
                   [--manifest MANIFEST] [--allow-paid] [--failover]
                   [--base-url BASE_URL] [--api-key-env API_KEY_ENV]
                   [--model MODEL] [--provider PROVIDER]
@@ -1051,7 +1079,7 @@ options:
   --files FILES         comma-separated files to include as context
   --mode {{ask,diff,review}}
                         output contract (default: diff)
-  --venue {{opencode,openrouter,requesty,zenmux}}
+  --venue {{opencode,openrouter,openrouter-us,requesty,zenmux}}
                         where to send the request; each venue uses its own API
                         key variable (default: {DEFAULT_VENUE})
   --manifest MANIFEST   pick venue and model from a survey manifest -- a file,
@@ -1222,7 +1250,7 @@ fn parse_args(raw: &[String]) -> Result<Parsed, String> {
                 let value = value_of()?;
                 if !VENUES.iter().any(|venue| venue.name == value) {
                     return Err(usage(format!(
-                        "argument --venue: invalid choice: '{value}' (choose from 'opencode', 'openrouter', 'requesty', 'zenmux')"
+                        "argument --venue: invalid choice: '{value}' (choose from 'opencode', 'openrouter', 'openrouter-us', 'requesty', 'zenmux')"
                     )));
                 }
                 args.venue = Some(value);

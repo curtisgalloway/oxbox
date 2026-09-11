@@ -57,7 +57,9 @@ oxbox send --venue requesty --model mistral/leanstral-1-5 --mode review --files 
 
 **Each venue carries its own API key variable** — `OPENROUTER_API_KEY`,
 `ZENMUX_API_KEY`, `OPENCODE_ZEN_API_KEY`, `REQUESTY_API_KEY` — and `oxbox-send` reads
-only the one belonging to the venue you asked for. That pairing is the security
+only the one belonging to the venue you asked for. (`openrouter-us` shares
+`OPENROUTER_API_KEY` with `openrouter`: it is the same account reached through
+another of OpenRouter's own hostnames, so no key crosses a vendor boundary.) That pairing is the security
 property: a single `--base-url` flag over one hardcoded key would mean a
 mistyped host receives your OpenRouter credential. An unlisted endpoint is still
 reachable via `--base-url`, but only together with `--api-key-env` naming the
@@ -66,6 +68,19 @@ variable it may have, so no credential travels somewhere by default.
 The destination is recorded in each run's `meta.json` (`venue`, `endpoint`,
 `key_env`) alongside the model, because an audit trail that omits where the code
 went is not an audit trail.
+
+**`openrouter-us` keeps the request in one region.** OpenRouter serves
+[in-region routing](https://openrouter.ai/docs/guides/features/in-region-routing)
+on its own hostnames: the request is decrypted inside the region and handed only
+to provider endpoints in it. It is a venue here rather than a `--base-url`, for
+two reasons — `--base-url` refuses `--provider`, so an unlisted endpoint cannot
+carry a routing pin, and the region has to survive into `meta.json` rather than
+living in whatever flag someone typed. Note that it **fails closed**: a model
+with no in-region endpoint returns an error instead of quietly falling back to a
+global one, and provider deployments marked global or cross-region are excluded.
+That refusal is the answer to "can this model be reached from inside the
+region", so `oxbox send` reports it rather than routing around it. Requires an
+OpenRouter Business or Enterprise plan; the key is the same one.
 
 ## The premise
 
@@ -528,8 +543,8 @@ header and a ranked list:
   `max_tokens` and `effort`; anything else is reported and ignored, and an
   `effort` outside the ladder above is reported and dropped.
 - `recommendations` — a non-empty list, walked in order. Each entry carries:
-  - `venue` — which gateway serves it: `openrouter`, `zenmux`, `opencode` or
-    `requesty`. This is the only field that decides where a request goes, and
+  - `venue` — which gateway serves it: `openrouter`, `openrouter-us`,
+    `zenmux`, `opencode` or `requesty`. This is the only field that decides where a request goes, and
     it must name a venue `oxbox send` already knows; an unknown venue skips
     the entry.
   - `model` — the id to send, exactly as that venue's catalog spells it.

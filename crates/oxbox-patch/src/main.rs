@@ -851,6 +851,29 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A log's content.md is read as text, not bytes: a response filed on a
+    /// Windows host carries CRLF, and the sandbox tree the patch applies to
+    /// was seeded from an LF checkout. 098189f closed that at all four
+    /// reading sites, but this one had nothing executing it -- dropping the
+    /// call left every unit test green.
+    #[test]
+    fn a_crlf_content_md_yields_an_lf_patch() {
+        let dir = scratch("load-crlf");
+        let log = dir.join("log");
+        fs::create_dir_all(&log).unwrap();
+        fs::write(
+            log.join("content.md"),
+            "Explanation.\r\n\r\n```diff\r\n--- a/x\r\n+++ b/x\r\n```\r\n",
+        )
+        .unwrap();
+        let from_log = Options {
+            log: Some(log.clone()),
+            ..Options::default()
+        };
+        assert_eq!(load_patch(&from_log).unwrap(), "--- a/x\n+++ b/x\n");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn the_work_tree_must_be_a_repo_inside_the_root() {
         let dir = scratch("resolve");

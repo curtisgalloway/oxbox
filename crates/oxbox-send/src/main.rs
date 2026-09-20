@@ -369,6 +369,72 @@ struct Context {
     findings: Vec<String>,
 }
 
+/// File paths the task text names that are not among the attached files.
+///
+/// A prompt that names a file it does not send invites the model to invent the
+/// contents. Measured on 2026-09-19: a review task named a guard script,
+/// described what it checked, and asked "whether the guard has gaps" while
+/// attaching only two YAML excerpts. Two of the five findings that came back
+/// quoted regular expressions that do not exist in that script, with line
+/// numbers. The model could not have answered any other way.
+///
+/// This warns rather than refuses, because prose legitimately mentions files as
+/// background ("the bug that broke release.yml"). The judgement of whether a
+/// named file should have been attached belongs to whoever wrote the task; the
+/// job here is to make the omission visible before the request goes out.
+///
+/// Matching is on the full path and on the basename, so naming `release.yml`
+/// while attaching `excerpts/release_linux_bottle_excerpt.yml` still warns --
+/// that is the case that produced the invented findings.
+fn unattached_paths(task: &str, paths: &[String]) -> Vec<String> {
+    let mut attached: Vec<&str> = Vec::new();
+    for raw in paths {
+        attached.push(raw.as_str());
+        if let Some(name) = Path::new(raw).file_name().and_then(|n| n.to_str()) {
+            attached.push(name);
+        }
+    }
+    let mut named: Vec<String> = Vec::new();
+    for token in task.split(|c: char| c.is_whitespace() || "\"'`(),;:<>[]{}|".contains(c)) {
+        let token = token.trim_matches(|c: char| matches!(c, '.' | '*' | '_' | '-' | '#'));
+        if token.is_empty() || attached.contains(&token) {
+            continue;
+        }
+        // A path-like token: something before a final dot, then an alphabetic
+        // extension of one to four characters. The alphabetic test is what
+        // keeps version numbers (dash 0.5.12) and bare numbers out.
+        let (stem, ext) = match token.rsplit_once('.') {
+            Some(parts) => parts,
+            None => continue,
+        };
+        if stem.is_empty()
+            || ext.is_empty()
+            || ext.len() > 4
+            || !ext.chars().all(|c| c.is_ascii_alphabetic())
+        {
+            continue;
+        }
+        // A two-character stem, which is what keeps the prose abbreviations
+        // out: "e.g" and "i.e" both parse as a one-letter stem with a
+        // one-letter extension and are otherwise indistinguishable from a
+        // path. Single-letter filenames like `a.out` are missed as a result,
+        // which is the right trade for a warning that fires on every task.
+        if stem.len() < 2 || !stem.chars().any(|c| c.is_ascii_alphanumeric()) {
+            continue;
+        }
+        if let Some(name) = Path::new(token).file_name().and_then(|n| n.to_str())
+            && attached.contains(&name)
+        {
+            continue;
+        }
+        let owned = token.to_string();
+        if !named.contains(&owned) {
+            named.push(owned);
+        }
+    }
+    named
+}
+
 fn build_context(paths: &[String], force: bool, task: &str) -> Result<Context, Exit> {
     let mut blocks = Vec::new();
     // The task string goes to the provider exactly like file bodies do, so
@@ -397,6 +463,13 @@ fn build_context(paths: &[String], force: bool, task: &str) -> Result<Context, E
             .filter(|ext| !ext.is_empty())
             .unwrap_or_else(|| "text".to_string());
         blocks.push(format!("### File: {raw}\n```{suffix}\n{body}\n```"));
+    }
+
+    for name in unattached_paths(task, paths) {
+        eprintln!(
+            "{PROG}: WARNING: the task names {name}, which is not among the files sent. \
+             A model asked about a file it cannot see will invent its contents."
+        );
     }
 
     if !findings.is_empty() && !force {
@@ -2127,6 +2200,57 @@ mod tests {
     }
 
     // ── small pieces ──────────────────────────────────────────────────────
+
+    #[test]
+    fn a_task_naming_an_unattached_file_is_reported() {
+        // The 2026-09-19 case, reduced: the task names the guard script and
+        // asks about it, while only the excerpts are attached.
+        let task = "test_workflow_container_shell.py is a guard; say whether it has gaps.";
+        let attached = vec!["excerpts/release_linux_bottle_excerpt.yml".to_string()];
+        assert_eq!(
+            unattached_paths(task, &attached),
+            vec!["test_workflow_container_shell.py".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_task_naming_an_attached_file_is_quiet() {
+        let task = "review src/ca.rs for quoting bugs";
+        let attached = vec!["src/ca.rs".to_string()];
+        assert!(unattached_paths(task, &attached).is_empty());
+    }
+
+    #[test]
+    fn the_basename_counts_as_attached() {
+        // Naming the file plainly while attaching it by a longer path is fine.
+        let task = "look at ca.rs";
+        let attached = vec!["src/ca.rs".to_string()];
+        assert!(unattached_paths(task, &attached).is_empty());
+    }
+
+    #[test]
+    fn a_differently_named_excerpt_still_warns() {
+        // Naming release.yml while attaching an excerpt of it is exactly the
+        // shape that produced findings about lines nobody sent.
+        let task = "the bug that broke release.yml";
+        let attached = vec!["excerpts/release_linux_bottle_excerpt.yml".to_string()];
+        assert_eq!(
+            unattached_paths(task, &attached),
+            vec!["release.yml".to_string()]
+        );
+    }
+
+    #[test]
+    fn version_numbers_and_prose_are_not_paths() {
+        let task = "verified against dash 0.5.12; see the note. Cf. e.g. a sentence.";
+        assert!(unattached_paths(task, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_file_is_reported_once_however_often_it_is_named() {
+        let task = "oxreview.py does X. oxreview.py also does Y.";
+        assert_eq!(unattached_paths(task, &[]), vec!["oxreview.py".to_string()]);
+    }
 
     #[test]
     fn the_scanner_catches_the_measured_forms() {

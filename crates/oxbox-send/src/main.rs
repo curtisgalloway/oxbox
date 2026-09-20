@@ -3233,6 +3233,30 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A task typed at a Windows console arrives with CRLF, and Python's
+    /// text mode turned it into LF before it reached the wire. 098189f
+    /// closed that gap at all four reading sites -- `--files`, `--stdin`,
+    /// `--diff` and a log's content.md -- so the two implementations put the
+    /// same bytes on the wire and report the same context_bytes. The other
+    /// three sites are pinned; dropping `normalize_newlines` from this one
+    /// left every unit test green.
+    #[test]
+    fn a_crlf_task_from_stdin_reaches_the_wire_as_lf() {
+        let dir = scratch("stdin-crlf");
+        let logs = dir.join("logs").to_string_lossy().into_owned();
+        let (result, _, out) = run_with(
+            &["--dry-run", "--stdin", "--model", "m", "--log-dir", &logs],
+            "first\r\nsecond\rthird\r\n",
+        );
+        assert_eq!(result, Ok(()));
+        let printed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            printed["messages"][1]["content"],
+            json!("first\nsecond\nthird")
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn destination_and_credential_are_resolved_together() {
         with_env(

@@ -65,7 +65,8 @@ dispatcher runs fine while the helpers it dispatches to are missing.
 | S2 | `oxbox skill` | exit 0; prints the oxbox-review skill, proving a packaged data file was found |
 | S3 | `oxbox helper` | exit 0; lists all four helpers, each resolving to a path **inside the installed prefix** — a helper resolving to a build dir or not at all is a FAIL |
 | S4 | `oxbox sandbox --create` then `--status` then `--destroy`, under `OXBOX_SANDBOX_ROOT` in the temp `HOME` | round trip exits 0 and leaves nothing behind |
-| S5 | `oxbox send --dry-run --model x --mode ask 'hi'` with no API key set | exits non-zero with a named missing-credential error; never a panic, and never a network call |
+| S5 | `oxbox send --dry-run --model x --mode ask 'hi'` with no API key set | exit 0; prints the built request and `dry run, nothing sent`; no panic, no network. **This is designed behavior** — the credential check is gated on `!args.dry_run`, `release.yml` asserts exit 0 for this exact command ("A dry run needs no key"), and `a_dry_run_builds_and_files_the_request_without_a_key` pins it |
+| S5b | the same command **without** `--dry-run`, no API key | exits non-zero with the named credential error (`OPENROUTER_API_KEY not set …`); no panic, no network. This is what S5 was meant to check and was testing the wrong command shape for; pinned by `destination_and_credential_are_resolved_together` |
 | S6 | `oxbox --version` | exit 0; prints exactly the version being released |
 | S7 | `oxbox send --help` | exit 0; the `--venue` list includes `openrouter-us` (new in this release, and the reason a stale helper binary would be invisible to S1–S3) |
 
@@ -82,7 +83,7 @@ dispatcher runs fine while the helpers it dispatches to are missing.
 - install like a user: `brew install --formula curtisgalloway/tap/oxbox` into a
   throwaway prefix (`HOMEBREW_CACHE`/`HOMEBREW_TEMP` redirected; never touch the
   developer's default keg — uninstall in cleanup)
-- smoke: S1–S7
+- smoke: S1–S7 and S5b
 - cleanup: `brew uninstall oxbox`; remove the redirected cache/temp dirs
 - caveats: before the tag exists the tap still points at the previous version,
   so on a dry run this arm verifies the *previous* release's artifact and is
@@ -99,7 +100,7 @@ dispatcher runs fine while the helpers it dispatches to are missing.
   nfpm release and `apt-get install`ed — then `nfpm package -f
   packaging/nfpm.yaml -p deb`, and `packaging/tarball.sh` beside it
 - install like a user: `sudo apt install ./oxbox_<version>_<arch>.deb` in the VM
-- smoke: S1–S7, plus a check that the four helpers live under
+- smoke: S1–S7 and S5b, plus a check that the four helpers live under
   `/usr/libexec/oxbox/bin`
 - cleanup: `sudo apt remove oxbox`; delete the built artifacts
 - caveats: the builder is aarch64, so only the arm64 package is built and
@@ -118,19 +119,28 @@ dispatcher runs fine while the helpers it dispatches to are missing.
 - install like a user: serve the built pool over a loopback HTTP server in the
   VM, add it as a deb822 source with `Signed-By` pointing at the throwaway
   key, then `apt update && apt install oxbox`
-- smoke: S1–S7, plus: `apt update` reports no `Valid-Until` warning, and
+- smoke: S1–S7 and S5b, plus: `apt update` reports no `Valid-Until` warning, and
   `apt-cache policy oxbox` shows the repository as the install candidate
 - cleanup: remove the source file and keyring, `apt remove oxbox`, delete the
   temp pool and the throwaway key
 - caveats: the pool is built and deployed by the `build` and `deploy` jobs
   of `.github/workflows/apt.yml`, not by the release workflow, which is why
   `workflow job` is `none` above; a Pages deploy is what publishes the pool,
-  not the Release itself. **This channel has never been released.** It was added by #71 and
-  the first real publish is this one, so no prior run has exercised the pool
-  the workflow builds. The arm signs with a throwaway key rather than
+  not the Release itself. The arm signs with a throwaway key rather than
   `APT_SIGNING_KEY`, so it proves the pool's structure and apt's acceptance of
-  it, not that the production key is present in repo secrets — confirm that
-  separately before publishing. UNVERIFIED
+  it, not that the production key still works. It is also aarch64, so the amd64
+  index is built but never installed from.
+
+  **The channel is live and has been released** — `apt.yml` has run
+  successfully on push, dispatch and its weekly schedule, and the published
+  pool carries every release through 1.3.0. What has **never run** is
+  `release.yml`'s `refresh-apt-repo` job: v1.3.0 was published about 45 minutes
+  before #71 merged, so no tag has ever dispatched `apt.yml`. The next tag is
+  the first. Its failure mode is quiet and ugly — the pool keeps serving the
+  previous version while the Release page shows the new one, which reads as a
+  release that did not happen. Verify it after every tag; see `## Publish`.
+  Note also that the dispatch is `--ref main`, so `apt.yml` always assembles
+  with **main's** `build-apt-repo.sh`, never the tag's.
 
 ### linux-tarball
 
@@ -140,7 +150,7 @@ dispatcher runs fine while the helpers it dispatches to are missing.
 - host: linux-builder
 - build: `packaging/tarball.sh` as `linux-build` runs it
 - install like a user: `tar xzf` into a throwaway prefix, run the `oxbox` inside it
-- smoke: S1–S7, plus: the four helpers resolve to `libexec/bin` *inside the
+- smoke: S1–S7 and S5b, plus: the four helpers resolve to `libexec/bin` *inside the
   extracted tree*
 - cleanup: delete the extracted tree and the archive
 - caveats: aarch64 only, as for `deb`
@@ -154,7 +164,7 @@ dispatcher runs fine while the helpers it dispatches to are missing.
 - build: `cargo build --locked --release` then `packaging/tarball.sh`, as the
   `macos` job runs it
 - install like a user: `tar xzf` into a throwaway prefix outside the checkout
-- smoke: S1–S7, plus: the archive is universal (`lipo -archs` lists both
+- smoke: S1–S7 and S5b, plus: the archive is universal (`lipo -archs` lists both
   `x86_64` and `arm64` for `oxbox` and all four helpers)
 - cleanup: delete the extracted tree and the archive
 - caveats: the workflow's copy is built on a clean runner; this arm builds in
@@ -164,13 +174,19 @@ dispatcher runs fine while the helpers it dispatches to are missing.
 ### msi
 
 - kind: msi
-- artifact: `oxbox-<version>.msi`
+- artifact: `oxbox-<version>-x64.msi` (`build.ps1` appends the arch; release notes use that name too)
 - workflow job: `windows`
 - host: windows-bench
 - build: `packaging\windows\build.ps1 -Version <v> -OutDir dist -BinDir target\release`
-- install like a user: `msiexec /i oxbox-<version>.msi /qn` into a throwaway
-  prefix, then run the installed `oxbox.exe`
-- smoke: S1–S7, plus: the four helpers resolve to `libexec\bin` under the
+- install like a user: **first query `RelatedProducts` on oxbox's UpgradeCode.**
+  A registered older oxbox MSI shares that code, so installing MajorUpgrades it
+  away and the `msiexec /x` cleanup then leaves the machine with no oxbox at
+  all. If one is present, back up its prefix, its `HKCU\Software\oxbox` and the
+  User PATH before installing, and restore them after — and know that the old
+  product *registration* cannot be recreated without the old MSI. Then
+  `msiexec /i oxbox-<version>-x64.msi /qn` into a throwaway prefix and run the
+  installed `oxbox.exe`
+- smoke: S1–S7 and S5b, plus: the four helpers resolve to `libexec\bin` under the
   install root
 - cleanup: `msiexec /x` the package
 - caveats: the workflow Azure-signs the MSI; this arm builds an unsigned one
@@ -204,8 +220,28 @@ dispatcher runs fine while the helpers it dispatches to are missing.
   `#[cfg(test)]`; this repo keeps them in the same file as the code, so a new
   assertion goes in the module it exercises
 - how to run: `cargo test --locked --workspace`
-- prove-it-bites: `git checkout <fix>^ -- <fixed files>` then the test must
-  fail; restore; it must pass
+- prove-it-bites: **the skill's default recipe does not work in this repo.**
+  `git checkout <fix>^ -- <fixed files>` reverts the tests along with the code,
+  because this repo keeps them inline in the file they exercise. Measured on
+  `06d02d8` (the #50 provider pin): the file revert left the suite *green* at 30
+  tests instead of 35, since the five that would have caught it went back in the
+  box with the bug — and it would delete any new test written into that file.
+  Several reverts also do not compile (reverting `oxbox-core/src/lib.rs` past
+  `588a67c` restores an `include_str!` path renamed in that same commit).
+
+  Use a **surgical revert** instead: apply the literal reverse of the fix's
+  production hunk to HEAD, leave the tests in place, run the suite, then
+  restore. Establish coverage by mutating fix-derived lines one at a time.
+  Keep every revert inside a single scripted run that ends in
+  `git checkout HEAD -- crates/` and asserts `git status --porcelain -- crates/`
+  is empty — other arms build in this worktree concurrently, so a revert window
+  left open across a turn is genuinely dangerous
+- note: `cargo test --locked --workspace` is not the whole safety net. Two fixes
+  are protected only by the Python suites — `33941ec` (the 1.0.1 Homebrew
+  `real_exe_dir` bug) by `guardtest.py`, and the `openrouter-us` venue by
+  `wiretest.py`, which checks the *Python reference's* venue table and not the
+  Rust `VENUES` table. Retiring the Python reference would drop both guards
+  silently
 
 ## Publish
 
@@ -217,11 +253,17 @@ dispatcher runs fine while the helpers it dispatches to are missing.
   or squash); tag the merged head `v<X.Y.Z>` with subject `<X.Y.Z>: <summary>`;
   push the tag; watch `release.yml` and then `apt.yml`, which `release.yml`
   triggers and which is what actually publishes the pool
+- **after the tag, before anything else: confirm `refresh-apt-repo` dispatched
+  `apt.yml` and that the run succeeded**, then `curl` the live
+  `dists/stable/main/binary-<arch>/Packages` and grep for `Version: <X.Y.Z>`.
+  That job has never run; if it silently does not fire, the pool keeps serving
+  the previous version while the Release page shows the new one, and the only
+  symptom a user sees is that `apt upgrade` has nothing for them
 - re-verify:
   - homebrew: `brew install curtisgalloway/tap/oxbox` from the public tap, S1–S3
   - apt: add the public repository per the README's deb822 block, `apt update`,
-    `apt install oxbox`, S1–S3 — **the one to watch this release**, since it
-    has never been published before
+    `apt install oxbox`, S1–S3, and assert the installed version is the one just
+    tagged rather than the previous one
   - deb: download `oxbox_<version>_arm64.deb` from the Release, verify its
     checksum against the sidecar, install, S1–S3
   - linux-tarball / macos-tarball: download from the Release, verify checksums,

@@ -585,7 +585,10 @@ mod tests {
     #[test]
     fn a_skill_directory_under_the_retired_name_is_still_found() {
         let _guard = env_lock();
-        let planted = exe_dir().join("share").join("oxbox").join(SKILL_NAME_LEGACY);
+        let planted = exe_dir()
+            .join("share")
+            .join("oxbox")
+            .join(SKILL_NAME_LEGACY);
         fs::create_dir_all(&planted).unwrap();
         fs::write(planted.join("SKILL.md"), "---\nname: oxbox-review\n---\n").unwrap();
         let found = find_skill_dir();

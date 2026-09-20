@@ -8,8 +8,16 @@ confirmed by a maintainer or by a passing arm.
 ## Project
 
 - cli: `oxbox`
-- version source: `Cargo.toml` workspace `version`, which the `version` job
-  cross-checks against the tag
+- version source: **six files, and only the combination is checked.** The
+  workspace `version` in `Cargo.toml` (which the `version` job cross-checks
+  against the tag) *and* the `VERSION = "X.Y.Z"` constant in each of
+  `python/oxbox`, `python/oxbox-send`, `python/oxbox-patch`,
+  `python/oxbox-sandbox` and `python/oxbox-jail`. `wiretest.py` asserts that all
+  five Python tools declare the same VERSION *and* that the built Rust binary
+  prints it, so bumping Cargo.toml alone turns the `rust` job red on every
+  platform while `cargo test` stays green. Measured on this release: the 1.4.0
+  bump missed the Python five and CI failed 81/82 with "oxbox-send --version
+  prints it". Bump all six, then run `python3 wiretest.py`.
 - tag format: `v<X.Y.Z>`; subject `<X.Y.Z>: <lowercase summary>` (note: no
   leading `v` in the subject, unlike the skill's default)
 - main branch: `main`; protected: yes — linear history, 0 required reviews,

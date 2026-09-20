@@ -147,6 +147,17 @@ batches beat one big call for a specific reason — `oxbox-send` warns when an a
 truncated at the token cap, and oxbox has watched a review get cut off four
 findings into fifteen. A batch that fits leaves the model room to finish.
 
+**Let the manifest set the parameters.** `--manifest` carries
+`defaults.max_tokens` and each entry's `params` (effort, and anything else the
+issue pinned), and those are the parameters a reader following the survey would
+send. Do not pass `--max-tokens`, `--effort` or `--temperature` copied from a
+corpus fixture. A fixture's parameters are a property of that fixture: the
+survey's quiz fixture caps completion at 8,000 tokens because that is four
+times the longest answer anyone gave *on the quiz*, and a review of a 17 KB
+file is a far longer generation. On 2026-09-20 a batch sent with the quiz's
+parameters truncated at the cap, `finish=length`, and cost $0.00073 for output
+that was thrown away.
+
 **If a file is too big for a batch, cut it — and mark the cut.** The 40 KB
 budget means a large file has to be excerpted, and an unmarked excerpt reads to
 the model as the whole file. On 2026-09-19 a review of a workflow excerpt that

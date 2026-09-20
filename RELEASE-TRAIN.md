@@ -1,6 +1,6 @@
 # Release train profile: oxbox
 
-Derived from commit 5a46f9d on 2026-09-20. Executed by the `release-train`
+Derived from commit 8e0ba39 on 2026-09-20. Executed by the `release-train`
 skill; kept honest by `profile_check.py` (see `## Sources`). Lines marked
 `UNVERIFIED` were inferred by the agent that wrote this file and have not been
 confirmed by a maintainer or by a passing arm.
@@ -290,4 +290,4 @@ dispatcher runs fine while the helpers it dispatches to are missing.
 | `packaging/scripts/build-apt-repo.sh` | 20a931acd010 | Channels: apt |
 | `packaging/windows/build.ps1` | 7bc77704ba77 | Channels: msi |
 | `README.md` | 8ce7e94c3f91 | Channels: install like a user |
-| `Cargo.toml` | be0e4fdc6173 | Project: version source |
+| `Cargo.toml` | 841a31d87243 | Project: version source |

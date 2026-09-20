@@ -562,6 +562,10 @@ mod tests {
 
     #[test]
     fn the_skill_dir_is_found_from_a_build_tree() {
+        // The lookup reads the filesystem beside this executable, and the
+        // legacy-spelling case below plants a directory there; the two take
+        // the same lock so neither sees the other's tree.
+        let _guard = env_lock();
         if !checkout_in_reach() {
             eprintln!("skipped: the build tree is deeper than the lookup walks");
             return;
@@ -569,6 +573,24 @@ mod tests {
         let dir = find_skill_dir().expect("the checkout carries the skill");
         assert!(dir.join("SKILL.md").is_file());
         assert!(dir.ends_with(Path::new(".claude").join("skills").join(SKILL_NAME)));
+    }
+
+    /// A stale `share/oxbox/ox-review` left by an older package still
+    /// resolves. #65 renamed the skill directory to `oxbox-review`; an
+    /// in-place upgrade over an unpacked tarball replaces the executables
+    /// and leaves the old directory behind, and a lookup that knew only the
+    /// current spelling refused `--skill` with the runbook one directory
+    /// over. Only the fallback added in 588a67c makes this path exist, and
+    /// nothing else in any suite walks it.
+    #[test]
+    fn a_skill_directory_under_the_retired_name_is_still_found() {
+        let _guard = env_lock();
+        let planted = exe_dir().join("share").join("oxbox").join(SKILL_NAME_LEGACY);
+        fs::create_dir_all(&planted).unwrap();
+        fs::write(planted.join("SKILL.md"), "---\nname: oxbox-review\n---\n").unwrap();
+        let found = find_skill_dir();
+        let _ = fs::remove_dir_all(exe_dir().join("share"));
+        assert_eq!(found.ok(), Some(planted));
     }
 
     #[test]

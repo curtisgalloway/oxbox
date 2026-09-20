@@ -435,6 +435,40 @@ fn unattached_paths(task: &str, paths: &[String]) -> Vec<String> {
     named
 }
 
+/// Whether a file that presents itself as an excerpt says so in its body.
+///
+/// An unmarked excerpt reads to the model as the whole file, and the model
+/// reports what is missing as a defect. Measured on 2026-09-19: an excerpt of
+/// a workflow that stopped after `set -euo pipefail` came back as "this step
+/// has no commands" -- true of the excerpt, false of the file.
+///
+/// The convention the review skill documents is a marker line naming what was
+/// cut, in the file's own comment syntax:
+///
+/// ```text
+/// # ... excerpt: 846 lines omitted from .github/workflows/release.yml ...
+/// ```
+///
+/// Only the two words are required, so the comment syntax does not matter and
+/// a marker in the middle of a sliced file counts. This recognises an excerpt
+/// by its name, which is the convention in use; a file cut without saying so
+/// anywhere cannot be detected at all, and that is the case the skill's
+/// instruction exists to prevent.
+fn excerpt_without_marker(raw: &str, body: &str) -> bool {
+    let name = Path::new(raw)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(raw)
+        .to_ascii_lowercase();
+    if !name.contains("excerpt") {
+        return false;
+    }
+    !body.lines().any(|line| {
+        let line = line.to_ascii_lowercase();
+        line.contains("excerpt") && line.contains("omitted")
+    })
+}
+
 fn build_context(paths: &[String], force: bool, task: &str) -> Result<Context, Exit> {
     let mut blocks = Vec::new();
     // The task string goes to the provider exactly like file bodies do, so
@@ -445,6 +479,7 @@ fn build_context(paths: &[String], force: bool, task: &str) -> Result<Context, E
         scan_for_secrets(task, "<task text>")
     };
     let mut total = 0;
+    let mut excerpts_unmarked: Vec<(String, usize)> = Vec::new();
     for raw in paths {
         let path = Path::new(raw);
         if !path.is_file() {
@@ -462,7 +497,18 @@ fn build_context(paths: &[String], force: bool, task: &str) -> Result<Context, E
             .map(|ext| ext.to_string_lossy().into_owned())
             .filter(|ext| !ext.is_empty())
             .unwrap_or_else(|| "text".to_string());
+        if excerpt_without_marker(raw, &body) {
+            excerpts_unmarked.push((raw.clone(), body.lines().count()));
+        }
         blocks.push(format!("### File: {raw}\n```{suffix}\n{body}\n```"));
+    }
+
+    for (raw, body) in &excerpts_unmarked {
+        eprintln!(
+            "{PROG}: WARNING: {raw} looks like an excerpt but carries no marker \
+             saying what was cut. A model cannot tell an excerpt from a whole file, \
+             and reports what is missing as a defect. ({body} lines sent.)"
+        );
     }
 
     for name in unattached_paths(task, paths) {
@@ -2200,6 +2246,44 @@ mod tests {
     }
 
     // ── small pieces ──────────────────────────────────────────────────────
+
+    #[test]
+    fn an_excerpt_without_a_marker_is_reported() {
+        // The 2026-09-19 file, reduced: it stops after `set -euo pipefail`.
+        let body =
+            "      - name: Build Homebrew bottle\n        run: |\n          set -euo pipefail\n";
+        assert!(excerpt_without_marker(
+            ".oxbox-review/_excerpts/release_macos_bottle_excerpt.yml",
+            body
+        ));
+    }
+
+    #[test]
+    fn an_excerpt_that_names_what_it_cut_is_quiet() {
+        let body = "run: |\n  set -euo pipefail\n# ... excerpt: 846 lines omitted from .github/workflows/release.yml ...\n";
+        assert!(!excerpt_without_marker(
+            "release_macos_bottle_excerpt.yml",
+            body
+        ));
+    }
+
+    #[test]
+    fn a_marker_in_the_middle_of_a_slice_counts() {
+        let body = "fn a() {}\n// ... excerpt: 40 lines omitted from src/main.rs ...\nfn b() {}\n";
+        assert!(!excerpt_without_marker("main_excerpt.rs", body));
+    }
+
+    #[test]
+    fn a_file_that_is_not_an_excerpt_is_never_reported() {
+        // No marker, and none wanted: this is a whole file.
+        assert!(!excerpt_without_marker("src/ca.rs", "fn main() {}\n"));
+    }
+
+    #[test]
+    fn the_marker_words_are_matched_whatever_the_comment_syntax() {
+        let body = "<!-- ... excerpt: 12 lines omitted from page.html ... -->\n<p>x</p>\n";
+        assert!(!excerpt_without_marker("page_excerpt.html", body));
+    }
 
     #[test]
     fn a_task_naming_an_unattached_file_is_reported() {

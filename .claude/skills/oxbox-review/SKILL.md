@@ -147,6 +147,27 @@ batches beat one big call for a specific reason — `oxbox-send` warns when an a
 truncated at the token cap, and oxbox has watched a review get cut off four
 findings into fifteen. A batch that fits leaves the model room to finish.
 
+**If a file is too big for a batch, cut it — and mark the cut.** The 40 KB
+budget means a large file has to be excerpted, and an unmarked excerpt reads to
+the model as the whole file. On 2026-09-19 a review of a workflow excerpt that
+stopped after `set -euo pipefail` came back reporting that the step had no
+commands: true of the excerpt, false of the file, and it will be reported again
+by every model that sees it. Nothing detects this for you, because an excerpt
+is a file like any other once it is sent.
+
+So an excerpt ends with a marker line, in the file's own comment syntax, saying
+what was left out:
+
+```
+# ... excerpt: 846 lines omitted from .github/workflows/release.yml ...
+```
+
+Put one at every cut, not only the end, if you take a slice from the middle.
+Name the original path in it — that is what lets the model say "I cannot see
+the rest" instead of inventing what the rest contains, and it is the same
+failure the `--task` warning covers from the other direction. `oxbox-send`
+warns when a file whose name says `excerpt` carries no marker.
+
 Keep secrets out of the payload. `oxbox-send` has a scanner that refuses files matching
 credential patterns, and **`--force` exists to override it — never pass it.**
 `oxreview.py` does not offer the flag. If the scanner trips, that is the answer:

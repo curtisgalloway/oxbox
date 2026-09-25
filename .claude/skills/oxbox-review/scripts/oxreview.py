@@ -509,11 +509,15 @@ def main():
     parser.add_argument("--task", help="the review task text")
     parser.add_argument("--task-file", help="read the review task from this file")
     parser.add_argument("--label", default="batch", help="name for this batch in logs")
-    parser.add_argument("--failover", action="store_true",
+    parser.add_argument("--failover", dest="failover", action="store_true",
+                        default=True,
                         help="let ox move to the next permitted manifest entry on a "
-                             "failure after the request is sent. This is consent to "
-                             "send the payload to any permitted entry, so only pass "
-                             "it once the operator has seen the full entry list.")
+                             "failure (the default for reviews). This is consent to "
+                             "send the payload to any permitted entry, so the "
+                             "operator must have seen the full entry list.")
+    parser.add_argument("--no-failover", dest="failover", action="store_false",
+                        help="probe mode: send only to the first permitted entry, "
+                             "for an operator who agreed to that destination alone")
     parser.add_argument("--attempts", type=int, default=DEFAULT_ATTEMPTS,
                         help="total tries for a retryable failure (default: %d)" % DEFAULT_ATTEMPTS)
     parser.add_argument("--retry-floor", type=int, default=RETRY_FLOOR,

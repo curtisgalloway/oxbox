@@ -424,8 +424,9 @@ def render(report):
             print("ox would send to: %s / %s"
                   % (where["chosen"]["venue"], where["chosen"]["model"]))
             print("Everything sent there is logged and shared with whoever owns that "
-                  "model. Under --failover, later manifest entries are also possible "
-                  "destinations, in order.")
+                  "model. Reviews fail over by default, so the later manifest entries "
+                  "listed above are also possible destinations, in order "
+                  "(oxreview.py --no-failover pins the first).")
         else:
             print("ox would refuse to send — see the reasons above")
 

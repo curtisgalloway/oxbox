@@ -108,7 +108,10 @@ shorn of context:
 
 - the verdict and the evidence line the gate printed (`HTTP 401`, `no git
   remote`, whichever it was);
-- the destination — venue and model — from the preflight report;
+- every destination — venue and model of each permitted manifest entry, in
+  order, from the preflight report. Reviews fail over by default, so any of
+  them may receive the code; if the user will accept only the first, pass
+  `--no-failover` to every batch;
 - what would be sent: the file list and roughly how many bytes;
 - the consequence, plainly: this code is not published today, and sending it
   publishes it to whoever owns that model, with logging enabled and no way to
@@ -124,8 +127,16 @@ to click through. But if the scope later grows to files the user did not see whe
 they agreed, that is a new decision and needs a new answer.
 
 When the verdict *is* `public`, proceed without a prompt — but still say in one
-line where the code is going before the first request, so the destination is
-never a surprise.
+line where the code is going before the first request, naming the fallback
+entries too, so no destination is a surprise.
+
+**Failover is on by default here.** A review wants an answer, not a survey data
+point, which is the everyday case `oxbox send --failover` exists for (probe mode
+stays the default in `oxbox send` itself, because a survey measurement that
+switched targets would be corrupt data). On 2026-09-25 every batch of a
+five-batch review failed in under a second because the first entry's pinned
+routes had all gone dark while a second entry sat unused, and the review
+stalled on a question to the user that the manifest had already answered.
 
 Two things the gate deliberately does not treat as blockers, because they are the
 normal case: uncommitted changes, and commits not yet pushed. Reviewing work
@@ -221,9 +232,9 @@ Review one batch of files with oxbox and verify what comes back.
              OR TWO SENTENCES ON WHAT THIS CODE DOES AND WHAT CHANGED>."
 
    It may wait for other batches before its request goes out. That is normal —
-   let it wait rather than interrupting it. Do not add --force. Do not add
-   --failover unless you were told the operator agreed to the full destination
-   list.
+   let it wait rather than interrupting it. Do not add --force. Failover to
+   later manifest entries is on by default; add --no-failover if you were told
+   the operator agreed only to the first destination.
 
    Give the call a long timeout — 600000 ms if your tool takes one. A batch
    routinely runs 4-12 minutes on the wire and can sit far longer in the

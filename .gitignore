@@ -11,3 +11,6 @@ __pycache__/
 
 # Rust build output
 /target/
+
+# release-train host facts: roles in RELEASE-TRAIN.md, machines here.
+RELEASE-TRAIN.local.md

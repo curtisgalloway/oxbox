@@ -108,7 +108,10 @@ shorn of context:
 
 - the verdict and the evidence line the gate printed (`HTTP 401`, `no git
   remote`, whichever it was);
-- the destination — venue and model — from the preflight report;
+- every destination — venue and model of each permitted manifest entry, in
+  order, from the preflight report. Reviews fail over by default, so any of
+  them may receive the code; if the user will accept only the first, pass
+  `--no-failover` to every batch;
 - what would be sent: the file list and roughly how many bytes;
 - the consequence, plainly: this code is not published today, and sending it
   publishes it to whoever owns that model, with logging enabled and no way to
@@ -124,8 +127,16 @@ to click through. But if the scope later grows to files the user did not see whe
 they agreed, that is a new decision and needs a new answer.
 
 When the verdict *is* `public`, proceed without a prompt — but still say in one
-line where the code is going before the first request, so the destination is
-never a surprise.
+line where the code is going before the first request, naming the fallback
+entries too, so no destination is a surprise.
+
+**Failover is on by default here.** A review wants an answer, not a survey data
+point, which is the everyday case `oxbox send --failover` exists for (probe mode
+stays the default in `oxbox send` itself, because a survey measurement that
+switched targets would be corrupt data). On 2026-09-25 every batch of a
+five-batch review failed in under a second because the first entry's pinned
+routes had all gone dark while a second entry sat unused, and the review
+stalled on a question to the user that the manifest had already answered.
 
 Two things the gate deliberately does not treat as blockers, because they are the
 normal case: uncommitted changes, and commits not yet pushed. Reviewing work
@@ -146,6 +157,38 @@ Batch the files: at most **5 files or about 40 KB**, whichever comes first. Smal
 batches beat one big call for a specific reason — `oxbox-send` warns when an answer is
 truncated at the token cap, and oxbox has watched a review get cut off four
 findings into fifteen. A batch that fits leaves the model room to finish.
+
+**Let the manifest set the parameters.** `--manifest` carries
+`defaults.max_tokens` and each entry's `params` (effort, and anything else the
+issue pinned), and those are the parameters a reader following the survey would
+send. Do not pass `--max-tokens`, `--effort` or `--temperature` copied from a
+corpus fixture. A fixture's parameters are a property of that fixture: the
+survey's quiz fixture caps completion at 8,000 tokens because that is four
+times the longest answer anyone gave *on the quiz*, and a review of a 17 KB
+file is a far longer generation. On 2026-09-20 a batch sent with the quiz's
+parameters truncated at the cap, `finish=length`, and cost $0.00073 for output
+that was thrown away.
+
+**If a file is too big for a batch, cut it — and mark the cut.** The 40 KB
+budget means a large file has to be excerpted, and an unmarked excerpt reads to
+the model as the whole file. On 2026-09-19 a review of a workflow excerpt that
+stopped after `set -euo pipefail` came back reporting that the step had no
+commands: true of the excerpt, false of the file, and it will be reported again
+by every model that sees it. Nothing detects this for you, because an excerpt
+is a file like any other once it is sent.
+
+So an excerpt ends with a marker line, in the file's own comment syntax, saying
+what was left out:
+
+```
+# ... excerpt: 846 lines omitted from .github/workflows/release.yml ...
+```
+
+Put one at every cut, not only the end, if you take a slice from the middle.
+Name the original path in it — that is what lets the model say "I cannot see
+the rest" instead of inventing what the rest contains, and it is the same
+failure the `--task` warning covers from the other direction. `oxbox-send`
+warns when a file whose name says `excerpt` carries no marker.
 
 Keep secrets out of the payload. `oxbox-send` has a scanner that refuses files matching
 credential patterns, and **`--force` exists to override it — never pass it.**
@@ -189,9 +232,9 @@ Review one batch of files with oxbox and verify what comes back.
              OR TWO SENTENCES ON WHAT THIS CODE DOES AND WHAT CHANGED>."
 
    It may wait for other batches before its request goes out. That is normal —
-   let it wait rather than interrupting it. Do not add --force. Do not add
-   --failover unless you were told the operator agreed to the full destination
-   list.
+   let it wait rather than interrupting it. Do not add --force. Failover to
+   later manifest entries is on by default; add --no-failover if you were told
+   the operator agreed only to the first destination.
 
    Give the call a long timeout — 600000 ms if your tool takes one. A batch
    routinely runs 4-12 minutes on the wire and can sit far longer in the

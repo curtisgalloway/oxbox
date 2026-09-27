@@ -369,6 +369,106 @@ struct Context {
     findings: Vec<String>,
 }
 
+/// File paths the task text names that are not among the attached files.
+///
+/// A prompt that names a file it does not send invites the model to invent the
+/// contents. Measured on 2026-09-19: a review task named a guard script,
+/// described what it checked, and asked "whether the guard has gaps" while
+/// attaching only two YAML excerpts. Two of the five findings that came back
+/// quoted regular expressions that do not exist in that script, with line
+/// numbers. The model could not have answered any other way.
+///
+/// This warns rather than refuses, because prose legitimately mentions files as
+/// background ("the bug that broke release.yml"). The judgement of whether a
+/// named file should have been attached belongs to whoever wrote the task; the
+/// job here is to make the omission visible before the request goes out.
+///
+/// Matching is on the full path and on the basename, so naming `release.yml`
+/// while attaching `excerpts/release_linux_bottle_excerpt.yml` still warns --
+/// that is the case that produced the invented findings.
+fn unattached_paths(task: &str, paths: &[String]) -> Vec<String> {
+    let mut attached: Vec<&str> = Vec::new();
+    for raw in paths {
+        attached.push(raw.as_str());
+        if let Some(name) = Path::new(raw).file_name().and_then(|n| n.to_str()) {
+            attached.push(name);
+        }
+    }
+    let mut named: Vec<String> = Vec::new();
+    for token in task.split(|c: char| c.is_whitespace() || "\"'`(),;:<>[]{}|".contains(c)) {
+        let token = token.trim_matches(|c: char| matches!(c, '.' | '*' | '_' | '-' | '#'));
+        if token.is_empty() || attached.contains(&token) {
+            continue;
+        }
+        // A path-like token: something before a final dot, then an alphabetic
+        // extension of one to four characters. The alphabetic test is what
+        // keeps version numbers (dash 0.5.12) and bare numbers out.
+        let (stem, ext) = match token.rsplit_once('.') {
+            Some(parts) => parts,
+            None => continue,
+        };
+        if stem.is_empty()
+            || ext.is_empty()
+            || ext.len() > 4
+            || !ext.chars().all(|c| c.is_ascii_alphabetic())
+        {
+            continue;
+        }
+        // A two-character stem, which is what keeps the prose abbreviations
+        // out: "e.g" and "i.e" both parse as a one-letter stem with a
+        // one-letter extension and are otherwise indistinguishable from a
+        // path. Single-letter filenames like `a.out` are missed as a result,
+        // which is the right trade for a warning that fires on every task.
+        if stem.len() < 2 || !stem.chars().any(|c| c.is_ascii_alphanumeric()) {
+            continue;
+        }
+        if let Some(name) = Path::new(token).file_name().and_then(|n| n.to_str())
+            && attached.contains(&name)
+        {
+            continue;
+        }
+        let owned = token.to_string();
+        if !named.contains(&owned) {
+            named.push(owned);
+        }
+    }
+    named
+}
+
+/// Whether a file that presents itself as an excerpt says so in its body.
+///
+/// An unmarked excerpt reads to the model as the whole file, and the model
+/// reports what is missing as a defect. Measured on 2026-09-19: an excerpt of
+/// a workflow that stopped after `set -euo pipefail` came back as "this step
+/// has no commands" -- true of the excerpt, false of the file.
+///
+/// The convention the review skill documents is a marker line naming what was
+/// cut, in the file's own comment syntax:
+///
+/// ```text
+/// # ... excerpt: 846 lines omitted from .github/workflows/release.yml ...
+/// ```
+///
+/// Only the two words are required, so the comment syntax does not matter and
+/// a marker in the middle of a sliced file counts. This recognises an excerpt
+/// by its name, which is the convention in use; a file cut without saying so
+/// anywhere cannot be detected at all, and that is the case the skill's
+/// instruction exists to prevent.
+fn excerpt_without_marker(raw: &str, body: &str) -> bool {
+    let name = Path::new(raw)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(raw)
+        .to_ascii_lowercase();
+    if !name.contains("excerpt") {
+        return false;
+    }
+    !body.lines().any(|line| {
+        let line = line.to_ascii_lowercase();
+        line.contains("excerpt") && line.contains("omitted")
+    })
+}
+
 fn build_context(paths: &[String], force: bool, task: &str) -> Result<Context, Exit> {
     let mut blocks = Vec::new();
     // The task string goes to the provider exactly like file bodies do, so
@@ -379,6 +479,7 @@ fn build_context(paths: &[String], force: bool, task: &str) -> Result<Context, E
         scan_for_secrets(task, "<task text>")
     };
     let mut total = 0;
+    let mut excerpts_unmarked: Vec<(String, usize)> = Vec::new();
     for raw in paths {
         let path = Path::new(raw);
         if !path.is_file() {
@@ -396,7 +497,25 @@ fn build_context(paths: &[String], force: bool, task: &str) -> Result<Context, E
             .map(|ext| ext.to_string_lossy().into_owned())
             .filter(|ext| !ext.is_empty())
             .unwrap_or_else(|| "text".to_string());
+        if excerpt_without_marker(raw, &body) {
+            excerpts_unmarked.push((raw.clone(), body.lines().count()));
+        }
         blocks.push(format!("### File: {raw}\n```{suffix}\n{body}\n```"));
+    }
+
+    for (raw, body) in &excerpts_unmarked {
+        eprintln!(
+            "{PROG}: WARNING: {raw} looks like an excerpt but carries no marker \
+             saying what was cut. A model cannot tell an excerpt from a whole file, \
+             and reports what is missing as a defect. ({body} lines sent.)"
+        );
+    }
+
+    for name in unattached_paths(task, paths) {
+        eprintln!(
+            "{PROG}: WARNING: the task names {name}, which is not among the files sent. \
+             A model asked about a file it cannot see will invent its contents."
+        );
     }
 
     if !findings.is_empty() && !force {
@@ -2129,6 +2248,95 @@ mod tests {
     // ── small pieces ──────────────────────────────────────────────────────
 
     #[test]
+    fn an_excerpt_without_a_marker_is_reported() {
+        // The 2026-09-19 file, reduced: it stops after `set -euo pipefail`.
+        let body =
+            "      - name: Build Homebrew bottle\n        run: |\n          set -euo pipefail\n";
+        assert!(excerpt_without_marker(
+            ".oxbox-review/_excerpts/release_macos_bottle_excerpt.yml",
+            body
+        ));
+    }
+
+    #[test]
+    fn an_excerpt_that_names_what_it_cut_is_quiet() {
+        let body = "run: |\n  set -euo pipefail\n# ... excerpt: 846 lines omitted from .github/workflows/release.yml ...\n";
+        assert!(!excerpt_without_marker(
+            "release_macos_bottle_excerpt.yml",
+            body
+        ));
+    }
+
+    #[test]
+    fn a_marker_in_the_middle_of_a_slice_counts() {
+        let body = "fn a() {}\n// ... excerpt: 40 lines omitted from src/main.rs ...\nfn b() {}\n";
+        assert!(!excerpt_without_marker("main_excerpt.rs", body));
+    }
+
+    #[test]
+    fn a_file_that_is_not_an_excerpt_is_never_reported() {
+        // No marker, and none wanted: this is a whole file.
+        assert!(!excerpt_without_marker("src/ca.rs", "fn main() {}\n"));
+    }
+
+    #[test]
+    fn the_marker_words_are_matched_whatever_the_comment_syntax() {
+        let body = "<!-- ... excerpt: 12 lines omitted from page.html ... -->\n<p>x</p>\n";
+        assert!(!excerpt_without_marker("page_excerpt.html", body));
+    }
+
+    #[test]
+    fn a_task_naming_an_unattached_file_is_reported() {
+        // The 2026-09-19 case, reduced: the task names the guard script and
+        // asks about it, while only the excerpts are attached.
+        let task = "test_workflow_container_shell.py is a guard; say whether it has gaps.";
+        let attached = vec!["excerpts/release_linux_bottle_excerpt.yml".to_string()];
+        assert_eq!(
+            unattached_paths(task, &attached),
+            vec!["test_workflow_container_shell.py".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_task_naming_an_attached_file_is_quiet() {
+        let task = "review src/ca.rs for quoting bugs";
+        let attached = vec!["src/ca.rs".to_string()];
+        assert!(unattached_paths(task, &attached).is_empty());
+    }
+
+    #[test]
+    fn the_basename_counts_as_attached() {
+        // Naming the file plainly while attaching it by a longer path is fine.
+        let task = "look at ca.rs";
+        let attached = vec!["src/ca.rs".to_string()];
+        assert!(unattached_paths(task, &attached).is_empty());
+    }
+
+    #[test]
+    fn a_differently_named_excerpt_still_warns() {
+        // Naming release.yml while attaching an excerpt of it is exactly the
+        // shape that produced findings about lines nobody sent.
+        let task = "the bug that broke release.yml";
+        let attached = vec!["excerpts/release_linux_bottle_excerpt.yml".to_string()];
+        assert_eq!(
+            unattached_paths(task, &attached),
+            vec!["release.yml".to_string()]
+        );
+    }
+
+    #[test]
+    fn version_numbers_and_prose_are_not_paths() {
+        let task = "verified against dash 0.5.12; see the note. Cf. e.g. a sentence.";
+        assert!(unattached_paths(task, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_file_is_reported_once_however_often_it_is_named() {
+        let task = "oxreview.py does X. oxreview.py also does Y.";
+        assert_eq!(unattached_paths(task, &[]), vec!["oxreview.py".to_string()]);
+    }
+
+    #[test]
     fn the_scanner_catches_the_measured_forms() {
         let text = "api_key = \"abcdefghijklmnop\"\nclient_secret=abcdefghijklmnopqrst\nmy_api_key = \"abcdefghijklmnopqrst\"\nDB_PASSWORD=abcdefghijklmnopqrstu\ntoken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\naws_secret_access_key=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl/+\n";
         let hits = scan_for_secrets(text, "t");
@@ -3230,6 +3438,30 @@ mod tests {
         assert_eq!(message(result.unwrap_err()), "no task given");
         let (result, _, _) = run_with(&["--dry-run", "--model", "m"], "");
         assert_eq!(message(result.unwrap_err()), "no task given");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A task typed at a Windows console arrives with CRLF, and Python's
+    /// text mode turned it into LF before it reached the wire. 098189f
+    /// closed that gap at all four reading sites -- `--files`, `--stdin`,
+    /// `--diff` and a log's content.md -- so the two implementations put the
+    /// same bytes on the wire and report the same context_bytes. The other
+    /// three sites are pinned; dropping `normalize_newlines` from this one
+    /// left every unit test green.
+    #[test]
+    fn a_crlf_task_from_stdin_reaches_the_wire_as_lf() {
+        let dir = scratch("stdin-crlf");
+        let logs = dir.join("logs").to_string_lossy().into_owned();
+        let (result, _, out) = run_with(
+            &["--dry-run", "--stdin", "--model", "m", "--log-dir", &logs],
+            "first\r\nsecond\rthird\r\n",
+        );
+        assert_eq!(result, Ok(()));
+        let printed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            printed["messages"][1]["content"],
+            json!("first\nsecond\nthird")
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 

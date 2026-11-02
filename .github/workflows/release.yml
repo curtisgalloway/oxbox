@@ -150,7 +150,7 @@ jobs:
             > "oxbox-${VERSION}-linux-${ARCH}.tar.gz.sha256"
           ls -l
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-linux-${{ matrix.arch }}
           path: dist/*
@@ -174,7 +174,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: packages-linux-${{ matrix.arch }}
           path: dist
@@ -391,7 +391,7 @@ jobs:
           cp "$GITHUB_WORKSPACE/jailtest.py" sandbox/work/jailtest.py
           "$prefix/bin/oxbox" -- /usr/bin/python3 jailtest.py
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-tarball
           path: dist/*
@@ -616,7 +616,7 @@ jobs:
           Write-Host "== ok"
           exit 0
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: msi
           path: dist/*.msi
@@ -635,19 +635,19 @@ jobs:
       # whole thing and no platform can be quietly left off the page. One
       # job owns the release notes for the same reason: two workflows
       # generating notes on one tag append two copies of "What's Changed".
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: packages-linux-amd64
           path: dist
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: packages-linux-arm64
           path: dist
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: macos-tarball
           path: dist
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: msi
           path: dist
@@ -811,7 +811,7 @@ jobs:
       # with public_repo, which the action uses to fork and open the PR.
       - name: Publish to winget (update PR)
         if: ${{ env.WINGET_TOKEN != '' }}
-        uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
+        uses: vedantmgoyal9/winget-releaser@b7370d4d152efdce803a26cc6ca9eee58cb2ad54 # v2
         with:
           identifier: CurtisGalloway.Oxbox
           installers-regex: '\.msi$'

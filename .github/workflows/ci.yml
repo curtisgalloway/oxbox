@@ -57,7 +57,9 @@ jobs:
   # is still 3.9. Nothing else in CI would catch a 3.10+ API sneaking in.
   python-floor:
     name: guards (3.9 floor)
-    runs-on: ubuntu-latest
+    # actions/python-versions has no 3.9 build for Ubuntu 26.04, which
+    # ubuntu-latest became in late 2026; 24.04 still has one.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

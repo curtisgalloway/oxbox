@@ -218,11 +218,7 @@ fn venue_url(venue: &Venue) -> String {
 }
 
 fn https_required() -> bool {
-    #[cfg(feature = "test-overrides")]
-    if env::var("OXBOX_TEST_ALLOW_HTTP").is_ok_and(|v| v == "1") {
-        return false;
-    }
-    true
+    !(cfg!(feature = "test-overrides") && env::var("OXBOX_TEST_ALLOW_HTTP").is_ok_and(|v| v == "1"))
 }
 
 fn manifest_max_bytes() -> usize {
